@@ -5,6 +5,9 @@ import { queueEnv } from "@/lib/env";
 import { generateActionItems } from "@/services/action-items/generate";
 
 export const runtime = "nodejs";
+// A Haiku call with max_tokens: 8000 can take well past Vercel's default
+// function timeout (10s) — 60s is the ceiling on the Hobby plan.
+export const maxDuration = 60;
 
 interface LlmJobPayload {
   projectId: string;

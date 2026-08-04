@@ -6,6 +6,9 @@ import { runSync } from "@/services/sync/run-sync";
 import type { Database } from "@/lib/db/database.types";
 
 export const runtime = "nodejs";
+// A connector fetch across many channels/pages can run past Vercel's
+// default function timeout (10s) — 60s is the ceiling on the Hobby plan.
+export const maxDuration = 60;
 
 interface SyncJobPayload {
   integrationId: string;
