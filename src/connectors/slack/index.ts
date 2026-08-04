@@ -10,7 +10,18 @@ import type {
 
 const SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize";
 const SLACK_API_BASE = "https://slack.com/api";
-const BOT_SCOPES = ["channels:history", "channels:read", "groups:history", "users:read", "team:read"];
+// conversations.list is called with types: "public_channel,private_channel",
+// which needs channels:read (public) AND groups:read (private) — history
+// scopes alone only cover reading messages in channels the bot can already
+// see, not listing which private channels exist in the first place.
+const BOT_SCOPES = [
+  "channels:history",
+  "channels:read",
+  "groups:history",
+  "groups:read",
+  "users:read",
+  "team:read",
+];
 
 /** Every Slack Web API response shares `ok`/`error`; the rest is a union of
  * whatever fields the specific methods this connector calls can return —
