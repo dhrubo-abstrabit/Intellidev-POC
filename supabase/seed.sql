@@ -1,0 +1,32 @@
+-- Local dev fixture: two workspaces owned by two different users, with
+-- similarly-named data. This is the shape that makes a cross-tenant RLS
+-- leak visible in manual testing instead of theoretical — if workspace B's
+-- data ever shows up while authenticated as workspace A's owner, something
+-- is broken.
+--
+-- `supabase db reset` wipes local auth.users, so these users are created
+-- via Supabase's local auth admin API rather than inserted into auth.users
+-- directly (which would skip password hashing and the trigger-based
+-- public.users mirror in ways that don't match production behavior).
+-- Run `supabase/seed.ts` (or the equivalent local script) after `db reset`
+-- to create:
+--
+--   alice@example.com / password123  -> owns "Acme Technologies"
+--   bob@example.com   / password123  -> owns "Northwind Traders"
+--
+-- Then this file seeds the workspace-scoped rows via the service role,
+-- which bypasses RLS by design for exactly this kind of fixture-loading.
+
+-- Placeholder workspace IDs — replace with the real IDs printed by the seed
+-- script once the two auth users above exist locally.
+-- insert into public.workspaces (id, name, slug, owner_id) values
+--   ('00000000-0000-0000-0000-000000000001', 'Acme Technologies', 'acme', '<alice-user-id>'),
+--   ('00000000-0000-0000-0000-000000000002', 'Northwind Traders', 'northwind', '<bob-user-id>');
+--
+-- insert into public.projects (workspace_id, name, slug) values
+--   ('00000000-0000-0000-0000-000000000001', 'Internal Dashboard', 'internal-dashboard'),
+--   ('00000000-0000-0000-0000-000000000002', 'Internal Dashboard', 'internal-dashboard');
+--
+-- Note both projects are deliberately named identically across the two
+-- workspaces — a leak that shows the wrong workspace's project would
+-- otherwise be easy to miss if the names differed.
