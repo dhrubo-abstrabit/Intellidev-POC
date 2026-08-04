@@ -19,6 +19,7 @@ export function ViewToggle({ view }: { view: TaskManagementView }) {
     <div className="inline-flex gap-0.5 rounded-lg border p-0.5">
       <Button
         render={<Link href={hrefFor("list")} data-testid="view-list" />}
+        nativeButton={false}
         variant={view === "list" ? "secondary" : "ghost"}
         size="sm"
       >
@@ -27,6 +28,7 @@ export function ViewToggle({ view }: { view: TaskManagementView }) {
       </Button>
       <Button
         render={<Link href={hrefFor("kanban")} data-testid="view-kanban" />}
+        nativeButton={false}
         variant={view === "kanban" ? "secondary" : "ghost"}
         size="sm"
       >
