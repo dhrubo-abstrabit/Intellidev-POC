@@ -31,8 +31,13 @@ export default async function IntegrationsPage({
     .eq("project_id", projectId)
     .order("created_at", { ascending: true });
 
-  const connectedProviders = new Set((integrations ?? []).map((i) => i.provider));
-  const availableConnectors = listConnectors().filter((c) => !connectedProviders.has(c.id));
+  // A disconnected/revoked row is history, not an active occupant of that
+  // provider slot — otherwise disconnecting an integration would permanently
+  // remove it from "Available" with no way to ever reconnect.
+  const activeProviders = new Set(
+    (integrations ?? []).filter((i) => i.status !== "disconnected" && i.status !== "revoked").map((i) => i.provider),
+  );
+  const availableConnectors = listConnectors().filter((c) => !activeProviders.has(c.id));
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">

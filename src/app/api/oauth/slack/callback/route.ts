@@ -56,29 +56,43 @@ export async function GET(request: NextRequest) {
   }
 
   const service = createServiceClient();
-  const credentialId = uuidv7();
-  const sealed = sealTokens(credentials.tokens, workspaceId, credentialId);
 
-  const { data: upsertedCredential, error: credentialError } = await service
+  // Reconnecting the SAME Slack workspace (same external_account_id) must
+  // reuse that row's existing id rather than generate a new one: the AAD
+  // binding in sealTokens is keyed on credentialId, and blindly upserting a
+  // fresh id into a row an old (e.g. disconnected) `integrations` row still
+  // references by credential_id would try to change a primary key a live
+  // foreign key still points at — Postgres rejects that outright.
+  const { data: existingCredential } = await service
     .from("connector_credentials")
-    .upsert(
-      {
-        id: credentialId,
-        workspace_id: workspaceId,
-        provider: "slack",
-        external_account_id: credentials.externalAccountId,
-        external_account_label: credentials.externalAccountLabel,
-        secret_ciphertext: toBytea(sealed.ciphertext),
-        secret_iv: toBytea(sealed.iv),
-        secret_key_version: sealed.keyVersion,
-        secret_alg: sealed.alg,
-        revoked_at: null,
-        created_by: user.id,
-      },
-      { onConflict: "workspace_id,provider,external_account_id" },
-    )
     .select("id")
-    .single();
+    .eq("workspace_id", workspaceId)
+    .eq("provider", "slack")
+    .eq("external_account_id", credentials.externalAccountId)
+    .maybeSingle();
+
+  const credentialId = existingCredential?.id ?? uuidv7();
+  const sealed = sealTokens(credentials.tokens, workspaceId, credentialId);
+  const credentialFields = {
+    workspace_id: workspaceId,
+    provider: "slack" as const,
+    external_account_id: credentials.externalAccountId,
+    external_account_label: credentials.externalAccountLabel,
+    secret_ciphertext: toBytea(sealed.ciphertext),
+    secret_iv: toBytea(sealed.iv),
+    secret_key_version: sealed.keyVersion,
+    secret_alg: sealed.alg,
+    revoked_at: null,
+    created_by: user.id,
+  };
+
+  const { data: upsertedCredential, error: credentialError } = existingCredential
+    ? await service.from("connector_credentials").update(credentialFields).eq("id", credentialId).select("id").single()
+    : await service
+        .from("connector_credentials")
+        .insert({ id: credentialId, ...credentialFields })
+        .select("id")
+        .single();
 
   if (credentialError || !upsertedCredential) {
     return redirectToIntegrations(origin, workspaceId, projectId, "credential_save_failed");
