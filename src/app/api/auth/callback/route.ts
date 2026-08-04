@@ -21,6 +21,11 @@ export async function GET(request: NextRequest) {
     if (!error) {
       return NextResponse.redirect(`${origin}${next}`);
     }
+    // Swallowing this used to leave "auth_callback_failed" as the only
+    // signal — logging the real cause (commonly a PKCE code-verifier
+    // cookie missing because the OAuth flow started on a different origin,
+    // e.g. localhost vs 127.0.0.1) makes this diagnosable without guessing.
+    console.error("Auth callback code exchange failed:", error.message);
   }
 
   return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
