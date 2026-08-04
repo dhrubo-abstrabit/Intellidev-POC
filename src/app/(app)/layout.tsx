@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { signOut } from "@/app/(auth)/actions";
 import { Button } from "@/components/ui/button";
+import { Toaster } from "@/components/ui/toast";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   // Defense in depth: proxy.ts already redirects unauthenticated requests
@@ -20,6 +21,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </form>
       </header>
       <main>{children}</main>
+      <Toaster />
     </div>
   );
 }

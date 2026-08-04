@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
@@ -23,6 +24,10 @@ async function assertProjectMembership(workspaceId: string, projectId: string): 
   }
 }
 
+/** Kept as a redirecting action (not the toast/AsyncButton pattern the rest
+ * of this file uses) because redirect() only reliably triggers a real
+ * navigation when the action is invoked via a form submit — see
+ * ConnectSlackButton. */
 export async function connectSlack(workspaceId: string, projectId: string): Promise<void> {
   await requireUser();
   await assertProjectMembership(workspaceId, projectId);
@@ -31,7 +36,7 @@ export async function connectSlack(workspaceId: string, projectId: string): Prom
   redirect(getConnector("slack").getAuthorizeUrl!(state));
 }
 
-export async function connectMock(workspaceId: string, projectId: string): Promise<void> {
+export async function connectMock(workspaceId: string, projectId: string): Promise<{ message: string }> {
   const user = await requireUser();
   await assertProjectMembership(workspaceId, projectId);
 
@@ -63,17 +68,14 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
     metadata: { provider: "mock" },
   });
 
-  redirect(`/w/${workspaceId}/p/${projectId}/integrations`);
+  revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  revalidatePath(`/w/${workspaceId}/p/${projectId}`);
+  return { message: "Mock connector connected" };
 }
 
-export async function syncNow(workspaceId: string, projectId: string, formData: FormData): Promise<void> {
+export async function syncNow(workspaceId: string, projectId: string, integrationId: string): Promise<{ message: string }> {
   await requireUser();
   await assertProjectMembership(workspaceId, projectId);
-
-  const integrationId = formData.get("integrationId");
-  if (typeof integrationId !== "string" || !integrationId) {
-    throw new Error("Missing integration id.");
-  }
 
   // Publishes to QStash, which then calls our own /api/jobs/sync back over
   // the public internet — this only actually delivers once NEXT_PUBLIC_APP_URL
@@ -88,17 +90,17 @@ export async function syncNow(workspaceId: string, projectId: string, formData: 
     throw new Error(`Could not queue a sync: ${message}`);
   }
 
-  redirect(`/w/${workspaceId}/p/${projectId}/integrations`);
+  revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  return { message: "Sync queued" };
 }
 
-export async function disconnectIntegration(workspaceId: string, projectId: string, formData: FormData): Promise<void> {
+export async function disconnectIntegration(
+  workspaceId: string,
+  projectId: string,
+  integrationId: string,
+): Promise<{ message: string }> {
   const user = await requireUser();
   await assertProjectMembership(workspaceId, projectId);
-
-  const integrationId = formData.get("integrationId");
-  if (typeof integrationId !== "string" || !integrationId) {
-    throw new Error("Missing integration id.");
-  }
 
   const service = createServiceClient();
   const { data: integration } = await service
@@ -166,5 +168,7 @@ export async function disconnectIntegration(workspaceId: string, projectId: stri
     metadata: { provider: integration.provider },
   });
 
-  redirect(`/w/${workspaceId}/p/${projectId}/integrations`);
+  revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  revalidatePath(`/w/${workspaceId}/p/${projectId}`);
+  return { message: "Integration disconnected" };
 }

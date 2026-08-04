@@ -10,15 +10,10 @@ type ActionItemStatus = Database["public"]["Enums"]["action_item_status"];
 async function setStatus(
   workspaceId: string,
   projectId: string,
-  formData: FormData,
+  itemId: string,
   status: ActionItemStatus,
-): Promise<void> {
+): Promise<{ message: string }> {
   await requireUser();
-
-  const itemId = formData.get("itemId");
-  if (typeof itemId !== "string" || !itemId) {
-    throw new Error("Missing action item id.");
-  }
 
   // User-scoped client, not service — action_items_update's RLS policy plus
   // the column-scoped grant (status/assignee_id/snoozed_until/resolved_at/
@@ -37,12 +32,13 @@ async function setStatus(
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/items`);
   revalidatePath(`/w/${workspaceId}/p/${projectId}`);
+  return { message: status === "done" ? "Marked as done" : "Dismissed" };
 }
 
-export async function completeActionItem(workspaceId: string, projectId: string, formData: FormData): Promise<void> {
-  await setStatus(workspaceId, projectId, formData, "done");
+export async function completeActionItem(workspaceId: string, projectId: string, itemId: string): Promise<{ message: string }> {
+  return setStatus(workspaceId, projectId, itemId, "done");
 }
 
-export async function dismissActionItem(workspaceId: string, projectId: string, formData: FormData): Promise<void> {
-  await setStatus(workspaceId, projectId, formData, "dismissed");
+export async function dismissActionItem(workspaceId: string, projectId: string, itemId: string): Promise<{ message: string }> {
+  return setStatus(workspaceId, projectId, itemId, "dismissed");
 }

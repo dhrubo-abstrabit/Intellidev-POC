@@ -1,7 +1,8 @@
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
+import { AsyncButton } from "@/components/dashboard/async-button";
+import { ConfirmActionButton } from "@/components/dashboard/confirm-action-button";
 import { completeActionItem, dismissActionItem } from "./actions";
 
 const PRIORITY_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -55,18 +56,23 @@ export default async function ActionItemsPage({
               <CardContent className="space-y-3">
                 {item.description ? <p className="text-sm text-muted-foreground">{item.description}</p> : null}
                 <div className="flex gap-2">
-                  <form action={completeActionItem.bind(null, workspaceId, projectId)}>
-                    <input type="hidden" name="itemId" value={item.id} />
-                    <Button type="submit" size="sm" data-testid={`complete-${item.id}`}>
-                      Complete
-                    </Button>
-                  </form>
-                  <form action={dismissActionItem.bind(null, workspaceId, projectId)}>
-                    <input type="hidden" name="itemId" value={item.id} />
-                    <Button type="submit" size="sm" variant="outline" data-testid={`dismiss-${item.id}`}>
-                      Dismiss
-                    </Button>
-                  </form>
+                  <AsyncButton
+                    action={completeActionItem.bind(null, workspaceId, projectId, item.id)}
+                    loadingMessage="Marking as done…"
+                    size="sm"
+                    data-testid={`complete-${item.id}`}
+                  >
+                    Complete
+                  </AsyncButton>
+                  <ConfirmActionButton
+                    action={dismissActionItem.bind(null, workspaceId, projectId, item.id)}
+                    triggerLabel="Dismiss"
+                    confirmLabel="Dismiss"
+                    loadingMessage="Dismissing…"
+                    title="Dismiss this action item?"
+                    description="It will be removed from your open items. This can't be undone from the UI."
+                    data-testid={`dismiss-${item.id}`}
+                  />
                 </div>
               </CardContent>
             </Card>

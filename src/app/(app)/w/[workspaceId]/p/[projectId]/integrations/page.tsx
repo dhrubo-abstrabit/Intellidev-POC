@@ -1,8 +1,10 @@
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
 import { listConnectors } from "@/connectors/registry";
+import { AsyncButton } from "@/components/dashboard/async-button";
+import { ConfirmActionButton } from "@/components/dashboard/confirm-action-button";
+import { ConnectSlackButton } from "@/components/dashboard/connect-slack-button";
 import { connectMock, connectSlack, disconnectIntegration, syncNow } from "./actions";
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -69,18 +71,23 @@ export default async function IntegrationsPage({
                   {integration.last_error ? <p className="text-destructive">{integration.last_error}</p> : null}
                   {integration.status !== "disconnected" && integration.status !== "revoked" ? (
                     <div className="flex gap-2">
-                      <form action={syncNow.bind(null, workspaceId, projectId)}>
-                        <input type="hidden" name="integrationId" value={integration.id} />
-                        <Button type="submit" size="sm" data-testid={`sync-${integration.provider}`}>
-                          Sync now
-                        </Button>
-                      </form>
-                      <form action={disconnectIntegration.bind(null, workspaceId, projectId)}>
-                        <input type="hidden" name="integrationId" value={integration.id} />
-                        <Button type="submit" variant="outline" size="sm" data-testid={`disconnect-${integration.provider}`}>
-                          Disconnect
-                        </Button>
-                      </form>
+                      <AsyncButton
+                        action={syncNow.bind(null, workspaceId, projectId, integration.id)}
+                        loadingMessage="Queuing sync…"
+                        size="sm"
+                        data-testid={`sync-${integration.provider}`}
+                      >
+                        Sync now
+                      </AsyncButton>
+                      <ConfirmActionButton
+                        action={disconnectIntegration.bind(null, workspaceId, projectId, integration.id)}
+                        triggerLabel="Disconnect"
+                        confirmLabel="Disconnect"
+                        loadingMessage="Disconnecting…"
+                        title={`Disconnect ${integration.display_name ?? integration.provider}?`}
+                        description="This revokes access and stops future syncs. You can reconnect later."
+                        data-testid={`disconnect-${integration.provider}`}
+                      />
                     </div>
                   ) : null}
                 </CardContent>
@@ -102,16 +109,18 @@ export default async function IntegrationsPage({
                 <CardContent>
                   {connector.id === "slack" ? (
                     <form action={connectSlack.bind(null, workspaceId, projectId)}>
-                      <Button type="submit" size="sm" data-testid="connect-slack">
-                        Connect
-                      </Button>
+                      <ConnectSlackButton />
                     </form>
                   ) : connector.id === "mock" ? (
-                    <form action={connectMock.bind(null, workspaceId, projectId)}>
-                      <Button type="submit" size="sm" variant="outline" data-testid="connect-mock">
-                        Connect
-                      </Button>
-                    </form>
+                    <AsyncButton
+                      action={connectMock.bind(null, workspaceId, projectId)}
+                      loadingMessage="Connecting…"
+                      size="sm"
+                      variant="outline"
+                      data-testid="connect-mock"
+                    >
+                      Connect
+                    </AsyncButton>
                   ) : null}
                 </CardContent>
               </Card>
