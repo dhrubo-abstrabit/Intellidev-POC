@@ -30,7 +30,7 @@ export function ListView({
   }
 
   return (
-    <Card>
+    <Card className="p-0">
       <Table>
         <TableHeader>
           <TableRow>
