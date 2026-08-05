@@ -60,3 +60,18 @@ export const STATUS_LABEL: Record<ActionItemStatus, string> = {
   dismissed: "Dismissed",
   snoozed: "Snoozed",
 };
+
+export const PRIORITY_LABEL: Record<ActionItemPriority, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};
+
+export const KIND_LABEL: Record<ActionItemKind, string> = {
+  action: "Action",
+  risk: "Risk",
+  blocker: "Blocker",
+  update: "Update",
+  follow_up: "Follow Up",
+};

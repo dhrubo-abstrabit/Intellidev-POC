@@ -3,7 +3,7 @@
 import { useTransition } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
-import type { ActionItemPriority } from "@/components/items/types";
+import { PRIORITY_LABEL, type ActionItemPriority } from "@/components/items/types";
 import { ALL_PRIORITIES } from "./filters";
 import { updateActionItemPriority } from "./actions";
 
@@ -33,15 +33,24 @@ export function PriorityPicker({
     });
   }
 
+  // See assignee-picker.tsx's comment: Select.Value needs the `items` map to
+  // render "High" instead of "high" for a value it didn't see clicked live.
+  const items = ALL_PRIORITIES.map((p) => ({ label: PRIORITY_LABEL[p], value: p }));
+
   return (
-    <Select value={priority} onValueChange={(value) => handleChange(value as ActionItemPriority)} disabled={isPending}>
+    <Select
+      items={items}
+      value={priority}
+      onValueChange={(value) => handleChange(value as ActionItemPriority)}
+      disabled={isPending}
+    >
       <SelectTrigger size="sm" className="w-28">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
         {ALL_PRIORITIES.map((p) => (
           <SelectItem key={p} value={p}>
-            {p}
+            {PRIORITY_LABEL[p]}
           </SelectItem>
         ))}
       </SelectContent>
