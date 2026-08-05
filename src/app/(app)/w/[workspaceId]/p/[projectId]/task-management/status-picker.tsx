@@ -33,8 +33,14 @@ export function StatusPicker({
     });
   }
 
+  // See assignee-picker.tsx's comment: Select.Value needs the `items` map to
+  // render "In Progress" instead of "in_progress" for a value it didn't see
+  // clicked live.
+  const items = BOARD_STATUSES.map((boardStatus) => ({ label: STATUS_LABEL[boardStatus], value: boardStatus }));
+
   return (
     <Select
+      items={items}
       value={isBoardStatus ? status : undefined}
       onValueChange={(value) => handleChange(value as BoardStatus)}
       disabled={isPending}

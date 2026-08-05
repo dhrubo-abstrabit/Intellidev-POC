@@ -73,6 +73,7 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Kind</span>
         <Select
+          items={[{ label: "All kinds", value: ALL }, ...ALL_KINDS.map((kind) => ({ label: kind.replace("_", " "), value: kind }))]}
           value={filters.kind[0] ?? ALL}
           onValueChange={(value) => updateParam("kind", String(value) === ALL ? null : String(value))}
         >
@@ -92,6 +93,11 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Assignee</span>
         <Select
+          items={[
+            { label: "Everyone", value: ALL },
+            { label: "Unassigned", value: "unassigned" },
+            ...members.map((member) => ({ label: member.full_name ?? member.email, value: member.id })),
+          ]}
           value={filters.assignee ?? ALL}
           onValueChange={(value) => updateParam("assignee", String(value) === ALL ? null : String(value))}
         >

@@ -41,6 +41,18 @@ export type WorkspaceMember = {
   avatar_url: string | null;
 };
 
+/** One normalized_events row (a Slack message, etc.) linked to an action
+ * item via action_item_source_events — the "why was this created" trail. */
+export type SourceEvent = {
+  id: string;
+  type: string;
+  actor: string | null;
+  actorDisplay: string | null;
+  title: string | null;
+  body: string | null;
+  occurredAt: string;
+};
+
 export const STATUS_LABEL: Record<ActionItemStatus, string> = {
   pending: "Pending",
   in_progress: "In Progress",

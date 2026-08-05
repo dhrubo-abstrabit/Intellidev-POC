@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { BOARD_STATUSES, type ActionItemRow, type WorkspaceMember } from "@/components/items/types";
+import { BOARD_STATUSES, type ActionItemRow, type SourceEvent, type WorkspaceMember } from "@/components/items/types";
 import { parseTaskManagementSearchParams } from "./filters";
 import { ViewToggle } from "./view-toggle";
 import { ItemFilters } from "./item-filters";
 import { ListView } from "./list-view";
 import { BoardView } from "./board-view";
+import { TaskDetailSheet } from "./task-detail-sheet";
 
 export default async function TaskManagementPage({
   params,
@@ -15,7 +16,9 @@ export default async function TaskManagementPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { workspaceId, projectId } = await params;
-  const filters = parseTaskManagementSearchParams(await searchParams);
+  const rawSearchParams = await searchParams;
+  const filters = parseTaskManagementSearchParams(rawSearchParams);
+  const openItemId = Array.isArray(rawSearchParams.item) ? rawSearchParams.item[0] : rawSearchParams.item;
   const supabase = await createClient();
 
   let itemsQuery = supabase
@@ -69,12 +72,38 @@ export default async function TaskManagementPage({
     .filter((user): user is NonNullable<typeof user> => user !== null);
 
   const rows: ActionItemRow[] = (items ?? []).map((item) => ({ ...item, assignee: item.assignee ?? null }));
+  const openItem = rows.find((row) => row.id === openItemId) ?? null;
+
+  // Only fetched when a detail sheet is actually open, and only for that one
+  // item — the "why was this created" trail back to the Slack messages that
+  // generated it, not something every row in the list/board needs.
+  let sourceEvents: SourceEvent[] = [];
+  if (openItem) {
+    const { data: sourceRows } = await supabase
+      .from("action_item_source_events")
+      .select("normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
+      .eq("action_item_id", openItem.id);
+
+    sourceEvents = (sourceRows ?? [])
+      .map((row) => row.normalized_events)
+      .filter((event): event is NonNullable<typeof event> => event !== null)
+      .map((event) => ({
+        id: event.id,
+        type: event.type,
+        actor: event.actor,
+        actorDisplay: event.actor_display,
+        title: event.title,
+        body: event.body,
+        occurredAt: event.occurred_at,
+      }))
+      .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-lg font-semibold">Task Management</h1>
+          <h1 className="text-lg font-semibold">Task Tracking</h1>
           <p className="text-sm text-muted-foreground">Assign and track action items</p>
         </div>
         <ViewToggle view={filters.view} />
@@ -94,6 +123,14 @@ export default async function TaskManagementPage({
       ) : (
         <ListView workspaceId={workspaceId} projectId={projectId} items={rows} members={members} />
       )}
+
+      <TaskDetailSheet
+        item={openItem}
+        sourceEvents={sourceEvents}
+        workspaceId={workspaceId}
+        projectId={projectId}
+        members={members}
+      />
     </div>
   );
 }

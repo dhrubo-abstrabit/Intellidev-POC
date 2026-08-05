@@ -2,10 +2,11 @@
 
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVerticalIcon } from "lucide-react";
+import { GripVerticalIcon, MaximizeIcon } from "lucide-react";
 import { PriorityBadge } from "@/components/items/status-badge";
 import type { ActionItemRow, WorkspaceMember } from "@/components/items/types";
 import { cn } from "@/lib/utils";
+import { OpenTaskLink } from "./open-task-link";
 
 function assigneeNameFor(item: ActionItemRow, members: WorkspaceMember[]): string | null {
   return item.assignee?.full_name ?? members.find((member) => member.id === item.assignee_id)?.full_name ?? null;
@@ -45,7 +46,21 @@ export function BoardCard({ item, members }: { item: ActionItemRow; members: Wor
     >
       <div className="flex items-start justify-between gap-2">
         <p className="font-medium">{item.title}</p>
-        <GripVerticalIcon className="mt-0.5 size-4 shrink-0 cursor-grab text-muted-foreground" aria-hidden="true" />
+        <div className="flex shrink-0 items-center gap-1">
+          {/* Whole card is the drag handle (attributes/listeners spread on
+           * the outer div above) — stop the pointerdown here so opening
+           * details doesn't get swallowed by dnd-kit's drag detection. */}
+          <OpenTaskLink
+            itemId={item.id}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="View details"
+            data-testid={`open-task-${item.id}`}
+          >
+            <MaximizeIcon className="size-3.5" aria-hidden="true" />
+          </OpenTaskLink>
+          <GripVerticalIcon className="mt-0.5 size-4 cursor-grab text-muted-foreground" aria-hidden="true" />
+        </div>
       </div>
       <div className="flex items-center justify-between gap-2">
         <PriorityBadge priority={item.priority} />

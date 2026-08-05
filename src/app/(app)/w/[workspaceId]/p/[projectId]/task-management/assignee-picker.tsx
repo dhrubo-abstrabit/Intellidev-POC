@@ -37,8 +37,22 @@ export function AssigneePicker({
     });
   }
 
+  // Select.Value can only render the name instead of the raw id when it
+  // knows the full value->label mapping up front — without `items`, a value
+  // set from a prop (rather than clicked live in this session) falls back
+  // to printing the raw id.
+  const items = [
+    { label: "Unassigned", value: UNASSIGNED },
+    ...members.map((member) => ({ label: member.full_name ?? member.email, value: member.id })),
+  ];
+
   return (
-    <Select value={assigneeId ?? UNASSIGNED} onValueChange={(value) => handleChange(String(value))} disabled={isPending}>
+    <Select
+      items={items}
+      value={assigneeId ?? UNASSIGNED}
+      onValueChange={(value) => handleChange(String(value))}
+      disabled={isPending}
+    >
       <SelectTrigger size="sm" className="w-36">
         <SelectValue placeholder="Unassigned" />
       </SelectTrigger>

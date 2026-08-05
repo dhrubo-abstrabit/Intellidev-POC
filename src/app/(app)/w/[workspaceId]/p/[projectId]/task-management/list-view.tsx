@@ -1,10 +1,12 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatItemDate } from "@/components/items/format";
 import type { ActionItemRow, WorkspaceMember } from "@/components/items/types";
 import { StatusPicker } from "./status-picker";
 import { PriorityPicker } from "./priority-picker";
 import { AssigneePicker } from "./assignee-picker";
 import { SnoozeButton } from "./snooze-button";
+import { OpenTaskLink } from "./open-task-link";
 
 export function ListView({
   workspaceId,
@@ -44,7 +46,9 @@ export function ListView({
           {items.map((item) => (
             <TableRow key={item.id} data-testid={`task-row-${item.id}`}>
               <TableCell className="max-w-xs whitespace-normal">
-                <div className="font-medium">{item.title}</div>
+                <OpenTaskLink itemId={item.id} className="font-medium hover:underline" data-testid={`open-task-${item.id}`}>
+                  {item.title}
+                </OpenTaskLink>
                 {item.description ? (
                   <div className="line-clamp-1 text-xs text-muted-foreground">{item.description}</div>
                 ) : null}
@@ -69,7 +73,7 @@ export function ListView({
                   members={members}
                 />
               </TableCell>
-              <TableCell className="text-xs text-muted-foreground">{item.for_date}</TableCell>
+              <TableCell className="text-xs text-muted-foreground">{formatItemDate(item.for_date)}</TableCell>
               <TableCell>
                 <SnoozeButton workspaceId={workspaceId} projectId={projectId} itemId={item.id} />
               </TableCell>
