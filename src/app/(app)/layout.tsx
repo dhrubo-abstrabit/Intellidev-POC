@@ -1,6 +1,4 @@
 import { requireUser } from "@/lib/auth";
-import { signOut } from "@/app/(auth)/actions";
-import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toast";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -10,16 +8,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // this call is what actually enforces the boundary for this whole subtree.
   await requireUser();
 
+  // No header here: it's rendered by each child route instead (see
+  // components/dashboard/app-header.tsx) since only they know whether a
+  // workspace switcher belongs beside it.
   return (
     <div className="min-h-screen">
-      <header className="flex items-center justify-between border-b px-6 py-3">
-        <span className="font-semibold">Intellidev</span>
-        <form action={signOut}>
-          <Button type="submit" variant="ghost" size="sm">
-            Sign out
-          </Button>
-        </form>
-      </header>
       <main>{children}</main>
       <Toaster />
     </div>

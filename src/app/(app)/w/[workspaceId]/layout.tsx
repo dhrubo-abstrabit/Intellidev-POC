@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { WorkspaceSwitcher } from "@/components/dashboard/workspace-switcher";
+import { AppHeader } from "@/components/dashboard/app-header";
 
 export default async function WorkspaceLayout({
   children,
@@ -26,9 +27,7 @@ export default async function WorkspaceLayout({
 
   return (
     <div>
-      <div className="border-b px-6 py-3">
-        <WorkspaceSwitcher current={current} workspaces={allWorkspaces ?? []} />
-      </div>
+      <AppHeader workspaceSwitcher={<WorkspaceSwitcher current={current} workspaces={allWorkspaces ?? []} />} />
       <div className="p-6">{children}</div>
     </div>
   );
