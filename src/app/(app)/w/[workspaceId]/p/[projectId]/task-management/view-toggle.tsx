@@ -33,7 +33,7 @@ export function ViewToggle({ view }: { view: TaskManagementView }) {
         size="sm"
       >
         <LayoutGridIcon aria-hidden="true" />
-        Kanban
+        Board
       </Button>
     </div>
   );

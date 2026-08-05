@@ -41,7 +41,9 @@ function first(value: string | string[] | undefined): string | undefined {
 export function parseTaskManagementSearchParams(
   raw: Record<string, string | string[] | undefined>,
 ): TaskManagementFilters {
-  const view: TaskManagementView = first(raw.view) === "kanban" ? "kanban" : "list";
+  // Board is the default view — an explicit ?view=list is what opts into
+  // the list view, everything else (including no param at all) is board.
+  const view: TaskManagementView = first(raw.view) === "list" ? "list" : "kanban";
   const sort: TaskManagementSort = first(raw.sort) === "priority" ? "priority" : "for_date";
   const statusRaw = first(raw.status);
 

@@ -2,16 +2,25 @@ import { describe, expect, it } from "vitest";
 import { parseTaskManagementSearchParams } from "./filters";
 
 describe("parseTaskManagementSearchParams", () => {
-  it("defaults to list view, no filters, and the pending/in_progress status set", () => {
+  it("defaults to board (kanban) view with no filters", () => {
     expect(parseTaskManagementSearchParams({})).toEqual({
-      view: "list",
+      view: "kanban",
       q: "",
       priority: [],
       assignee: null,
       kind: [],
       sort: "for_date",
-      status: ["pending", "in_progress"],
+      status: [],
     });
+  });
+
+  it("falls back to board view for anything other than an explicit view=list", () => {
+    expect(parseTaskManagementSearchParams({ view: "bogus" }).view).toBe("kanban");
+    expect(parseTaskManagementSearchParams({ view: "list" }).view).toBe("list");
+  });
+
+  it("defaults list view to the pending/in_progress status set", () => {
+    expect(parseTaskManagementSearchParams({ view: "list" }).status).toEqual(["pending", "in_progress"]);
   });
 
   it("trims search text", () => {
@@ -25,7 +34,7 @@ describe("parseTaskManagementSearchParams", () => {
   });
 
   it("respects an explicit status filter in list view", () => {
-    expect(parseTaskManagementSearchParams({ status: "snoozed" }).status).toEqual(["snoozed"]);
+    expect(parseTaskManagementSearchParams({ view: "list", status: "snoozed" }).status).toEqual(["snoozed"]);
   });
 
   it("ignores a status param when view=kanban rather than erroring", () => {

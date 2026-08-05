@@ -43,7 +43,7 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
   }, [q]);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-end gap-2">
       <Input
         placeholder="Search title…"
         value={q}
@@ -51,55 +51,64 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
         className="h-8 w-48"
         data-testid="item-filter-search"
       />
-      <Select
-        value={filters.priority[0] ?? ALL}
-        onValueChange={(value) => updateParam("priority", String(value) === ALL ? null : String(value))}
-      >
-        <SelectTrigger size="sm">
-          <SelectValue placeholder="Priority" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>All priorities</SelectItem>
-          {ALL_PRIORITIES.map((priority) => (
-            <SelectItem key={priority} value={priority}>
-              {priority}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Select
-        value={filters.kind[0] ?? ALL}
-        onValueChange={(value) => updateParam("kind", String(value) === ALL ? null : String(value))}
-      >
-        <SelectTrigger size="sm">
-          <SelectValue placeholder="Kind" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>All kinds</SelectItem>
-          {ALL_KINDS.map((kind) => (
-            <SelectItem key={kind} value={kind}>
-              {kind.replace("_", " ")}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Select
-        value={filters.assignee ?? ALL}
-        onValueChange={(value) => updateParam("assignee", String(value) === ALL ? null : String(value))}
-      >
-        <SelectTrigger size="sm">
-          <SelectValue placeholder="Assignee" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>Everyone</SelectItem>
-          <SelectItem value="unassigned">Unassigned</SelectItem>
-          {members.map((member) => (
-            <SelectItem key={member.id} value={member.id}>
-              {member.full_name ?? member.email}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Priority</span>
+        <Select
+          value={filters.priority[0] ?? ALL}
+          onValueChange={(value) => updateParam("priority", String(value) === ALL ? null : String(value))}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue placeholder="Priority" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All priorities</SelectItem>
+            {ALL_PRIORITIES.map((priority) => (
+              <SelectItem key={priority} value={priority}>
+                {priority}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Kind</span>
+        <Select
+          value={filters.kind[0] ?? ALL}
+          onValueChange={(value) => updateParam("kind", String(value) === ALL ? null : String(value))}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue placeholder="Kind" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All kinds</SelectItem>
+            {ALL_KINDS.map((kind) => (
+              <SelectItem key={kind} value={kind}>
+                {kind.replace("_", " ")}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Assignee</span>
+        <Select
+          value={filters.assignee ?? ALL}
+          onValueChange={(value) => updateParam("assignee", String(value) === ALL ? null : String(value))}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue placeholder="Assignee" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>Everyone</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {members.map((member) => (
+              <SelectItem key={member.id} value={member.id}>
+                {member.full_name ?? member.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
     </div>
   );
 }

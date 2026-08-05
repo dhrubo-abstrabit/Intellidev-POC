@@ -75,7 +75,7 @@ export default async function TaskManagementPage({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-lg font-semibold">Task Management</h1>
-          <p className="text-sm text-muted-foreground">Assign and track action items via list or board.</p>
+          <p className="text-sm text-muted-foreground">Assign and track action items</p>
         </div>
         <ViewToggle view={filters.view} />
       </div>
