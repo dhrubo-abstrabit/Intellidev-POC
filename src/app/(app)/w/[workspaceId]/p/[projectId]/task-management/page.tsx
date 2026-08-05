@@ -119,7 +119,13 @@ export default async function TaskManagementPage({
       </div>
 
       {filters.view === "kanban" ? (
-        <BoardView workspaceId={workspaceId} projectId={projectId} items={rows} members={members} />
+        <BoardView
+          key={JSON.stringify({ q: filters.q, priority: filters.priority, kind: filters.kind, assignee: filters.assignee, sort: filters.sort })}
+          workspaceId={workspaceId}
+          projectId={projectId}
+          items={rows}
+          members={members}
+        />
       ) : (
         <ListView workspaceId={workspaceId} projectId={projectId} items={rows} members={members} />
       )}
