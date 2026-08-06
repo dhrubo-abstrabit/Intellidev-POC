@@ -37,6 +37,64 @@ interface SlackApiResponse {
   authed_user?: Record<string, unknown>;
   channels?: Array<{ id: string; name?: string; is_member?: boolean }>;
   messages?: Array<{ ts: string } & Record<string, unknown>>;
+  members?: Array<{
+    id: string;
+    name?: string;
+    real_name?: string;
+    profile?: { display_name?: string; email?: string };
+  }>;
+  response_metadata?: { next_cursor?: string };
+}
+
+/** One users.list pass per sync (paginated), not one users.info call per
+ * message — the per-message actor is just an id, so this resolves the whole
+ * directory once, cheaply, using the users:read scope already in
+ * BOT_SCOPES. Email is deliberately not requested here: it needs the
+ * separate users:read.email scope, which an already-connected workspace
+ * would need a disconnect+reconnect to pick up (see CLAUDE.md > Slack
+ * connector specifics) — display_name/real_name/name all come from
+ * users:read alone. A failed or partial directory degrades to no
+ * enrichment, not a thrown error: a broken lookup shouldn't block message
+ * sync. */
+const USER_DIRECTORY_PAGE_LIMIT = 10; // 10 * 200 = 2000 users — comfortably above any real workspace
+
+async function fetchUserDirectory(accessToken: string): Promise<Map<string, { displayName?: string }>> {
+  const directory = new Map<string, { displayName?: string }>();
+  let cursor = "";
+  for (let page = 0; page < USER_DIRECTORY_PAGE_LIMIT; page++) {
+    const res = await slackApiGet("users.list", { limit: "200", ...(cursor ? { cursor } : {}) }, accessToken);
+    if (!res.ok) break;
+    for (const user of res.members ?? []) {
+      const displayName = user.profile?.display_name || user.real_name || user.name;
+      directory.set(user.id, { displayName });
+    }
+    cursor = res.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return directory;
+}
+
+// <@U123>, <@U123|somelabel> (Slack still sends the |label form on older
+// messages even though clients no longer show it), <#C123|channel-name>,
+// and <!here>/<!channel>/<!everyone>.
+const USER_MENTION_PATTERN = /<@([A-Z0-9]+)(?:\|[^>]*)?>/g;
+const CHANNEL_MENTION_PATTERN = /<#[A-Z0-9]+\|([^>]*)>/g;
+const SPECIAL_MENTION_PATTERN = /<!(here|channel|everyone)>/g;
+
+/** Slack's raw message text carries mentions as opaque ids (`<@U0BKD91TKFW>`)
+ * — its own clients resolve these for display but the Web API never does.
+ * Resolved here (I/O-adjacent: needs the directory fetchSince already
+ * built) rather than in normalize(), which stays pure/no-I/O. Channel
+ * mentions need no directory lookup — Slack already inlines the name after
+ * the `|`. */
+function resolveMentions(text: string, directory: Map<string, { displayName?: string }>): string {
+  return text
+    .replace(USER_MENTION_PATTERN, (match, userId: string) => {
+      const displayName = directory.get(userId)?.displayName;
+      return displayName ? `@${displayName}` : match;
+    })
+    .replace(CHANNEL_MENTION_PATTERN, (_match, channelName: string) => `#${channelName}`)
+    .replace(SPECIAL_MENTION_PATTERN, (_match, kind: string) => `@${kind}`);
 }
 
 /** One cursor per integration (scope_key='default'), internally tracking
@@ -143,6 +201,11 @@ export const slackConnector: Connector<SlackCursor> = {
     const channelCursors = { ...(cursor?.channelCursors ?? {}) };
     const rawPayloads: RawPayload[] = [];
 
+    const userDirectory = await fetchUserDirectory(accessToken).catch((err: unknown) => {
+      console.warn("[slack] failed to fetch user directory — actors will show as raw ids:", err);
+      return new Map<string, { displayName?: string }>();
+    });
+
     const channelsRes = await slackApiGet(
       "conversations.list",
       { types: "public_channel,private_channel", limit: "200" },
@@ -168,10 +231,18 @@ export const slackConnector: Connector<SlackCursor> = {
 
       let highestTs = oldest;
       for (const message of historyRes.messages ?? []) {
+        const actorId = typeof message.user === "string" ? message.user : undefined;
+        const actorInfo = actorId ? userDirectory.get(actorId) : undefined;
         rawPayloads.push({
           providerEventId: `${channel.id}:${message.ts}`,
           occurredAt: new Date(Number(message.ts) * 1000),
-          payload: { ...message, channel_id: channel.id, channel_name: channel.name },
+          payload: {
+            ...message,
+            channel_id: channel.id,
+            channel_name: channel.name,
+            user_display_name: actorInfo?.displayName,
+            text_resolved: typeof message.text === "string" ? resolveMentions(message.text, userDirectory) : undefined,
+          },
         });
         if (!highestTs || Number(message.ts) > Number(highestTs)) {
           highestTs = message.ts;
@@ -195,6 +266,11 @@ export const slackConnector: Connector<SlackCursor> = {
       channel_id: string;
       channel_name?: string;
       subtype?: string;
+      // Both resolved in fetchSince (I/O, allowed there) from a one-time
+      // users.list call — normalize() itself stays pure/no-I/O, so it can
+      // only read what fetchSince already attached to the payload.
+      user_display_name?: string;
+      text_resolved?: string;
     };
 
     // Skip channel-join/leave and other bookkeeping subtypes — they're not
@@ -205,10 +281,11 @@ export const slackConnector: Connector<SlackCursor> = {
       {
         type: "message.posted",
         actor: message.user,
+        actorDisplay: message.user_display_name,
         resource: `slack-channel:${message.channel_id}`,
         resourceType: "channel",
         title: message.channel_name ? `#${message.channel_name}` : undefined,
-        body: message.text,
+        body: message.text_resolved ?? message.text,
         occurredAt: raw.occurredAt ?? new Date(),
         metadata: { channel_id: message.channel_id, channel_name: message.channel_name },
         dedupeKey: `message.posted:${message.channel_id}:${message.ts}`,

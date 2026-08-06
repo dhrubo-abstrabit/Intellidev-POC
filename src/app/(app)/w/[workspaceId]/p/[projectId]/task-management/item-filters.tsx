@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { WorkspaceMember } from "@/components/items/types";
+import { KIND_LABEL, PRIORITY_LABEL, type WorkspaceMember } from "@/components/items/types";
 import { ALL_KINDS, ALL_PRIORITIES, type TaskManagementFilters } from "./filters";
 
 const ALL = "all";
@@ -54,6 +54,7 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Priority</span>
         <Select
+          items={[{ label: "All Priorities", value: ALL }, ...ALL_PRIORITIES.map((priority) => ({ label: PRIORITY_LABEL[priority], value: priority }))]}
           value={filters.priority[0] ?? ALL}
           onValueChange={(value) => updateParam("priority", String(value) === ALL ? null : String(value))}
         >
@@ -61,10 +62,10 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
             <SelectValue placeholder="Priority" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All priorities</SelectItem>
+            <SelectItem value={ALL}>All Priorities</SelectItem>
             {ALL_PRIORITIES.map((priority) => (
               <SelectItem key={priority} value={priority}>
-                {priority}
+                {PRIORITY_LABEL[priority]}
               </SelectItem>
             ))}
           </SelectContent>
@@ -73,7 +74,7 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Kind</span>
         <Select
-          items={[{ label: "All kinds", value: ALL }, ...ALL_KINDS.map((kind) => ({ label: kind.replace("_", " "), value: kind }))]}
+          items={[{ label: "All Kinds", value: ALL }, ...ALL_KINDS.map((kind) => ({ label: KIND_LABEL[kind], value: kind }))]}
           value={filters.kind[0] ?? ALL}
           onValueChange={(value) => updateParam("kind", String(value) === ALL ? null : String(value))}
         >
@@ -81,10 +82,10 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
             <SelectValue placeholder="Kind" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All kinds</SelectItem>
+            <SelectItem value={ALL}>All Kinds</SelectItem>
             {ALL_KINDS.map((kind) => (
               <SelectItem key={kind} value={kind}>
-                {kind.replace("_", " ")}
+                {KIND_LABEL[kind]}
               </SelectItem>
             ))}
           </SelectContent>
