@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { ConnectorId, ConnectorCredentials } from "@/connectors/types";
 import { googleChatConfigEntry } from "@/connectors/google_chat/config";
 import { googleDriveConfigEntry } from "@/connectors/google_drive/config";
+import { gmailConfigEntry } from "@/connectors/gmail/config";
 
 /**
  * Declarative description of one field in a connector's config form —
@@ -65,6 +66,7 @@ export interface ConnectorConfigSchema<T extends Record<string, unknown> = Recor
 const schemas: Partial<Record<ConnectorId, ConnectorConfigSchema>> = {
   google_chat: googleChatConfigEntry as ConnectorConfigSchema,
   google_drive: googleDriveConfigEntry as ConnectorConfigSchema,
+  gmail: gmailConfigEntry as ConnectorConfigSchema,
 };
 
 export function getConfigSchema(provider: ConnectorId): ConnectorConfigSchema | undefined {

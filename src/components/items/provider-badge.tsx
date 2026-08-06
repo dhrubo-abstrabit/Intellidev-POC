@@ -10,6 +10,7 @@ export const PROVIDER_LABEL: Record<ConnectorProvider, string> = {
   slack: "Slack",
   google_chat: "Google Chat",
   google_drive: "Google Drive",
+  gmail: "Gmail",
   clickup: "ClickUp",
   mock: "Mock",
 };
