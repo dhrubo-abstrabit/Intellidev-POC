@@ -40,6 +40,9 @@ export default async function ProjectLayout({
           <Link href={`/w/${workspaceId}/p/${projectId}/data`} className="hover:text-foreground">
             Project Data
           </Link>
+          <Link href={`/w/${workspaceId}/p/${projectId}/project-context`} className="hover:text-foreground">
+            Project Context
+          </Link>
           <Link href={`/w/${workspaceId}/p/${projectId}/task-management`} className="hover:text-foreground">
             Task Tracking
           </Link>
