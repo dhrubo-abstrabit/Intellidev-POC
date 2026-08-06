@@ -1,5 +1,6 @@
 import "server-only";
-import { slackEnv, publicEnv } from "@/lib/env";
+import { slackEnv } from "@/lib/env";
+import { oauthRedirectUri } from "@/lib/oauth/redirect";
 import type {
   Connector,
   ConnectorCredentials,
@@ -107,7 +108,7 @@ interface SlackCursor {
 }
 
 function redirectUri(): string {
-  return `${publicEnv().NEXT_PUBLIC_APP_URL}/api/oauth/slack/callback`;
+  return oauthRedirectUri("slack");
 }
 
 async function slackApiPost(method: string, params: Record<string, string>, accessToken?: string): Promise<SlackApiResponse> {

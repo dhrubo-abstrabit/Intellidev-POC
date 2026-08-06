@@ -32,10 +32,42 @@ const queueSchema = z.object({
   QSTASH_NEXT_SIGNING_KEY: z.string().min(1),
 });
 
+// SLACK_OAUTH_STATE_SECRET moved to oauthStateSchema below (it now signs
+// state for every OAuth provider, not just Slack) — this schema keeps only
+// what's Slack-specific.
 const slackSchema = z.object({
   SLACK_CLIENT_ID: z.string().min(1),
   SLACK_CLIENT_SECRET: z.string().min(1),
-  SLACK_OAUTH_STATE_SECRET: z.string().min(16),
+});
+
+// Distinct from the Slack/Google *sign-in* (Supabase Auth) secrets — this
+// signs the CSRF `state` param for the connector OAuth flow shared by
+// src/lib/oauth/*. `OAUTH_STATE_SECRET` is the canonical name; the fallback
+// to the old Slack-only var exists because Vercel env vars are write-only
+// once set (CLAUDE.md) — the already-deployed Slack secret's value can't be
+// read back to copy under the new name, but it can keep signing state
+// without any Vercel change.
+const oauthStateSchema = z
+  .object({
+    OAUTH_STATE_SECRET: z.string().min(16).optional(),
+    SLACK_OAUTH_STATE_SECRET: z.string().min(16).optional(),
+  })
+  .refine((v) => Boolean(v.OAUTH_STATE_SECRET ?? v.SLACK_OAUTH_STATE_SECRET), {
+    message: "Either OAUTH_STATE_SECRET or SLACK_OAUTH_STATE_SECRET must be set",
+  })
+  .transform((v) => ({ stateSecret: (v.OAUTH_STATE_SECRET ?? v.SLACK_OAUTH_STATE_SECRET)! }));
+
+// GOOGLE_CONNECTOR_* is deliberately separate from GOOGLE_OAUTH_CLIENT_ID/
+// SECRET (.env.example) — those are Supabase Auth *sign-in* credentials,
+// consumed only by `supabase config push`, never read by this app directly.
+// The connector app needs its own client so its redirect-URI allow-list
+// (three connector callbacks per origin) doesn't collide with Supabase
+// Auth's, and so rotating it can never sign users out. The two may point at
+// the same Google Cloud OAuth client if an operator prefers — this code
+// doesn't care, it just never reads GOOGLE_OAUTH_CLIENT_ID/SECRET.
+const googleSchema = z.object({
+  GOOGLE_CONNECTOR_CLIENT_ID: z.string().min(1),
+  GOOGLE_CONNECTOR_CLIENT_SECRET: z.string().min(1),
 });
 
 const llmSchema = z.object({
@@ -48,7 +80,12 @@ const serverSchema = cryptoSchema
   .extend(cronSchema.shape)
   .extend(queueSchema.shape)
   .extend(slackSchema.shape)
-  .extend(llmSchema.shape);
+  .extend(googleSchema.shape)
+  .extend(llmSchema.shape)
+  .extend({
+    OAUTH_STATE_SECRET: z.string().min(16).optional(),
+    SLACK_OAUTH_STATE_SECRET: z.string().min(16).optional(),
+  });
 
 const publicSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -103,6 +140,18 @@ export function queueEnv() {
 /** Just the Slack OAuth app credentials. */
 export function slackEnv() {
   return parseWith(slackSchema, "Slack");
+}
+
+/** The OAuth CSRF state-signing secret, shared by every connector's OAuth
+ * flow (src/lib/oauth/state.ts) — not Slack-specific despite the fallback
+ * env var name. */
+export function oauthStateEnv() {
+  return parseWith(oauthStateSchema, "OAuth state");
+}
+
+/** Just the Google connector app's OAuth client credentials. */
+export function googleEnv() {
+  return parseWith(googleSchema, "Google connector");
 }
 
 /** Just the LLM provider config. */

@@ -33,3 +33,26 @@ export async function requireUser(): Promise<AuthedUser> {
   }
   return user;
 }
+
+/**
+ * Throws unless the current user is a member of `workspaceId` AND
+ * `projectId` belongs to it — checked via the user-scoped Supabase client,
+ * so RLS's `is_workspace_member`-gated `projects` select policy IS the
+ * membership check (there's no separate authorization query to keep in
+ * sync). Membership only, not a role check — callers that need owner/admin
+ * rely on RLS write policies (e.g. `integrations_update_admin`) to enforce
+ * that, the same boundary `integrations/actions.ts` already used before
+ * this was extracted here for reuse across integrations/ and settings/.
+ */
+export async function assertProjectMembership(workspaceId: string, projectId: string): Promise<void> {
+  const supabase = await createClient();
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("id", projectId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  if (!project) {
+    throw new Error("Not a member of this workspace, or project not found.");
+  }
+}
