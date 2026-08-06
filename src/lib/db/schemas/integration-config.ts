@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ConnectorId, ConnectorCredentials } from "@/connectors/types";
+import { googleChatConfigEntry } from "@/connectors/google_chat/config";
 
 /**
  * Declarative description of one field in a connector's config form —
@@ -60,7 +61,9 @@ export interface ConnectorConfigSchema<T extends Record<string, unknown> = Recor
  * entry (a connector with no entry here simply renders no config form —
  * see integrations/page.tsx).
  */
-const schemas: Partial<Record<ConnectorId, ConnectorConfigSchema>> = {};
+const schemas: Partial<Record<ConnectorId, ConnectorConfigSchema>> = {
+  google_chat: googleChatConfigEntry as ConnectorConfigSchema,
+};
 
 export function getConfigSchema(provider: ConnectorId): ConnectorConfigSchema | undefined {
   return schemas[provider];
