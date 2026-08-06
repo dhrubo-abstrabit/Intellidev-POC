@@ -7,13 +7,20 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { updateProjectContext } from "./actions";
+import { extractFileText, updateProjectContext } from "./actions";
 
-const ACCEPTED_EXTENSIONS = [".txt", ".md", ".markdown"];
+const PLAIN_TEXT_EXTENSIONS = [".txt", ".md", ".markdown"];
+const EXTRACTABLE_EXTENSIONS = [".pdf", ".docx"];
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-function isAcceptedFile(file: File): boolean {
+function isPlainTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  return ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext)) || file.type.startsWith("text/");
+  return PLAIN_TEXT_EXTENSIONS.some((ext) => name.endsWith(ext)) || file.type.startsWith("text/");
+}
+
+function isExtractableFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return EXTRACTABLE_EXTENSIONS.some((ext) => name.endsWith(ext)) || file.type === "application/pdf" || file.type === DOCX_MIME;
 }
 
 export function ContextForm({
@@ -27,28 +34,51 @@ export function ContextForm({
 }) {
   const [value, setValue] = useState(initialValue);
   const [savedValue, setSavedValue] = useState(initialValue);
-  const [isPending, startTransition] = useTransition();
+  const [isSaving, startSaveTransition] = useTransition();
+  const [isExtracting, startExtractTransition] = useTransition();
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isDirty = value !== savedValue;
+  const isBusy = isSaving || isExtracting;
 
-  // Client-side only — reads the file's text and drops it straight into the
-  // textarea. No upload, no storage bucket: Save still just writes the
-  // resulting text to projects.description like typing it in would.
+  // Plain text is read instantly in the browser. PDF/.docx are binary
+  // formats FileReader can't meaningfully parse, so those go through a
+  // Server Action that extracts the text server-side and hands it back —
+  // nothing is uploaded/stored beyond that one round trip.
   function loadFile(file: File) {
-    if (!isAcceptedFile(file)) {
-      toast.add({ title: `${file.name} isn't a text file`, description: "Only .txt and .md are supported.", type: "error" });
+    if (isPlainTextFile(file)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setValue(String(reader.result ?? ""));
+        toast.add({ title: `Loaded ${file.name}`, description: "Review it below, then Save to apply.", type: "success" });
+      };
+      reader.onerror = () => {
+        toast.add({ title: `Could not read ${file.name}`, type: "error" });
+      };
+      reader.readAsText(file);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setValue(String(reader.result ?? ""));
-      toast.add({ title: `Loaded ${file.name}`, description: "Review it below, then Save to apply.", type: "success" });
-    };
-    reader.onerror = () => {
-      toast.add({ title: `Could not read ${file.name}`, type: "error" });
-    };
-    reader.readAsText(file);
+
+    if (isExtractableFile(file)) {
+      startExtractTransition(async () => {
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
+          const { text } = await extractFileText(formData);
+          setValue(text);
+          toast.add({ title: `Loaded ${file.name}`, description: "Review it below, then Save to apply.", type: "success" });
+        } catch (err) {
+          toast.add({ title: err instanceof Error ? err.message : `Could not read ${file.name}`, type: "error" });
+        }
+      });
+      return;
+    }
+
+    toast.add({
+      title: `${file.name} isn't supported`,
+      description: "Only .txt, .md, .pdf, and .docx are supported.",
+      type: "error",
+    });
   }
 
   function handleBrowseChange(event: ChangeEvent<HTMLInputElement>) {
@@ -65,7 +95,7 @@ export function ContextForm({
   }
 
   function handleSave() {
-    startTransition(async () => {
+    startSaveTransition(async () => {
       await toast
         .promise(updateProjectContext(workspaceId, projectId, value), {
           loading: "Saving…",
@@ -91,8 +121,9 @@ export function ContextForm({
         <Textarea
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          placeholder="What should the AI know about this project? Goals, terminology, who's who, anything that helps it write better action items. Type here, or drag/browse a .txt or .md file in."
+          placeholder="What should the AI know about this project? Goals, terminology, who's who, anything that helps it write better action items. Type here, or drag/browse a .txt, .md, .pdf, or .docx file in."
           className="min-h-56"
+          disabled={isExtracting}
           data-testid="project-context-textarea"
         />
       </div>
@@ -100,7 +131,7 @@ export function ContextForm({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.markdown,text/plain,text/markdown"
+        accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         onChange={handleBrowseChange}
         className="hidden"
       />
@@ -111,15 +142,16 @@ export function ContextForm({
           variant="outline"
           size="sm"
           onClick={() => fileInputRef.current?.click()}
+          disabled={isBusy}
           data-testid="project-context-browse"
         >
-          <UploadIcon aria-hidden="true" />
-          Browse…
+          {isExtracting ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : <UploadIcon aria-hidden="true" />}
+          {isExtracting ? "Reading…" : "Browse…"}
         </Button>
         <div className="flex items-center gap-2">
           {isDirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
-          <Button onClick={handleSave} disabled={isPending || !isDirty} data-testid="project-context-save">
-            {isPending ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
+          <Button onClick={handleSave} disabled={isBusy || !isDirty} data-testid="project-context-save">
+            {isSaving ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
             Save
           </Button>
         </div>
