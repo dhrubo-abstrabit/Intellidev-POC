@@ -90,7 +90,14 @@ const serverSchema = cryptoSchema
 const publicSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
-  NEXT_PUBLIC_APP_URL: z.string().url(),
+  // Optional here specifically so publicEnv() itself never throws over this
+  // field — it's read by client-safe code (createClient() in
+  // lib/supabase/browser.ts) that never touches NEXT_PUBLIC_APP_URL at all,
+  // and eagerly requiring it there would break the browser client whenever
+  // it's genuinely unset (a Preview deployment with no static value
+  // configured — see appUrl() below, which is where this is actually
+  // resolved and validated).
+  NEXT_PUBLIC_APP_URL: z.string().url().optional(),
 });
 
 type ServerEnv = z.infer<typeof serverSchema>;
@@ -167,4 +174,30 @@ export function publicEnv(): PublicEnv {
   if (cachedPublicEnv) return cachedPublicEnv;
   cachedPublicEnv = parseWith(publicSchema, "public");
   return cachedPublicEnv;
+}
+
+/**
+ * The app's own externally-reachable base URL — used to build OAuth
+ * redirect_uris and QStash callback URLs. SERVER-ONLY: reads
+ * `process.env.VERCEL_URL` directly, which (unlike a `NEXT_PUBLIC_` var)
+ * Next.js does not inline into client bundles, so this must never be
+ * called from a Client Component.
+ *
+ * `NEXT_PUBLIC_APP_URL` is used verbatim when set — Production always sets
+ * it explicitly, to its real custom domain (VERCEL_URL there is the
+ * internal `*.vercel.app` alias, not what any OAuth app has registered).
+ * When it's unset, falls back to Vercel's own per-deployment `VERCEL_URL`:
+ * Preview deployments get a fresh unique URL every deploy, so there is no
+ * single static value that's correct for the whole Preview environment —
+ * see CLAUDE.md's "Google connector specifics" for why a stale value here
+ * would silently break both OAuth callbacks and QStash-triggered syncs.
+ */
+export function appUrl(): string {
+  const explicit = publicEnv().NEXT_PUBLIC_APP_URL;
+  if (explicit) return explicit;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  throw new Error(
+    "NEXT_PUBLIC_APP_URL is not set, and VERCEL_URL is unavailable to derive it from " +
+      "(expected when running outside Vercel — set NEXT_PUBLIC_APP_URL explicitly, e.g. in .env.local).",
+  );
 }

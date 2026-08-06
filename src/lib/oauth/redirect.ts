@@ -1,4 +1,4 @@
-import { publicEnv } from "@/lib/env";
+import { appUrl } from "@/lib/env";
 import type { OAuthProvider } from "./providers";
 
 /**
@@ -9,9 +9,16 @@ import type { OAuthProvider } from "./providers";
  * moved from a static `api/oauth/slack/callback` folder to the dynamic
  * `api/oauth/[provider]/callback`, but both resolve the same public URL), so
  * migrating Slack onto this shared helper needs no dashboard change.
+ *
+ * On Preview (no static NEXT_PUBLIC_APP_URL configured), appUrl() derives
+ * this from the deployment's own VERCEL_URL — which fixes QStash callbacks
+ * automatically, but NOT third-party OAuth: Google/Slack still need this
+ * exact URL pre-registered in their consoles, which isn't practical for a
+ * URL that changes every deploy. A live OAuth connect on Preview needs a
+ * stable branch alias registered ahead of time; see CLAUDE.md.
  */
 export function oauthRedirectUri(provider: OAuthProvider): string {
-  return `${publicEnv().NEXT_PUBLIC_APP_URL}/api/oauth/${provider}/callback`;
+  return `${appUrl()}/api/oauth/${provider}/callback`;
 }
 
 /** Where the callback route sends the browser after finishing (or failing)

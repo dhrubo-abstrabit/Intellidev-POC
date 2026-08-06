@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { publicEnv } from "@/lib/env";
+import { appUrl } from "@/lib/env";
 
 const credentialsSchema = z.object({
   email: z.string().trim().email("Enter a valid email address"),
@@ -27,7 +27,7 @@ export async function signUpWithPassword(_prev: AuthActionResult, formData: Form
   const { data, error } = await supabase.auth.signUp({
     email: parsed.data.email,
     password: parsed.data.password,
-    options: { emailRedirectTo: `${publicEnv().NEXT_PUBLIC_APP_URL}/api/auth/callback` },
+    options: { emailRedirectTo: `${appUrl()}/api/auth/callback` },
   });
 
   if (error) {
@@ -71,7 +71,7 @@ export async function signInWithGoogle(): Promise<void> {
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo: `${publicEnv().NEXT_PUBLIC_APP_URL}/api/auth/callback` },
+    options: { redirectTo: `${appUrl()}/api/auth/callback` },
   });
 
   if (error || !data.url) {
