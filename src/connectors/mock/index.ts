@@ -16,6 +16,7 @@ const SAMPLE_MESSAGES = [
   "Shipped the fix for the flaky checkout test.",
   "Heads up: the weekly sync moved to Thursday.",
   "I think we should revisit the pricing tiers next sprint.",
+  "Meridian Corp moved their contract renewal call up to Thursday — need the updated pricing deck before then.",
 ];
 const BATCH_SIZE = 5;
 
