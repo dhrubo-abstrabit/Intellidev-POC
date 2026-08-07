@@ -7,7 +7,7 @@ export interface ProjectDataFilters {
   connector: ConnectorProvider | "all";
 }
 
-const ALL_CONNECTORS: ConnectorProvider[] = ["slack", "google_chat", "google_drive", "clickup", "mock"];
+const ALL_CONNECTORS: ConnectorProvider[] = ["slack", "google_chat", "google_drive", "gmail", "clickup", "mock"];
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function first(value: string | string[] | undefined): string | undefined {

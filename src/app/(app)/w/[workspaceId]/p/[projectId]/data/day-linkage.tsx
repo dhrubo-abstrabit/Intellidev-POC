@@ -37,23 +37,37 @@ export function DayLinkage({
 }) {
   const [focus, setFocus] = useState<Focus>(null);
 
+  // `focus` is deliberately not reset by a day/connector navigation (see the
+  // doc comment above) — but it must not survive past the data it points at.
+  // Derived at render time rather than reset via an effect: navigating to a
+  // day where the focused id doesn't exist would otherwise leave every
+  // remaining item hitting the "not the focused one" branch, i.e. everything
+  // renders dimmed with nothing actually highlighted.
+  const focusStillExists =
+    focus === null
+      ? true
+      : focus.kind === "event"
+        ? events.some((event) => event.id === focus.id)
+        : actionPoints.some((item) => item.id === focus.id);
+  const activeFocus = focusStillExists ? focus : null;
+
   function toggle(next: Focus) {
     setFocus((current) => (current && next && current.kind === next.kind && current.id === next.id ? null : next));
   }
 
   function eventClass(eventId: string): string {
-    if (!focus) return "";
-    if (focus.kind === "event") return focus.id === eventId ? "ring-2 ring-ring/40" : "opacity-40";
-    // focus.kind === "item": highlight this event if it's one of the focused item's sources.
-    const focusedItem = actionPoints.find((item) => item.id === focus.id);
+    if (!activeFocus) return "";
+    if (activeFocus.kind === "event") return activeFocus.id === eventId ? "ring-2 ring-ring/40" : "opacity-40";
+    // activeFocus.kind === "item": highlight this event if it's one of the focused item's sources.
+    const focusedItem = actionPoints.find((item) => item.id === activeFocus.id);
     return focusedItem?.sourceEventIds.includes(eventId) ? "ring-1 ring-foreground/30" : "opacity-40";
   }
 
   function itemClass(item: DayActionPoint): string {
-    if (!focus) return "";
-    if (focus.kind === "item") return focus.id === item.id ? "ring-2 ring-ring/40" : "opacity-40";
-    // focus.kind === "event": highlight action points sourced from the focused event.
-    return item.sourceEventIds.includes(focus.id) ? "ring-1 ring-foreground/30" : "opacity-40";
+    if (!activeFocus) return "";
+    if (activeFocus.kind === "item") return activeFocus.id === item.id ? "ring-2 ring-ring/40" : "opacity-40";
+    // activeFocus.kind === "event": highlight action points sourced from the focused event.
+    return item.sourceEventIds.includes(activeFocus.id) ? "ring-1 ring-foreground/30" : "opacity-40";
   }
 
   return (

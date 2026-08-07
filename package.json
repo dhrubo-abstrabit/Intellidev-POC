@@ -12,8 +12,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "supabase db push",
     "db:reset": "supabase db reset",
-    "db:types": "supabase gen types typescript --local --schema public > src/lib/db/database.types.ts",
-    "db:types:check": "supabase gen types typescript --local --schema public | diff - src/lib/db/database.types.ts"
+    "db:types": "supabase gen types typescript --project-id nktmgdeeiukjimkwkylo --schema public > src/lib/db/database.types.ts",
+    "db:types:check": "supabase gen types typescript --project-id nktmgdeeiukjimkwkylo --schema public | diff - src/lib/db/database.types.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

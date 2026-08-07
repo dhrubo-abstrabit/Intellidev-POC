@@ -5,7 +5,7 @@
 -- after a fresh `supabase db reset`.
 
 begin;
-select plan(5);
+select plan(6);
 
 -- 1. Every table in `public` has row level security enabled. A table that
 --    exists for even one migration without RLS is the failure mode this
@@ -92,6 +92,26 @@ select is(
   ),
   '{}'::text[],
   'every table with a permissive SELECT policy for authenticated also has a matching table-level SELECT grant'
+);
+
+-- 6. connector_provider must contain every provider connectors/registry.ts
+--    can return. Forgetting to add an enum value here today fails silently
+--    at INSERT time inside a sync job nobody is watching, rather than at
+--    build/deploy time — keep this literal array in sync with the ids
+--    actually registered there.
+select is(
+  (
+    select coalesce(array_agg(missing order by missing), '{}'::text[])
+    from unnest(array['slack', 'mock', 'google_chat', 'google_drive', 'gmail']) as missing
+    where missing::text not in (
+      select enumlabel
+      from pg_enum
+      join pg_type on pg_type.oid = pg_enum.enumtypid
+      where pg_type.typname = 'connector_provider'
+    )
+  ),
+  '{}'::text[],
+  'connector_provider contains every provider the registry can return'
 );
 
 select * from finish();

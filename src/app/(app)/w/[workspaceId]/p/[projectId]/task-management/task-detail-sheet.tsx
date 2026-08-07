@@ -15,7 +15,7 @@ import { SnoozeButton } from "./snooze-button";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-1.5">
+    <div className="min-w-0 space-y-1.5">
       <span className="text-xs text-muted-foreground">{label}</span>
       <div>{children}</div>
     </div>
@@ -111,7 +111,7 @@ export function TaskDetailSheet({
             </div>
 
             <Field label="Description">
-              <p className="text-sm whitespace-pre-wrap text-foreground">
+              <p className="text-sm whitespace-pre-wrap break-words text-foreground">
                 {item.description ?? "No description."}
               </p>
             </Field>
@@ -125,7 +125,7 @@ export function TaskDetailSheet({
                         <span>{event.actorDisplay ?? event.actor ?? "Unknown"}</span>
                         <span>{formatItemDate(event.occurredAt)}</span>
                       </div>
-                      <p className="mt-1 whitespace-pre-wrap text-foreground">
+                      <p className="mt-1 whitespace-pre-wrap break-words text-foreground">
                         {event.body ?? event.title ?? "(no content)"}
                       </p>
                     </div>

@@ -963,6 +963,7 @@ export type Database = {
         | "google_drive"
         | "clickup"
         | "mock"
+        | "gmail"
       integration_status:
         | "pending"
         | "connected"
@@ -1123,6 +1124,7 @@ export const Constants = {
         "google_drive",
         "clickup",
         "mock",
+        "gmail",
       ],
       integration_status: [
         "pending",

@@ -32,6 +32,29 @@ export interface RawPayload {
   payload: Record<string, unknown>;
 }
 
+/** Tells fetchSince "how much time is left in this invocation" without
+ * exposing wall-clock APIs directly — see connectors/deadline.ts. Checked at
+ * every loop boundary a connector has (source/space/page/file), because a
+ * page-level-only check can overshoot by however long the slowest single
+ * request in that page takes. */
+export interface FetchDeadline {
+  expired(): boolean;
+  remainingMs(): number;
+}
+
+/** Per-call context passed to fetchSince alongside credentials/cursor. */
+export interface FetchContext {
+  /** integrations.config, verbatim, as jsonb. THIS IS CLIENT-WRITABLE — the
+   * `integrations` table grants `authenticated` a column-scoped UPDATE that
+   * includes `config` (see 20260803150600_integrations.sql), so any
+   * workspace owner/admin can PATCH it directly via PostgREST. Every
+   * connector MUST parse this with Zod and fall back to safe defaults; NEVER
+   * trust its shape, and never let a numeric field here be unbounded (it's a
+   * quota-exhaustion / function-stall primitive otherwise). */
+  config: Record<string, unknown>;
+  deadline: FetchDeadline;
+}
+
 export interface NormalizedEventDraft {
   type: string; // "noun.verb", e.g. "message.posted" — matches the DB CHECK constraint
   actor?: string;
@@ -65,7 +88,7 @@ export interface Connector<TCursor = unknown> {
 
   /** Build the provider's authorize URL. `state` is an opaque, signed,
    * single-use token the callback route must verify before trusting the
-   * returned `code` — see connectors/slack/state.ts for the CSRF rationale. */
+   * returned `code` — see lib/oauth/state.ts for the CSRF rationale. */
   getAuthorizeUrl?(state: string): string;
 
   /** Exchange an OAuth `code` for the provider's token bundle. */
@@ -77,8 +100,11 @@ export interface Connector<TCursor = unknown> {
 
   /** Fetch everything new since `cursor` (null on first sync). Must be safe
    * to call repeatedly with the same cursor (idempotent — see raw_events'
-   * dedupe unique index, which is the actual idempotency backstop). */
-  fetchSince(credentials: ConnectorCredentials, cursor: TCursor | null): Promise<FetchResult<TCursor>>;
+   * dedupe unique index, which is the actual idempotency backstop). `context`
+   * carries the run's config + time budget — implementations that don't need
+   * either (Slack, mock) may simply omit the parameter; TS permits an
+   * implementation with fewer parameters than the interface declares. */
+  fetchSince(credentials: ConnectorCredentials, cursor: TCursor | null, context: FetchContext): Promise<FetchResult<TCursor>>;
 
   /** Map one raw provider payload to zero or more normalized events. Pure
    * function — no I/O, no side effects, so it's trivially unit-testable
@@ -89,4 +115,16 @@ export interface Connector<TCursor = unknown> {
    * Best-effort — the caller still deletes/updates local rows regardless of
    * whether this succeeds. */
   disconnect(credentials: ConnectorCredentials): Promise<void>;
+
+  /** Exchange a soon-to-expire access token for a fresh one. Omit entirely
+   * for providers whose tokens don't expire (Slack's classic bot tokens,
+   * mock) — services/sync/credentials.ts skips the whole refresh path when
+   * this is undefined. MUST return the COMPLETE bundle to re-seal, not a
+   * delta: Google's refresh response omits `refresh_token`, so an
+   * implementation must merge it forward from the input credentials or a
+   * refresh silently bricks the credential the next time it's needed. Throw
+   * ConnectorRefreshError({permanent: true}) on a provider-confirmed dead
+   * grant (e.g. `invalid_grant`), {permanent: false} on anything that might
+   * be transient (5xx, network). */
+  refreshTokens?(credentials: ConnectorCredentials): Promise<ConnectorCredentials>;
 }

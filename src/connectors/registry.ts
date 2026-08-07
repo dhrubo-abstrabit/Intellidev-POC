@@ -1,6 +1,9 @@
 import type { Connector, ConnectorId } from "@/connectors/types";
 import { slackConnector } from "@/connectors/slack";
 import { mockConnector } from "@/connectors/mock";
+import { googleChatConnector } from "@/connectors/google_chat";
+import { googleDriveConnector } from "@/connectors/google_drive";
+import { gmailConnector } from "@/connectors/gmail";
 
 /**
  * Adding a new provider means one new folder under connectors/ plus one line
@@ -10,6 +13,9 @@ import { mockConnector } from "@/connectors/mock";
 const registry: Partial<Record<ConnectorId, Connector>> = {
   slack: slackConnector,
   mock: mockConnector,
+  google_chat: googleChatConnector,
+  google_drive: googleDriveConnector,
+  gmail: gmailConnector,
 };
 
 export function getConnector(id: ConnectorId): Connector {

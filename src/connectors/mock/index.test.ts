@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { createDeadline } from "@/connectors/deadline";
 import { mockConnector } from "./index";
+
+const context = { config: {}, deadline: createDeadline(60_000) };
 
 describe("mockConnector", () => {
   it("generates a deterministic batch and advances the cursor", async () => {
-    const first = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, null);
+    const first = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, null, context);
     expect(first.rawPayloads).toHaveLength(5);
     expect(first.nextCursor).toEqual({ seq: 5 });
 
-    const second = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, first.nextCursor);
+    const second = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, first.nextCursor, context);
     expect(second.rawPayloads).toHaveLength(5);
     expect(second.nextCursor).toEqual({ seq: 10 });
 

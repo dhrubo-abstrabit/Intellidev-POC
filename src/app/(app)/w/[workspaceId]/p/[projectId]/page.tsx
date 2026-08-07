@@ -64,7 +64,7 @@ export default async function ProjectOverviewPage({
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             <p>{pendingCount ?? 0} pending.</p>
-            <Link href={`/w/${workspaceId}/p/${projectId}/items`} className="text-foreground underline">
+            <Link href={`/w/${workspaceId}/p/${projectId}/task-management`} className="text-foreground underline">
               View all
             </Link>
           </CardContent>
