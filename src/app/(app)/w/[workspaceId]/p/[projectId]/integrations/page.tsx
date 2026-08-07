@@ -1,5 +1,7 @@
+import { ChevronDownIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "@/components/ui/collapsible";
 import { createClient } from "@/lib/supabase/server";
 import { listConnectors } from "@/connectors/registry";
 import { AsyncButton } from "@/components/dashboard/async-button";
@@ -76,67 +78,80 @@ export default async function IntegrationsPage({
           <div className="grid gap-3 sm:grid-cols-2">
             {integrations.map((integration) => (
               <Card key={integration.id}>
-                <CardHeader className="flex flex-row items-start justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-base">{integration.display_name ?? integration.provider}</CardTitle>
-                    <CardDescription className="capitalize">{integration.provider}</CardDescription>
-                  </div>
-                  <Badge variant={STATUS_VARIANT[integration.status] ?? "outline"}>{integration.status}</Badge>
-                </CardHeader>
-                <CardContent className="space-y-3 text-xs text-muted-foreground">
-                  {integration.last_sync_succeeded_at ? (
-                    <p>Last synced {new Date(integration.last_sync_succeeded_at).toLocaleString()}</p>
-                  ) : null}
-                  {integration.last_error ? <p className="text-destructive">{integration.last_error}</p> : null}
-                  {integration.status !== "disconnected" && integration.status !== "revoked" ? (
-                    <div className="flex gap-2">
-                      <AsyncButton
-                        action={syncNow.bind(null, workspaceId, projectId, integration.id)}
-                        loadingMessage="Queuing sync…"
-                        size="sm"
-                        data-testid={`sync-${integration.provider}`}
-                      >
-                        Sync now
-                      </AsyncButton>
-                      <ConfirmActionButton
-                        action={disconnectIntegration.bind(null, workspaceId, projectId, integration.id)}
-                        triggerLabel="Disconnect"
-                        confirmLabel="Disconnect"
-                        loadingMessage="Disconnecting…"
-                        title={`Disconnect ${integration.display_name ?? integration.provider}?`}
-                        description="This revokes access and stops future syncs. You can reconnect later."
-                        data-testid={`disconnect-${integration.provider}`}
-                      />
+                <Collapsible>
+                  <CardHeader className="flex flex-row items-start justify-between gap-2">
+                    <div>
+                      <CardTitle className="text-base">{integration.display_name ?? integration.provider}</CardTitle>
+                      <CardDescription className="capitalize">{integration.provider}</CardDescription>
                     </div>
-                  ) : null}
-                  {(() => {
-                    const entry = getConfigSchema(integration.provider);
-                    if (!entry || integration.status === "disconnected" || integration.status === "revoked") return null;
-                    const currentValues = (integration.config ?? {}) as Record<string, unknown>;
-                    return (
-                      <IntegrationConfigForm
-                        // Every field below is an uncontrolled input seeded
-                        // from `currentValues` via `defaultValue` — React
-                        // only applies that at mount and ignores later
-                        // changes, so after a successful save re-renders
-                        // this with a DIFFERENT currentValues (the newly
-                        // saved config) but the SAME Input instances, which
-                        // Base UI flags as "changing defaultValue after
-                        // init." Keying on the actual saved value forces a
-                        // real remount exactly when the data changed —
-                        // never on every render (e.g. while showing a
-                        // validation error after a failed save, where
-                        // config didn't change and the key stays stable).
-                        key={JSON.stringify(currentValues)}
-                        workspaceId={workspaceId}
-                        projectId={projectId}
-                        integrationId={integration.id}
-                        fields={entry.fields}
-                        currentValues={currentValues}
-                      />
-                    );
-                  })()}
-                </CardContent>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={STATUS_VARIANT[integration.status] ?? "outline"}>{integration.status}</Badge>
+                      <CollapsibleTrigger
+                        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                        aria-label={`Toggle ${integration.display_name ?? integration.provider} details`}
+                        data-testid={`toggle-${integration.provider}`}
+                      >
+                        <ChevronDownIcon className="size-4 transition-transform group-data-panel-open:rotate-180" />
+                      </CollapsibleTrigger>
+                    </div>
+                  </CardHeader>
+                  <CollapsiblePanel keepMounted>
+                    <CardContent className="space-y-3 text-xs text-muted-foreground">
+                      {integration.last_sync_succeeded_at ? (
+                        <p>Last synced {new Date(integration.last_sync_succeeded_at).toLocaleString()}</p>
+                      ) : null}
+                      {integration.last_error ? <p className="text-destructive">{integration.last_error}</p> : null}
+                      {integration.status !== "disconnected" && integration.status !== "revoked" ? (
+                        <div className="flex gap-2">
+                          <AsyncButton
+                            action={syncNow.bind(null, workspaceId, projectId, integration.id)}
+                            loadingMessage="Queuing sync…"
+                            size="sm"
+                            data-testid={`sync-${integration.provider}`}
+                          >
+                            Sync now
+                          </AsyncButton>
+                          <ConfirmActionButton
+                            action={disconnectIntegration.bind(null, workspaceId, projectId, integration.id)}
+                            triggerLabel="Disconnect"
+                            confirmLabel="Disconnect"
+                            loadingMessage="Disconnecting…"
+                            title={`Disconnect ${integration.display_name ?? integration.provider}?`}
+                            description="This revokes access and stops future syncs. You can reconnect later."
+                            data-testid={`disconnect-${integration.provider}`}
+                          />
+                        </div>
+                      ) : null}
+                      {(() => {
+                        const entry = getConfigSchema(integration.provider);
+                        if (!entry || integration.status === "disconnected" || integration.status === "revoked") return null;
+                        const currentValues = (integration.config ?? {}) as Record<string, unknown>;
+                        return (
+                          <IntegrationConfigForm
+                            // Every field below is an uncontrolled input seeded
+                            // from `currentValues` via `defaultValue` — React
+                            // only applies that at mount and ignores later
+                            // changes, so after a successful save re-renders
+                            // this with a DIFFERENT currentValues (the newly
+                            // saved config) but the SAME Input instances, which
+                            // Base UI flags as "changing defaultValue after
+                            // init." Keying on the actual saved value forces a
+                            // real remount exactly when the data changed —
+                            // never on every render (e.g. while showing a
+                            // validation error after a failed save, where
+                            // config didn't change and the key stays stable).
+                            key={JSON.stringify(currentValues)}
+                            workspaceId={workspaceId}
+                            projectId={projectId}
+                            integrationId={integration.id}
+                            fields={entry.fields}
+                            currentValues={currentValues}
+                          />
+                        );
+                      })()}
+                    </CardContent>
+                  </CollapsiblePanel>
+                </Collapsible>
               </Card>
             ))}
           </div>
