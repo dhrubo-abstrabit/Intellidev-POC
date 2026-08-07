@@ -19,7 +19,7 @@ import {
 } from "./cursor";
 import type { GoogleDriveCursor, GoogleDriveSourceCursor } from "./cursor";
 import { walkDescendants } from "./folders";
-import { planTextExtraction, fetchFileText, normalizeExtractedText, stripHtml } from "./text";
+import { planTextExtraction, fetchFileText, normalizeExtractedText, stripHtml, type TextSkipReason } from "./text";
 import { normalizeDriveEvent } from "./normalize";
 import type {
   Connector,
@@ -83,6 +83,59 @@ async function resolveSource(sourceId: string, accessToken: string, deadline: Fe
   } catch {
     return null;
   }
+}
+
+interface FileTextExtraction {
+  textFetchesSoFar: number;
+  textExcerpt?: string;
+  textSource?: "export" | "download";
+  textMimeType?: string;
+  textSkippedReason?: TextSkipReason;
+  textTruncated?: boolean;
+  textNote?: string;
+}
+
+/**
+ * Shared by both the incremental stream and the backfill drain below — a
+ * file discovered through either path gets the same export/download
+ * treatment. `isBoundaryFile` only ever applies to the incremental stream's
+ * resume boundary; backfill-discovered files are always seen for the first
+ * time, so callers there pass `false`.
+ */
+async function extractTextForFile(
+  file: DriveFile,
+  textFetchesSoFar: number,
+  isBoundaryFile: boolean,
+  config: { extractText: boolean; maxTextFetchesPerRun: number; maxTextChars: number },
+  options: { accessToken: string; deadline: FetchDeadline },
+): Promise<FileTextExtraction> {
+  const plan = planTextExtraction(
+    file,
+    { extractText: config.extractText, maxTextFetchesPerRun: config.maxTextFetchesPerRun, textFetchesSoFar },
+    { isBoundaryFile, deadline: options.deadline },
+  );
+  const textMimeType = plan.kind === "export" ? plan.exportMimeType : file.mimeType;
+
+  if (plan.kind === "skip") {
+    return { textFetchesSoFar, textMimeType, textSkippedReason: plan.reason };
+  }
+
+  const nextTextFetchesSoFar = textFetchesSoFar + 1;
+  const rawText = await fetchFileText(plan, file.id, { accessToken: options.accessToken, deadline: options.deadline });
+  if (rawText === null) {
+    return { textFetchesSoFar: nextTextFetchesSoFar, textMimeType };
+  }
+
+  const cleaned = plan.kind === "download" && file.mimeType === "text/html" ? stripHtml(rawText) : rawText;
+  const { text, truncated } = normalizeExtractedText(cleaned, config.maxTextChars);
+  return {
+    textFetchesSoFar: nextTextFetchesSoFar,
+    textExcerpt: text,
+    textSource: plan.kind,
+    textMimeType,
+    textTruncated: truncated,
+    textNote: plan.kind === "export" ? plan.note : undefined,
+  };
 }
 
 export const googleDriveConnector: Connector<GoogleDriveCursor> = {
@@ -235,28 +288,11 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
             }
 
             const isBoundaryFile = sourceCursor.boundary.includes(`${file.id}:${file.version}`);
-            const plan = planTextExtraction(
-              file,
-              { extractText: config.extractText, maxTextFetchesPerRun: config.maxTextFetchesPerRun, textFetchesSoFar },
-              { isBoundaryFile, deadline: context.deadline },
-            );
-
-            let textExcerpt: string | undefined;
-            let textSource: "export" | "download" | undefined;
-            let textTruncated: boolean | undefined;
-            let textNote: string | undefined;
-            if (plan.kind !== "skip") {
-              textFetchesSoFar++;
-              const rawText = await fetchFileText(plan, file.id, { accessToken, deadline: context.deadline });
-              if (rawText !== null) {
-                const cleaned = plan.kind === "download" && file.mimeType === "text/html" ? stripHtml(rawText) : rawText;
-                const { text, truncated } = normalizeExtractedText(cleaned, config.maxTextChars);
-                textExcerpt = text;
-                textTruncated = truncated;
-                textSource = plan.kind;
-                if (plan.kind === "export" && plan.note) textNote = plan.note;
-              }
-            }
+            const extraction = await extractTextForFile(file, textFetchesSoFar, isBoundaryFile, config, {
+              accessToken,
+              deadline: context.deadline,
+            });
+            textFetchesSoFar = extraction.textFetchesSoFar;
 
             const providerEventId = `${file.id}:${file.version}`;
             payloadsByProviderEventId.set(providerEventId, {
@@ -269,12 +305,12 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
                 _floor: sourceCursor.modifiedTimeFloor,
                 _folderPath: buildFolderPath(sourceCursor.folders, file.parents?.[0]),
                 _folderSetTruncated: sourceCursor.folderSetTruncated,
-                text_excerpt: textExcerpt,
-                text_source: textSource,
-                text_mime_type: plan.kind === "export" ? plan.exportMimeType : file.mimeType,
-                text_skipped_reason: plan.kind === "skip" ? plan.reason : undefined,
-                text_truncated: textTruncated,
-                text_note: textNote,
+                text_excerpt: extraction.textExcerpt,
+                text_source: extraction.textSource,
+                text_mime_type: extraction.textMimeType,
+                text_skipped_reason: extraction.textSkippedReason,
+                text_truncated: extraction.textTruncated,
+                text_note: extraction.textNote,
               },
             });
             processed.push({ id: file.id, version: file.version, modifiedTime: file.modifiedTime });
@@ -333,6 +369,11 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
               for (const file of res.files ?? []) {
                 const providerEventId = `${file.id}:${file.version}`;
                 if (payloadsByProviderEventId.has(providerEventId)) continue; // already seen via the incremental stream
+                const extraction = await extractTextForFile(file, textFetchesSoFar, false, config, {
+                  accessToken,
+                  deadline: context.deadline,
+                });
+                textFetchesSoFar = extraction.textFetchesSoFar;
                 payloadsByProviderEventId.set(providerEventId, {
                   providerEventId,
                   occurredAt: new Date(file.modifiedTime),
@@ -342,6 +383,12 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
                     _mode: "backfill",
                     _folderPath: buildFolderPath(sourceCursor.folders, file.parents?.[0]),
                     _folderSetTruncated: sourceCursor.folderSetTruncated,
+                    text_excerpt: extraction.textExcerpt,
+                    text_source: extraction.textSource,
+                    text_mime_type: extraction.textMimeType,
+                    text_skipped_reason: extraction.textSkippedReason,
+                    text_truncated: extraction.textTruncated,
+                    text_note: extraction.textNote,
                   },
                 });
               }

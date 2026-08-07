@@ -161,9 +161,16 @@ export async function fetchFileText(
 
   try {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${options.accessToken}` } });
-    if (!res.ok) return null; // e.g. 403 exportSizeLimitExceeded, 400 unsupported conversion
+    if (!res.ok) {
+      // e.g. 403 exportSizeLimitExceeded, 400 unsupported conversion — one
+      // weird file must never fail the whole sync, but a silent empty body
+      // with no trace is undebuggable, so at least log it.
+      console.warn(`[google_drive] text ${plan.kind} failed for file ${fileId}: HTTP ${res.status}`);
+      return null;
+    }
     return await res.text();
-  } catch {
+  } catch (err) {
+    console.warn(`[google_drive] text ${plan.kind} threw for file ${fileId}:`, err);
     return null; // network error on one file — never fails the run
   }
 }
