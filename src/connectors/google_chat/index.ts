@@ -1,7 +1,6 @@
 import "server-only";
-import { googleAuthorizeUrl, exchangeGoogleCode, refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
+import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
-import { CHAT_SCOPES } from "@/connectors/google/scopes";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
 import { googleChatConfigSchema } from "./config";
@@ -33,8 +32,10 @@ const RESOLVE_NAMES_RESERVE_MS = 3_000;
 
 /** Mirrors Slack's channelCursors for the same reason: spaces post at
  * wildly different rates, so a single flat timestamp either re-scans quiet
- * spaces on every run or risks missing messages in busy ones. */
-interface GoogleChatCursor {
+ * spaces on every run or risks missing messages in busy ones. Exported so
+ * the merged `google` connector can nest it under its own cursor verbatim —
+ * see connectors/google/cursor.ts. */
+export interface GoogleChatCursor {
   provider: "google_chat";
   v: 1;
   spaceCursors: Record<string, string>; // spaceName ("spaces/<id>") -> RFC3339 createTime of the latest message seen
@@ -68,18 +69,17 @@ function parseCursor(raw: unknown): GoogleChatCursor {
   return { provider: "google_chat", v: 1, spaceCursors: {} };
 }
 
+/**
+ * NOT registered in connectors/registry.ts anymore — the merged `google`
+ * connector owns the OAuth handshake and delegates fetch/normalize here (see
+ * connectors/google/index.ts). `getAuthorizeUrl`/`exchangeCode` are gone with
+ * the registration: there is no `api/oauth/google_chat/callback` route left
+ * for them to redirect to.
+ */
 export const googleChatConnector: Connector<GoogleChatCursor> = {
   id: "google_chat",
   displayName: "Google Chat",
   requiresOAuth: true,
-
-  getAuthorizeUrl(state: string): string {
-    return googleAuthorizeUrl({ provider: "google_chat", scopes: CHAT_SCOPES, state });
-  },
-
-  async exchangeCode(code: string): Promise<ConnectorCredentials> {
-    return exchangeGoogleCode("google_chat", code, CHAT_SCOPES);
-  },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
     const accessToken = credentials.tokens.access_token as string | undefined;

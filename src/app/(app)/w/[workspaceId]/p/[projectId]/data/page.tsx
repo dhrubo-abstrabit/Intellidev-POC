@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { isoDaysAgo, projectDayKey, projectToday, utcWindowForDay } from "@/lib/date/project-day";
-import type { ConnectorProvider } from "@/components/items/provider-badge";
+import { isGoogleService, type ConnectorProvider, type GoogleService } from "@/components/items/provider-badge";
 import { parseProjectDataSearchParams } from "./filters";
 import { DayRail } from "./day-rail";
 import { ConnectorStrip } from "./connector-strip";
@@ -12,6 +12,28 @@ import type { DayActionPoint, DayEvent, DayIndexEntry, IntegrationSummary } from
 // honest rail instead of 60 mostly-blank rows.
 const DAY_INDEX_LOOKBACK_DAYS = 60;
 const DAY_INDEX_ROW_LIMIT = 5000;
+
+/** Which Google sub-services a merged `google` integration currently has
+ * enabled — `null` in its config means off (see connectors/google/config.ts).
+ * Read here rather than imported from the connector so this page doesn't pull
+ * a server-only connector module in just for three key lookups. */
+function enabledGoogleServices(config: unknown): GoogleService[] {
+  if (!config || typeof config !== "object") return [];
+  const record = config as Record<string, unknown>;
+  return (["gmail", "drive", "chat"] as GoogleService[]).filter((service) => {
+    const sub = record[service];
+    return Boolean(sub) && typeof sub === "object";
+  });
+}
+
+/** normalized_events.metadata is untyped jsonb — only the merged Google
+ * connector's normalize() writes a `service` tag, and only with one of three
+ * known values. */
+function serviceFromMetadata(metadata: unknown): GoogleService | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const value = (metadata as Record<string, unknown>).service;
+  return isGoogleService(value) ? value : null;
+}
 
 export default async function ProjectDataPage({
   params,
@@ -48,7 +70,7 @@ export default async function ProjectDataPage({
       .limit(DAY_INDEX_ROW_LIMIT),
     supabase
       .from("integrations")
-      .select("id, provider, status, display_name")
+      .select("id, provider, status, display_name, config")
       .eq("project_id", projectId)
       .order("provider"),
   ]);
@@ -77,12 +99,13 @@ export default async function ProjectDataPage({
     provider: row.provider,
     status: row.status,
     displayName: row.display_name,
+    googleServices: row.provider === "google" ? enabledGoogleServices(row.config) : [],
   }));
 
   const window = utcWindowForDay(selectedDay);
   const { data: eventRows } = await supabase
     .from("normalized_events")
-    .select("id, provider, type, actor, actor_display, title, body, occurred_at, resource_url, processed_at")
+    .select("id, provider, type, actor, actor_display, title, body, occurred_at, resource_url, processed_at, metadata")
     .eq("project_id", projectId)
     .gte("occurred_at", window.gte)
     .lt("occurred_at", window.lt)
@@ -96,6 +119,7 @@ export default async function ProjectDataPage({
     .map((row) => ({
       id: row.id,
       provider: row.provider,
+      service: serviceFromMetadata(row.metadata),
       type: row.type,
       actor: row.actor,
       actorDisplay: row.actor_display,
@@ -152,15 +176,25 @@ export default async function ProjectDataPage({
   // regardless of the current connector filter, so switching connectors
   // doesn't change the numbers on the chips themselves.
   const countsByProvider: Partial<Record<string, number>> = {};
+  const countsByGoogleService: Partial<Record<string, number>> = {};
   for (const event of dayEvents) {
     countsByProvider[event.provider] = (countsByProvider[event.provider] ?? 0) + 1;
+    if (event.provider === "google" && event.service) {
+      countsByGoogleService[event.service] = (countsByGoogleService[event.service] ?? 0) + 1;
+    }
   }
 
-  const filteredEvents =
-    filters.connector === "all" ? dayEvents : dayEvents.filter((event) => event.provider === filters.connector);
+  // Two independent dimensions: `connector` narrows by provider, `service`
+  // additionally narrows a google integration's events by which sub-service
+  // produced them (the three used to be three providers — see filters.ts).
+  const filteredEvents = dayEvents.filter((event) => {
+    if (filters.connector !== "all" && event.provider !== filters.connector) return false;
+    if (filters.service !== "all" && event.service !== filters.service) return false;
+    return true;
+  });
   const filteredEventIds = new Set(filteredEvents.map((event) => event.id));
   const filteredActionPoints =
-    filters.connector === "all"
+    filters.connector === "all" && filters.service === "all"
       ? dayActionPoints
       : dayActionPoints.filter((item) => item.sourceEventIds.some((id) => filteredEventIds.has(id)));
 
@@ -178,16 +212,18 @@ export default async function ProjectDataPage({
           <h2 className="text-xs font-medium text-muted-foreground uppercase">
             Days {truncated ? `(last ${DAY_INDEX_LOOKBACK_DAYS}d, truncated)` : `(last ${DAY_INDEX_LOOKBACK_DAYS}d)`}
           </h2>
-          <DayRail days={dayIndex} selectedDay={selectedDay} connector={filters.connector} />
+          <DayRail days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
         </div>
 
         <div className="space-y-4">
           <ConnectorStrip
             integrations={integrations}
             countsByProvider={countsByProvider}
+            countsByGoogleService={countsByGoogleService}
             totalCount={dayEvents.length}
             selectedDay={selectedDay}
             connector={filters.connector}
+            service={filters.service}
             workspaceId={workspaceId}
             projectId={projectId}
           />

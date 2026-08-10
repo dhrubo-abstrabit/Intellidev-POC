@@ -93,7 +93,7 @@ export function DayLinkage({
               >
                 <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1.5">
-                    <ProviderBadge provider={event.provider} />
+                    <ProviderBadge provider={event.provider} service={event.service} />
                     {projectTimeLabel(event.occurredAt, timezone)}
                   </span>
                   {!event.processed ? (

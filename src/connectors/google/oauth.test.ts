@@ -25,28 +25,28 @@ function fakeIdToken(claims: Record<string, unknown>): string {
 }
 
 describe("googleAuthorizeUrl", () => {
-  it("sets access_type=offline, prompt=consent, space-joined scopes, and the per-provider redirect_uri", () => {
+  it("sets access_type=offline, prompt=consent, space-joined scopes, and the connector redirect_uri", () => {
     const url = new URL(
-      googleAuthorizeUrl({ provider: "google_drive", scopes: ["https://www.googleapis.com/auth/drive.readonly"], state: "s" }),
+      googleAuthorizeUrl({ provider: "google", scopes: ["https://www.googleapis.com/auth/drive.readonly"], state: "s" }),
     );
     expect(url.searchParams.get("access_type")).toBe("offline");
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(url.searchParams.get("scope")).toBe("openid email profile https://www.googleapis.com/auth/drive.readonly");
-    expect(url.searchParams.get("redirect_uri")).toBe("https://app.example.test/api/oauth/google_drive/callback");
+    expect(url.searchParams.get("redirect_uri")).toBe("https://app.example.test/api/oauth/google/callback");
     expect(url.searchParams.get("client_id")).toBe("test-client-id");
   });
 
   it("never includes include_granted_scopes", () => {
-    const url = new URL(googleAuthorizeUrl({ provider: "google_chat", scopes: ["x"], state: "s" }));
+    const url = new URL(googleAuthorizeUrl({ provider: "google", scopes: ["x"], state: "s" }));
     expect(url.searchParams.has("include_granted_scopes")).toBe(false);
   });
 
   it("passes login_hint through only when provided", () => {
     const withHint = new URL(
-      googleAuthorizeUrl({ provider: "google_drive", scopes: ["x"], state: "s", loginHint: "team@x.com" }),
+      googleAuthorizeUrl({ provider: "google", scopes: ["x"], state: "s", loginHint: "team@x.com" }),
     );
     expect(withHint.searchParams.get("login_hint")).toBe("team@x.com");
-    const withoutHint = new URL(googleAuthorizeUrl({ provider: "google_chat", scopes: ["x"], state: "s" }));
+    const withoutHint = new URL(googleAuthorizeUrl({ provider: "google", scopes: ["x"], state: "s" }));
     expect(withoutHint.searchParams.has("login_hint")).toBe(false);
   });
 });
@@ -65,7 +65,7 @@ describe("exchangeGoogleCode", () => {
       ),
     );
     await expect(
-      exchangeGoogleCode("google_drive", "code", ["https://www.googleapis.com/auth/drive.readonly"]),
+      exchangeGoogleCode("google", "code", ["https://www.googleapis.com/auth/drive.readonly"]),
     ).rejects.toThrow(/MISSING_REFRESH_TOKEN/);
   });
 
@@ -83,7 +83,7 @@ describe("exchangeGoogleCode", () => {
       ),
     );
     await expect(
-      exchangeGoogleCode("google_drive", "code", ["https://www.googleapis.com/auth/drive.readonly"]),
+      exchangeGoogleCode("google", "code", ["https://www.googleapis.com/auth/drive.readonly"]),
     ).rejects.toThrow(/MISSING_SCOPES/);
   });
 
@@ -100,7 +100,7 @@ describe("exchangeGoogleCode", () => {
         }),
       ),
     );
-    const creds = await exchangeGoogleCode("google_drive", "code", ["https://www.googleapis.com/auth/drive.readonly"]);
+    const creds = await exchangeGoogleCode("google", "code", ["https://www.googleapis.com/auth/drive.readonly"]);
     expect(creds.externalAccountId).toBe("u1");
     expect(creds.externalAccountLabel).toBe("a@x.com");
     expect(creds.tokens.refresh_token).toBe("rt");

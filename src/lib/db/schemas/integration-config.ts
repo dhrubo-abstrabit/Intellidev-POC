@@ -1,8 +1,6 @@
 import type { z } from "zod";
 import type { ConnectorId, ConnectorCredentials } from "@/connectors/types";
-import { googleChatConfigEntry } from "@/connectors/google_chat/config";
-import { googleDriveConfigEntry } from "@/connectors/google_drive/config";
-import { gmailConfigEntry } from "@/connectors/gmail/config";
+import { googleConfigEntry } from "@/connectors/google/config";
 
 /**
  * Declarative description of one field in a connector's config form —
@@ -52,21 +50,40 @@ export interface ConnectorConfigSchema<T extends Record<string, unknown> = Recor
    * ok:false surfaces the message as an immediate form error instead of a
    * silent save that only fails a day later in integrations.last_error. */
   resolve?(config: T, ctx: ConfigResolveContext): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Called INSTEAD of unconditionally deleting the integration's cursor row
+   * when a scope field changed (see integrations/actions.ts). Returns the
+   * cursor to KEEP — already pruned of whatever the change invalidated — or
+   * null to fall back to the existing delete-the-whole-row behavior.
+   * Undefined (the default, and the case for every connector except
+   * `google`) preserves today's exact behavior.
+   *
+   * This exists because the merged Google connector keeps three independent
+   * sub-cursors in ONE row: editing the Gmail query must not also throw away
+   * Drive's modifiedTimeFloor and Chat's per-space timestamps, which is
+   * exactly what a blanket row delete would do. `currentCursor` is raw jsonb
+   * — treat it as untrusted and return null if it isn't the shape expected. */
+  pruneCursorOnScopeChange?(
+    previousConfig: T,
+    nextConfig: T,
+    currentCursor: Record<string, unknown> | null,
+  ): Record<string, unknown> | null;
 }
 
 /**
  * Mirrors connectors/registry.ts's own pattern exactly: adding a new
  * connector's config means one new `config.ts` module next to its
  * `index.ts`, plus one import + one entry here — never a change to the
- * config UI or Server Action, which only ever go through this map. Starts
- * empty; Phases building google_chat/google_drive/gmail each add their
- * entry (a connector with no entry here simply renders no config form —
- * see integrations/page.tsx).
+ * config UI or Server Action, which only ever go through this map. A
+ * connector with no entry here simply renders no config form — see
+ * integrations/page.tsx.
+ *
+ * The former `gmail`/`google_drive`/`google_chat` entries are gone: their
+ * schemas now live NESTED inside `google`'s (connectors/google/config.ts
+ * composes them unchanged), so a still-active legacy row correctly finds no
+ * config form here and gets the "reconnect as Google" banner instead.
  */
 const schemas: Partial<Record<ConnectorId, ConnectorConfigSchema>> = {
-  google_chat: googleChatConfigEntry as ConnectorConfigSchema,
-  google_drive: googleDriveConfigEntry as ConnectorConfigSchema,
-  gmail: gmailConfigEntry as ConnectorConfigSchema,
+  google: googleConfigEntry as ConnectorConfigSchema,
 };
 
 export function getConfigSchema(provider: ConnectorId): ConnectorConfigSchema | undefined {

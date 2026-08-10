@@ -12,10 +12,12 @@ export function DayRail({
   days,
   selectedDay,
   connector,
+  service,
 }: {
   days: DayIndexEntry[];
   selectedDay: string;
   connector: ProjectDataFilters["connector"];
+  service: ProjectDataFilters["service"];
 }) {
   if (days.length === 0) {
     return <p className="text-sm text-muted-foreground">No activity in the last 60 days.</p>;
@@ -27,7 +29,7 @@ export function DayRail({
         <Button
           key={day.dayKey}
           render={
-            <Link href={projectDataHref({ date: day.dayKey, connector })} data-testid={`day-${day.dayKey}`} />
+            <Link href={projectDataHref({ date: day.dayKey, connector, service })} data-testid={`day-${day.dayKey}`} />
           }
           nativeButton={false}
           variant={day.dayKey === selectedDay ? "secondary" : "ghost"}

@@ -1,9 +1,16 @@
 /**
- * Every Google connector requests IDENTITY_SCOPES plus exactly one
- * provider-specific scope list — never more. `include_granted_scopes` is
- * deliberately never used (see oauth.ts), so a Gmail connect can never end
- * up carrying Drive access just because the same Google account connected
- * Drive earlier: three least-privilege grants, three consent screens.
+ * The merged `google` connector requests IDENTITY_SCOPES plus ALL THREE
+ * sub-service scope lists in one consent screen (see connectors/google's
+ * GOOGLE_ALL_SCOPES) — one grant covers mail, files and chat together.
+ * That's a deliberate widening of what a single credential row unlocks,
+ * accepted because Google never retro-upgrades an existing grant, so
+ * per-service grants would mean a disconnect + reconnect every time a user
+ * enabled another service. See CLAUDE.md's "Google connector specifics".
+ *
+ * The lists stay separate here because each sub-connector's own fetch code
+ * still documents which scopes IT depends on, and because
+ * `include_granted_scopes` is still never set (see oauth.ts): the requested
+ * list is the whole truth about what a token can do.
  */
 export const IDENTITY_SCOPES = ["openid", "email", "profile"];
 

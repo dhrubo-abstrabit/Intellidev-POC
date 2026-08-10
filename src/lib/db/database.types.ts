@@ -810,6 +810,57 @@ export type Database = {
           },
         ]
       }
+      team_members: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          description: string | null
+          email: string
+          id: string
+          name: string
+          role: string | null
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          email: string
+          id?: string
+          name: string
+          role?: string | null
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          email?: string
+          id?: string
+          name?: string
+          role?: string | null
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "team_members_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "team_members_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       users: {
         Row: {
           avatar_url: string | null
@@ -964,6 +1015,7 @@ export type Database = {
         | "clickup"
         | "mock"
         | "gmail"
+        | "google"
       integration_status:
         | "pending"
         | "connected"
@@ -1125,6 +1177,7 @@ export const Constants = {
         "clickup",
         "mock",
         "gmail",
+        "google",
       ],
       integration_status: [
         "pending",
