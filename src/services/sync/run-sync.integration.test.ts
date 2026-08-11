@@ -4,12 +4,13 @@ import { runSync } from "./run-sync";
 
 /**
  * Exercises the real fetch -> raw_events -> normalize -> normalized_events
- * -> cursor pipeline against the local Supabase instance, using the mock
- * connector so it needs no network access and no live OAuth grant. This is
- * the closest thing to an end-to-end test for the sync engine short of
- * driving the UI + a real QStash round-trip (which needs a publicly
- * reachable URL QStash can call back into, so it can't run against a bare
- * `localhost` dev server — see lib/queue/qstash.ts).
+ * -> cursor pipeline against the cloud Supabase project (vitest.integration.config.ts
+ * loads .env.local, which points here — see CLAUDE.md), using the mock
+ * connector so it needs no network access and no live OAuth grant. Calls
+ * runSync() directly rather than through a queue round-trip, so it's
+ * agnostic to JOB_BACKEND — driving the actual queue (either QStash, whose
+ * callback can't reach a bare `localhost` dev server, or pgmq, which can —
+ * see src/lib/queue/index.ts) is exercised manually, not by this test.
  */
 describe("runSync (mock connector, real local DB)", () => {
   const service = createServiceClient();
