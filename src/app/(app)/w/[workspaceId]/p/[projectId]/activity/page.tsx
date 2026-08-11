@@ -42,7 +42,7 @@ export default async function ActivityPage({
                 <span className="font-medium">{event.actor_display ?? event.actor ?? "Unknown"}</span>
                 {event.title ? ` — ${event.title}` : ""}
               </p>
-              {event.body ? <p className="text-sm text-muted-foreground">{event.body}</p> : null}
+              {event.body ? <p className="text-sm whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p> : null}
             </li>
           ))}
         </ol>

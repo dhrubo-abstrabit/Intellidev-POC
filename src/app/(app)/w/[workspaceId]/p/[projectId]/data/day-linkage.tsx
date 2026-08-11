@@ -108,7 +108,9 @@ export function DayLinkage({
                   {event.actorDisplay ?? event.actor ?? "Unknown"}
                   {event.title ? <span className="text-muted-foreground"> · {event.title}</span> : null}
                 </p>
-                {event.body ? <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{event.body}</p> : null}
+                {event.body ? (
+                  <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p>
+                ) : null}
               </button>
             ))
           )}
@@ -154,7 +156,7 @@ export function DayLinkage({
                   </div>
                   <p className="mt-1 font-medium text-foreground">{item.title}</p>
                   {item.description ? (
-                    <p className="mt-0.5 line-clamp-2 text-muted-foreground">{item.description}</p>
+                    <p className="mt-0.5 line-clamp-2 break-words text-muted-foreground">{item.description}</p>
                   ) : null}
                   <p className="mt-1 text-xs text-muted-foreground">
                     from {item.sourceEventIds.length} message{item.sourceEventIds.length === 1 ? "" : "s"}

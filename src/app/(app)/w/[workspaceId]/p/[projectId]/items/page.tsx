@@ -54,7 +54,9 @@ export default async function ActionItemsPage({
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                {item.description ? <p className="text-sm text-muted-foreground">{item.description}</p> : null}
+                {item.description ? (
+                  <p className="text-sm whitespace-pre-wrap break-words text-muted-foreground">{item.description}</p>
+                ) : null}
                 <div className="flex gap-2">
                   <AsyncButton
                     action={completeActionItem.bind(null, workspaceId, projectId, item.id)}
