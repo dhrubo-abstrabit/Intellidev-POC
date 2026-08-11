@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cronEnv } from "@/lib/env";
 import { createServiceClient } from "@/lib/supabase/service";
-import { publishJob } from "@/lib/queue/qstash";
+import { enqueueJob } from "@/lib/queue";
 import { projectToday } from "@/lib/date/project-day";
 import { seedBatchForProject, markMemberEnqueueFailed, triggerDailyExtraction } from "@/services/sync/batch";
 
@@ -10,10 +10,11 @@ export const runtime = "nodejs";
 
 // How long to wait for every member of a day's batch to report a terminal
 // outcome before the batch-timeout job force-fires extraction anyway (see
-// src/app/api/jobs/batch-timeout/route.ts) — covers a lost QStash delivery
-// or a hard function timeout, neither of which anything else here notices,
-// given cron only runs once/day on the Hobby plan.
-const BATCH_TIMEOUT_DELAY = "2h";
+// src/app/api/jobs/batch-timeout/route.ts) — covers a lost delivery or a
+// hard function timeout, neither of which anything else here notices, given
+// this tick only runs once/day (see the pgmq/pg_cron migration's note on
+// why daily_tick is deliberately kept at that cadence for now).
+const BATCH_TIMEOUT_DELAY_SECONDS = 2 * 60 * 60;
 
 /**
  * Vercel Cron automatically sends `Authorization: Bearer $CRON_SECRET` on
@@ -68,7 +69,7 @@ export async function GET(request: NextRequest) {
       integrationIds: group.integrationIds,
     });
     batchByProject.set(projectId, { batchId, batchDate });
-    await publishJob("/api/jobs/batch-timeout", { batchId }, { delay: BATCH_TIMEOUT_DELAY }).catch((err) => {
+    await enqueueJob("/api/jobs/batch-timeout", { batchId }, { delaySeconds: BATCH_TIMEOUT_DELAY_SECONDS }).catch((err) => {
       console.error(`[cron] failed to schedule batch timeout for project ${projectId}:`, err);
     });
   }
@@ -76,7 +77,7 @@ export async function GET(request: NextRequest) {
   const results = await Promise.allSettled(
     (dueIntegrations ?? []).map(async (integration) => {
       try {
-        await publishJob("/api/jobs/sync", { integrationId: integration.id, trigger: "schedule" });
+        await enqueueJob("/api/jobs/sync", { integrationId: integration.id, trigger: "schedule" });
       } catch (err) {
         const batch = batchByProject.get(integration.project_id);
         if (batch) {

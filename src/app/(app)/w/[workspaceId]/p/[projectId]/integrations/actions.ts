@@ -9,7 +9,7 @@ import { isOAuthProvider } from "@/lib/oauth/providers";
 import { getConnector } from "@/connectors/registry";
 import { mockCredentials } from "@/connectors/mock";
 import { openTokens, fromBytea } from "@/lib/crypto/tokens";
-import { publishJob } from "@/lib/queue/qstash";
+import { enqueueJob } from "@/lib/queue";
 import { loadCredentials } from "@/services/sync/credentials";
 import { getConfigSchema, isConfigScoped, scopeFingerprint } from "@/lib/db/schemas/integration-config";
 import type { ConfigFieldSpec } from "@/lib/db/schemas/integration-config";
@@ -130,14 +130,16 @@ export async function syncNow(workspaceId: string, projectId: string, integratio
   await requireUser();
   await assertProjectMembership(workspaceId, projectId);
 
-  // Publishes to QStash, which then calls our own /api/jobs/sync back over
-  // the public internet — this only actually delivers once NEXT_PUBLIC_APP_URL
-  // is reachable from Upstash (i.e. deployed, or tunneled). Against a bare
-  // `localhost` dev server, Upstash rejects the publish outright ("endpoint
-  // resolves to a loopback address"), so this is caught and surfaced as a
-  // normal thrown error rather than an unhandled QstashError.
+  // With JOB_BACKEND=qstash, this publishes to Upstash, which then calls our
+  // own /api/jobs/sync back over the public internet — that only actually
+  // delivers once NEXT_PUBLIC_APP_URL is reachable from Upstash (i.e.
+  // deployed, or tunneled). Against a bare `localhost` dev server, Upstash
+  // rejects the publish outright ("endpoint resolves to a loopback
+  // address"), so this is caught and surfaced as a normal thrown error
+  // rather than an unhandled QstashError. JOB_BACKEND=pgmq has no such
+  // restriction — see src/lib/queue/index.ts.
   try {
-    await publishJob("/api/jobs/sync", { integrationId, trigger: "manual" });
+    await enqueueJob("/api/jobs/sync", { integrationId, trigger: "manual" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not queue a sync: ${message}`);

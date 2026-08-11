@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { queueEnv } from "@/lib/env";
+import { withJobAuth } from "@/lib/queue/auth";
 import { generateActionItems } from "@/services/action-items/generate";
 
 export const runtime = "nodejs";
@@ -32,7 +31,4 @@ async function handler(request: NextRequest) {
   return NextResponse.json(result, { status: result.status === "failed" ? 500 : 200 });
 }
 
-export const POST = verifySignatureAppRouter(handler, {
-  currentSigningKey: queueEnv().QSTASH_CURRENT_SIGNING_KEY,
-  nextSigningKey: queueEnv().QSTASH_NEXT_SIGNING_KEY,
-});
+export const POST = withJobAuth(handler);
