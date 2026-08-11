@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { queueEnv } from "@/lib/env";
+import { withJobAuth } from "@/lib/queue/auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { forceCompleteTimedOutBatch, triggerDailyExtraction } from "@/services/sync/batch";
 
 export const runtime = "nodejs";
+// triggerDailyExtraction can scan up to BACKFILL_SCAN_ROW_LIMIT rows and
+// enqueue up to BACKFILL_DAY_CAP jobs (src/services/sync/batch.ts) — past
+// Vercel's default function timeout (10s), same reasoning as the other two
+// job routes (60s is the ceiling on the Hobby plan).
+export const maxDuration = 60;
 
 interface BatchTimeoutPayload {
   batchId: string;
@@ -38,7 +42,4 @@ async function handler(request: NextRequest) {
   return NextResponse.json(result);
 }
 
-export const POST = verifySignatureAppRouter(handler, {
-  currentSigningKey: queueEnv().QSTASH_CURRENT_SIGNING_KEY,
-  nextSigningKey: queueEnv().QSTASH_NEXT_SIGNING_KEY,
-});
+export const POST = withJobAuth(handler);

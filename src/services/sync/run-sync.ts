@@ -7,7 +7,7 @@ import { ConnectorAuthError } from "@/connectors/errors";
 import { loadCredentials } from "@/services/sync/credentials";
 import { toBytea } from "@/lib/crypto/tokens";
 import { uuidv7 } from "@/lib/db/uuid";
-import { publishJob } from "@/lib/queue/qstash";
+import { enqueueJob } from "@/lib/queue";
 import { projectToday } from "@/lib/date/project-day";
 import { settleBatchMembership, triggerDailyExtraction } from "@/services/sync/batch";
 import type { Database, Json } from "@/lib/db/database.types";
@@ -278,7 +278,7 @@ export async function runSync(
       // would otherwise reject the follow-up job's own insert. Not terminal
       // for today's batch yet — pin effectiveBatchDate through so the chain
       // still reports to the same batch even if a hop crosses local midnight.
-      await publishJob("/api/jobs/sync", {
+      await enqueueJob("/api/jobs/sync", {
         integrationId: integration.id,
         trigger,
         chainDepth: chainDepth + 1,

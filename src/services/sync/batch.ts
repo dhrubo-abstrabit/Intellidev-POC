@@ -1,6 +1,6 @@
 import "server-only";
 import { createServiceClient } from "@/lib/supabase/service";
-import { publishJob } from "@/lib/queue/qstash";
+import { enqueueJob } from "@/lib/queue";
 import { projectDayKey, utcWindowForDay } from "@/lib/date/project-day";
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
@@ -197,7 +197,7 @@ export async function triggerDailyExtraction(service: ServiceClient, projectId: 
 
   await Promise.allSettled(
     [...dates].map((d) =>
-      publishJob("/api/jobs/llm", { projectId, date: d }).catch((err) => {
+      enqueueJob("/api/jobs/llm", { projectId, date: d }).catch((err) => {
         console.error(`[sync] failed to enqueue LLM job for project ${projectId} (date ${d}):`, err);
       }),
     ),

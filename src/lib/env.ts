@@ -32,6 +32,17 @@ const queueSchema = z.object({
   QSTASH_NEXT_SIGNING_KEY: z.string().min(1),
 });
 
+/**
+ * Switches the job queue transport between Upstash QStash and Postgres
+ * (pgmq + pg_cron) — see src/lib/queue/index.ts. Kept separate from
+ * queueSchema (which is QStash-specific and stays that way) so that running
+ * with JOB_BACKEND=pgmq never requires the four QSTASH_* secrets to be set
+ * at all, on top of never touching Upstash.
+ */
+const jobBackendSchema = z.object({
+  JOB_BACKEND: z.enum(["qstash", "pgmq"]).default("qstash"),
+});
+
 // SLACK_OAUTH_STATE_SECRET moved to oauthStateSchema below (it now signs
 // state for every OAuth provider, not just Slack) — this schema keeps only
 // what's Slack-specific.
@@ -79,6 +90,7 @@ const serverSchema = cryptoSchema
   .extend(supabaseServerSchema.shape)
   .extend(cronSchema.shape)
   .extend(queueSchema.shape)
+  .extend(jobBackendSchema.shape)
   .extend(slackSchema.shape)
   .extend(googleSchema.shape)
   .extend(llmSchema.shape)
@@ -142,6 +154,11 @@ export function cronEnv() {
 /** Just the Upstash QStash credentials. */
 export function queueEnv() {
   return parseWith(queueSchema, "queue");
+}
+
+/** Which job queue transport is active. See src/lib/queue/index.ts. */
+export function jobBackendEnv() {
+  return parseWith(jobBackendSchema, "job backend");
 }
 
 /** Just the Slack OAuth app credentials. */
