@@ -3,13 +3,15 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { KIND_LABEL, PRIORITY_LABEL, type WorkspaceMember } from "@/components/items/types";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { KIND_LABEL, PRIORITY_LABEL, type AssigneeOption } from "@/components/items/types";
 import { ALL_KINDS, ALL_PRIORITIES, type TaskManagementFilters } from "./filters";
 
 const ALL = "all";
 
-export function ItemFilters({ filters, members }: { filters: TaskManagementFilters; members: WorkspaceMember[] }) {
+export function ItemFilters({ filters, assignees }: { filters: TaskManagementFilters; assignees: AssigneeOption[] }) {
+  const workspaceMembers = assignees.filter((a) => a.kind === "user");
+  const rosterContacts = assignees.filter((a) => a.kind === "team_member");
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -97,7 +99,7 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
           items={[
             { label: "Everyone", value: ALL },
             { label: "Unassigned", value: "unassigned" },
-            ...members.map((member) => ({ label: member.full_name ?? member.email, value: member.id })),
+            ...assignees.map((a) => ({ label: a.name, value: a.value })),
           ]}
           value={filters.assignee ?? ALL}
           onValueChange={(value) => updateParam("assignee", String(value) === ALL ? null : String(value))}
@@ -108,11 +110,26 @@ export function ItemFilters({ filters, members }: { filters: TaskManagementFilte
           <SelectContent>
             <SelectItem value={ALL}>Everyone</SelectItem>
             <SelectItem value="unassigned">Unassigned</SelectItem>
-            {members.map((member) => (
-              <SelectItem key={member.id} value={member.id}>
-                {member.full_name ?? member.email}
-              </SelectItem>
-            ))}
+            {workspaceMembers.length > 0 ? (
+              <SelectGroup>
+                <SelectLabel>Workspace members</SelectLabel>
+                {workspaceMembers.map((member) => (
+                  <SelectItem key={member.value} value={member.value}>
+                    {member.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ) : null}
+            {rosterContacts.length > 0 ? (
+              <SelectGroup>
+                <SelectLabel>Team roster</SelectLabel>
+                {rosterContacts.map((contact) => (
+                  <SelectItem key={contact.value} value={contact.value}>
+                    {contact.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ) : null}
           </SelectContent>
         </Select>
       </div>

@@ -7,6 +7,12 @@ import { ConnectorStrip } from "./connector-strip";
 import { DayLinkage } from "./day-linkage";
 import type { DayActionPoint, DayEvent, DayIndexEntry, IntegrationSummary } from "./types";
 
+// The manual "Extract for this day" button below runs generateActionItems
+// synchronously in a Server Action rather than through the QStash-queued
+// /api/jobs/llm route — see actions.ts's doc comment — so this route needs
+// the same extended budget that route sets for its own Anthropic calls.
+export const maxDuration = 60;
+
 // The rail only shows days that actually have activity in this window, not
 // a fixed empty calendar grid — a project with sparse history gets a short,
 // honest rail instead of 60 mostly-blank rows.
@@ -234,6 +240,7 @@ export default async function ProjectDataPage({
             timezone={timezone}
             workspaceId={workspaceId}
             projectId={projectId}
+            selectedDay={selectedDay}
           />
         </div>
       </div>

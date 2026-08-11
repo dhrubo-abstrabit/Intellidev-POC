@@ -1,7 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatItemDate } from "@/components/items/format";
-import type { ActionItemRow, WorkspaceMember } from "@/components/items/types";
+import type { ActionItemRow, AssigneeOption } from "@/components/items/types";
 import { StatusPicker } from "./status-picker";
 import { PriorityPicker } from "./priority-picker";
 import { AssigneePicker } from "./assignee-picker";
@@ -12,12 +12,12 @@ export function ListView({
   workspaceId,
   projectId,
   items,
-  members,
+  assignees,
 }: {
   workspaceId: string;
   projectId: string;
   items: ActionItemRow[];
-  members: WorkspaceMember[];
+  assignees: AssigneeOption[];
 }) {
   if (items.length === 0) {
     return (
@@ -69,8 +69,8 @@ export function ListView({
                   workspaceId={workspaceId}
                   projectId={projectId}
                   itemId={item.id}
-                  assigneeId={item.assignee_id}
-                  members={members}
+                  assigneeValue={item.assignee?.value ?? null}
+                  assignees={assignees}
                 />
               </TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatItemDate(item.for_date)}</TableCell>

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { formatItemDate } from "@/components/items/format";
-import type { ActionItemRow, SourceEvent, WorkspaceMember } from "@/components/items/types";
+import type { ActionItemRow, AssigneeOption, SourceEvent } from "@/components/items/types";
 import { StatusPicker } from "./status-picker";
 import { PriorityPicker } from "./priority-picker";
 import { AssigneePicker } from "./assignee-picker";
@@ -30,13 +30,13 @@ export function TaskDetailSheet({
   sourceEvents,
   workspaceId,
   projectId,
-  members,
+  assignees,
 }: {
   item: ActionItemRow | null;
   sourceEvents: SourceEvent[];
   workspaceId: string;
   projectId: string;
-  members: WorkspaceMember[];
+  assignees: AssigneeOption[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -71,8 +71,8 @@ export function TaskDetailSheet({
                   workspaceId={workspaceId}
                   projectId={projectId}
                   itemId={item.id}
-                  assigneeId={item.assignee_id}
-                  members={members}
+                  assigneeValue={item.assignee?.value ?? null}
+                  assignees={assignees}
                 />
               </Field>
               <Field label="Priority">

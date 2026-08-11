@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServiceClient } from "@/lib/supabase/service";
 import { runSync } from "@/services/sync/run-sync";
+import { getLLMProvider } from "@/lib/llm/factory";
+import { projectToday } from "@/lib/date/project-day";
+import type { DraftForConsolidation } from "@/lib/llm/types";
 import { generateActionItems } from "./generate";
 
 /**
@@ -71,7 +74,10 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
   });
 
   it("generates action items from real events via a real Haiku 4.5 call", async () => {
-    const result = await generateActionItems(projectId);
+    // The mock connector stamps occurredAt as "now" — the test project
+    // defaults to timezone 'UTC' (projects.timezone's column default), so
+    // projectToday("UTC") always matches.
+    const result = await generateActionItems(projectId, projectToday("UTC"));
 
     expect(result.status).toBe("succeeded");
     expect(result.error).toBeUndefined();
@@ -96,7 +102,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
   }, 30000);
 
   it("is a clean skip when there are no unprocessed events left", async () => {
-    const result = await generateActionItems(projectId);
+    const result = await generateActionItems(projectId, projectToday("UTC"));
     expect(result).toEqual({ status: "skipped", itemsCreated: 0, itemsMerged: 0 });
   });
 
@@ -109,7 +115,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     const syncResult = await runSync(integrationId, "manual");
     expect(syncResult.status).toBe("succeeded");
 
-    const result = await generateActionItems(projectId);
+    const result = await generateActionItems(projectId, projectToday("UTC"));
     expect(result.status).toBe("succeeded");
 
     const { data: allItems } = await service.from("action_items").select("id, title").eq("project_id", projectId);
@@ -118,5 +124,55 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     // fresh batch of the *same* synthetic conversation topics again.
     expect(new Set(titles).size).toBe(titles.length);
     expect(allItems?.length ?? 0).toBeGreaterThanOrEqual(beforeTotal ?? 0);
+  }, 30000);
+
+  it("consolidateActionItems merges near-duplicate drafts describing the same underlying issue", async () => {
+    const provider = getLLMProvider();
+    const drafts: DraftForConsolidation[] = [
+      {
+        key: "d1",
+        draft: {
+          kind: "blocker",
+          title: "Checkout tests are flaky",
+          description: "The checkout flow's CI test suite fails intermittently, blocking merges.",
+          priority: "high",
+          confidence: 0.8,
+          sourceEventIds: [],
+        },
+      },
+      {
+        key: "d2",
+        draft: {
+          kind: "blocker",
+          title: "Intermittent failures in the checkout end-to-end suite",
+          description: "QA reports the checkout e2e tests fail roughly 1 in 5 runs.",
+          priority: "high",
+          confidence: 0.75,
+          sourceEventIds: [],
+        },
+      },
+      {
+        key: "d3",
+        draft: {
+          kind: "action",
+          title: "Update the onboarding docs",
+          description: "Docs still reference the old signup flow.",
+          priority: "low",
+          confidence: 0.6,
+          sourceEventIds: [],
+        },
+      },
+    ];
+
+    const result = await provider.consolidateActionItems([], drafts);
+
+    // d1 and d2 describe the same underlying flaky-test issue; d3 is
+    // unrelated. Real semantic dedup should collapse the first two into one
+    // group while leaving the third on its own.
+    expect(result.consolidation.groups).toHaveLength(2);
+    const flakyGroup = result.consolidation.groups.find((g) => g.draftKeys.includes("d1"));
+    expect(flakyGroup?.draftKeys.sort()).toEqual(["d1", "d2"]);
+    const docsGroup = result.consolidation.groups.find((g) => g.draftKeys.includes("d3"));
+    expect(docsGroup?.draftKeys).toEqual(["d3"]);
   }, 30000);
 });

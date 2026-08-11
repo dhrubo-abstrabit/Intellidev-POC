@@ -52,6 +52,15 @@ describe("parseTaskManagementSearchParams", () => {
     expect(parseTaskManagementSearchParams({ assignee: "unassigned" }).assignee).toBe("unassigned");
   });
 
+  it("passes an encoded assignee value through untouched — decoding happens in page.tsx", () => {
+    expect(parseTaskManagementSearchParams({ assignee: "user:11111111-1111-1111-1111-111111111111" }).assignee).toBe(
+      "user:11111111-1111-1111-1111-111111111111",
+    );
+    expect(parseTaskManagementSearchParams({ assignee: "team:22222222-2222-2222-2222-222222222222" }).assignee).toBe(
+      "team:22222222-2222-2222-2222-222222222222",
+    );
+  });
+
   it("only accepts sort=priority; anything else falls back to for_date", () => {
     expect(parseTaskManagementSearchParams({ sort: "priority" }).sort).toBe("priority");
     expect(parseTaskManagementSearchParams({ sort: "bogus" }).sort).toBe("for_date");

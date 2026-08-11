@@ -9,11 +9,6 @@
  * in JS with projectDayKey. Intl does the offset/DST math, so there's no
  * hand-rolled arithmetic to get wrong.
  *
- * src/services/action-items/generate.ts has its own projectLocalDate() that
- * does the same "today" computation as projectToday() below — that one is
- * covered by an integration test billing the real Anthropic API, so it's
- * left alone rather than refactored to share this module. Consolidate
- * separately if it comes up again.
  */
 
 const DAY_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();

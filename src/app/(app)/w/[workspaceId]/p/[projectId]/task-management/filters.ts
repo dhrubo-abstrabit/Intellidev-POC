@@ -7,7 +7,11 @@ export interface TaskManagementFilters {
   view: TaskManagementView;
   q: string;
   priority: ActionItemPriority[];
-  /** A user id, "unassigned", or null (no filter). */
+  /** An encoded assignee value ("user:<uuid>" | "team:<uuid>", see
+   * components/items/assignee.ts), "unassigned", a legacy bare user uuid, or
+   * null (no filter). Kept a pure passthrough here (see the parser below) —
+   * decoding/validating happens in page.tsx, so an unrecognized value
+   * degrades to "ignored" rather than throwing during param parsing. */
   assignee: string | null;
   kind: ActionItemKind[];
   sort: TaskManagementSort;

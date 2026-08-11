@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ProviderBadge } from "@/components/items/provider-badge";
 import { PriorityBadge, StatusBadge } from "@/components/items/status-badge";
+import { AsyncButton } from "@/components/dashboard/async-button";
 import { cn } from "@/lib/utils";
 import { projectTimeLabel } from "@/lib/date/project-day";
+import { extractActionItemsForDay } from "./actions";
 import type { DayActionPoint, DayEvent } from "./types";
 
 type Focus = { kind: "event" | "item"; id: string } | null;
@@ -28,12 +30,14 @@ export function DayLinkage({
   timezone,
   workspaceId,
   projectId,
+  selectedDay,
 }: {
   events: DayEvent[];
   actionPoints: DayActionPoint[];
   timezone: string;
   workspaceId: string;
   projectId: string;
+  selectedDay: string;
 }) {
   const [focus, setFocus] = useState<Focus>(null);
 
@@ -104,7 +108,9 @@ export function DayLinkage({
                   {event.actorDisplay ?? event.actor ?? "Unknown"}
                   {event.title ? <span className="text-muted-foreground"> · {event.title}</span> : null}
                 </p>
-                {event.body ? <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{event.body}</p> : null}
+                {event.body ? (
+                  <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p>
+                ) : null}
               </button>
             ))
           )}
@@ -114,6 +120,17 @@ export function DayLinkage({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Action Points ({actionPoints.length})</CardTitle>
+          <CardAction>
+            <AsyncButton
+              action={extractActionItemsForDay.bind(null, workspaceId, projectId, selectedDay)}
+              loadingMessage={`Extracting for ${selectedDay}…`}
+              size="sm"
+              variant="outline"
+              data-testid="extract-day-action-points"
+            >
+              Extract for this day
+            </AsyncButton>
+          </CardAction>
         </CardHeader>
         <CardContent className="space-y-2">
           {actionPoints.length === 0 ? (
@@ -139,7 +156,7 @@ export function DayLinkage({
                   </div>
                   <p className="mt-1 font-medium text-foreground">{item.title}</p>
                   {item.description ? (
-                    <p className="mt-0.5 line-clamp-2 text-muted-foreground">{item.description}</p>
+                    <p className="mt-0.5 line-clamp-2 break-words text-muted-foreground">{item.description}</p>
                   ) : null}
                   <p className="mt-1 text-xs text-muted-foreground">
                     from {item.sourceEventIds.length} message{item.sourceEventIds.length === 1 ? "" : "s"}

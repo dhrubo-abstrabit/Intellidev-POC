@@ -13,13 +13,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { toast } from "@/components/ui/toast";
-import {
-  BOARD_STATUSES,
-  STATUS_LABEL,
-  type ActionItemRow,
-  type BoardStatus,
-  type WorkspaceMember,
-} from "@/components/items/types";
+import { BOARD_STATUSES, STATUS_LABEL, type ActionItemRow, type BoardStatus } from "@/components/items/types";
 import { BoardColumn } from "./board-column";
 import { BoardCardPreview } from "./board-card";
 import { updateActionItemStatus } from "./actions";
@@ -40,12 +34,10 @@ export function BoardView({
   workspaceId,
   projectId,
   items,
-  members,
 }: {
   workspaceId: string;
   projectId: string;
   items: ActionItemRow[];
-  members: WorkspaceMember[];
 }) {
   // Seeded once from server props. After a successful drag, this state (not
   // the next revalidated props) stays the source of truth — see the plan's
@@ -119,10 +111,10 @@ export function BoardView({
     >
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {BOARD_STATUSES.map((status) => (
-          <BoardColumn key={status} status={status} items={columns[status]} members={members} />
+          <BoardColumn key={status} status={status} items={columns[status]} />
         ))}
       </div>
-      <DragOverlay>{activeItem ? <BoardCardPreview item={activeItem} members={members} /> : null}</DragOverlay>
+      <DragOverlay>{activeItem ? <BoardCardPreview item={activeItem} /> : null}</DragOverlay>
     </DndContext>
   );
 }

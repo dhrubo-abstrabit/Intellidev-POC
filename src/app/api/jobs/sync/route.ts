@@ -16,6 +16,11 @@ interface SyncJobPayload {
   /** Set by run-sync.ts itself when a connector reports hasMore:true — see
    * MAX_SYNC_CHAIN_DEPTH there. Absent on every cron/manual-triggered job. */
   chainDepth?: number;
+  /** Set by run-sync.ts itself alongside chainDepth, pinning a chained
+   * follow-up to the same day's batch it started in (see
+   * src/services/sync/batch.ts). Absent on every cron/manual-triggered job
+   * — those let run-sync compute "today" fresh. */
+  batchDate?: string;
 }
 
 async function handler(request: NextRequest) {
@@ -24,7 +29,7 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ error: "integrationId is required" }, { status: 400 });
   }
 
-  const result = await runSync(body.integrationId, body.trigger ?? "schedule", body.chainDepth ?? 0);
+  const result = await runSync(body.integrationId, body.trigger ?? "schedule", body.chainDepth ?? 0, body.batchDate);
   // A non-2xx tells QStash to retry per the message's retry policy — only
   // "failed" (an actual error) should trigger that; "skipped" (another sync
   // already in flight) is a legitimate no-op.

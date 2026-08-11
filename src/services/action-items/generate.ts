@@ -4,16 +4,24 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { getLLMProvider } from "@/lib/llm/factory";
 import { estimateCostUsd } from "@/lib/llm/pricing";
 import { uuidv7 } from "@/lib/db/uuid";
-import type { ActionItemContext } from "@/lib/llm/types";
+import { projectDayKey, utcWindowForDay } from "@/lib/date/project-day";
+import type { ActionItemContext, DraftForConsolidation, LLMUsage, OpenActionItemSummary } from "@/lib/llm/types";
+import type { ActionItemDraft } from "@/lib/llm/schema";
 import type { Database } from "@/lib/db/database.types";
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
 
-const PROMPT_VERSION = "action-items-v1";
-// Bounds one run's cost/latency; the unprocessed-events partial index makes
-// pulling the oldest backlog first cheap, so a large backlog just means more
-// runs, not a slower single run.
-const MAX_EVENTS_PER_RUN = 200;
+const PROMPT_VERSION = "action-items-v2";
+// Per-call cap on how many of the day's events go into a single extraction
+// call; a day with more than this across all connectors is split into
+// multiple chunks run in parallel (see generateActionItems) rather than
+// growing one call unboundedly.
+const MAX_EVENTS_PER_CHUNK = 200;
+// supabase/config.toml sets [api] max_rows = 1000, which silently truncates
+// any single PostgREST read past that size — run-sync.ts's DEDUPE_CHUNK_SIZE
+// comment documents the same trap. Page through in chunks of this size
+// rather than relying on a single unbounded .select().
+const EVENT_FETCH_PAGE_SIZE = 1000;
 
 export interface GenerateActionItemsResult {
   status: "succeeded" | "skipped" | "failed";
@@ -22,38 +30,91 @@ export interface GenerateActionItemsResult {
   error?: string;
 }
 
-/** dedupe_hash is a hash of the item's own (normalized) title — there is no
- * separate model-invented key. Reusing an open item's exact title is what
- * makes two runs produce the same hash and merge instead of duplicating. */
+/** dedupe_hash is a hash of the item's own (normalized) title. Once
+ * consolidation has run, that title is either an existing open item's real
+ * stored title (never the model's echo of it) or a freshly-minted canonical
+ * title — either way this hash-check is now a safety net against races and
+ * missed groupings, not the primary dedup mechanism. */
 function normalizedTitleHash(title: string): string {
   const normalized = title.trim().toLowerCase().replace(/\s+/g, " ");
   return createHash("sha256").update(normalized).digest("hex");
 }
 
-function projectLocalDate(timezone: string): string {
-  // en-CA formats as YYYY-MM-DD, which is exactly the date column's shape.
-  return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+function sumUsage(usages: LLMUsage[]): LLMUsage {
+  return usages.reduce(
+    (acc, u) => ({
+      promptTokens: acc.promptTokens + u.promptTokens,
+      completionTokens: acc.completionTokens + u.completionTokens,
+      cacheReadTokens: acc.cacheReadTokens + u.cacheReadTokens,
+      cacheCreationTokens: acc.cacheCreationTokens + u.cacheCreationTokens,
+    }),
+    { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+  );
+}
+
+type UnprocessedEventRow = Pick<
+  Database["public"]["Tables"]["normalized_events"]["Row"],
+  "id" | "type" | "actor_display" | "actor" | "title" | "body" | "occurred_at"
+>;
+
+/** Pages through every unprocessed event whose occurred_at falls on `date`
+ * in the project's own timezone. utcWindowForDay bounds the query loosely
+ * (a UTC day either side of the nominal date, to guarantee it contains the
+ * whole local day at any offset); projectDayKey then buckets precisely —
+ * see src/lib/date/project-day.ts's own doc comment for why this two-step
+ * shape is necessary (PostgREST can't express the timezone conversion). */
+async function fetchUnprocessedEventsForDay(
+  service: ServiceClient,
+  projectId: string,
+  date: string,
+  timezone: string,
+): Promise<UnprocessedEventRow[]> {
+  const { gte, lt } = utcWindowForDay(date);
+  const rows: UnprocessedEventRow[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await service
+      .from("normalized_events")
+      .select("id, type, actor_display, actor, title, body, occurred_at")
+      .eq("project_id", projectId)
+      .is("processed_at", null)
+      .gte("occurred_at", gte)
+      .lt("occurred_at", lt)
+      .order("occurred_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(offset, offset + EVENT_FETCH_PAGE_SIZE - 1);
+    if (error) throw new Error(`normalized_events fetch failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < EVENT_FETCH_PAGE_SIZE) break;
+    offset += EVENT_FETCH_PAGE_SIZE;
+  }
+  return rows.filter((row) => row.occurred_at && projectDayKey(row.occurred_at, timezone) === date);
+}
+
+interface LoadedContext {
+  base: Omit<ActionItemContext, "newEvents">;
+  openActionItems: OpenActionItemSummary[];
+  events: ActionItemContext["newEvents"];
+  eventIds: string[];
 }
 
 async function loadContext(
   service: ServiceClient,
   project: Pick<Database["public"]["Tables"]["projects"]["Row"], "id" | "name" | "description" | "timezone">,
-): Promise<{ context: ActionItemContext; eventIds: string[] } | null> {
-  const { data: unprocessedEvents } = await service
-    .from("normalized_events")
-    .select("id, type, actor_display, actor, title, body, occurred_at")
-    .eq("project_id", project.id)
-    .is("processed_at", null)
-    .order("occurred_at", { ascending: true })
-    .limit(MAX_EVENTS_PER_RUN);
-
-  if (!unprocessedEvents || unprocessedEvents.length === 0) {
-    return null;
-  }
+  date: string,
+): Promise<LoadedContext | null> {
+  const eventRows = await fetchUnprocessedEventsForDay(service, project.id, date, project.timezone);
+  if (eventRows.length === 0) return null;
 
   const { data: openItems } = await service
     .from("action_items")
-    .select("title, kind, priority")
+    .select("id, title, kind, priority")
     .eq("project_id", project.id)
     .in("status", ["pending", "in_progress"]);
 
@@ -64,32 +125,58 @@ async function loadContext(
     .order("summary_date", { ascending: false })
     .limit(3);
 
+  const openActionItems: OpenActionItemSummary[] = (openItems ?? []).map((i) => ({
+    id: i.id,
+    title: i.title,
+    kind: i.kind,
+    priority: i.priority,
+  }));
+
   return {
-    eventIds: unprocessedEvents.map((e) => e.id),
-    context: {
+    base: {
       project: { id: project.id, name: project.name, description: project.description, timezone: project.timezone },
-      openActionItems: (openItems ?? []).map((i) => ({ title: i.title, kind: i.kind, priority: i.priority })),
+      openActionItems,
       recentSummaries: (recentSummaries ?? []).map((s) => ({ date: s.summary_date, summary: s.summary })),
-      newEvents: unprocessedEvents.map((e) => ({
-        id: e.id,
-        type: e.type,
-        actorDisplay: e.actor_display ?? e.actor,
-        title: e.title,
-        body: e.body,
-        occurredAt: e.occurred_at,
-      })),
     },
+    openActionItems,
+    events: eventRows.map((e) => ({
+      id: e.id,
+      type: e.type,
+      actorDisplay: e.actor_display ?? e.actor,
+      title: e.title,
+      body: e.body,
+      occurredAt: e.occurred_at,
+    })),
+    eventIds: eventRows.map((e) => e.id),
   };
+}
+
+interface ResolvedItem {
+  matchesOpenItemId: string | null;
+  title: string;
+  kind: ActionItemDraft["kind"];
+  description?: string;
+  priority: ActionItemDraft["priority"];
+  confidence: number;
+  ownerHint?: string;
+  sourceEventIds: string[];
 }
 
 /**
  * Generates (or refines) action items for one project from whatever
- * normalized_events haven't been through the model yet. Safe to call
- * repeatedly: events are marked processed_at regardless of whether they
- * produced an item, and items merge onto existing open rows by title hash
- * rather than duplicating — see normalizedTitleHash above.
+ * normalized_events, across every connector, occurred on `date` in the
+ * project's own timezone and haven't been through the model yet. Safe to
+ * call repeatedly: events are marked processed_at regardless of whether
+ * they produced an item, and items merge onto existing open rows rather
+ * than duplicating (see normalizedTitleHash and the consolidation pass
+ * above it).
+ *
+ * `date` is required and must be computed by the caller at enqueue time
+ * (src/services/sync/run-sync.ts / batch.ts) — defaulting to "today" here
+ * would be wrong for a job enqueued right before local midnight and
+ * executed a few seconds into the next day.
  */
-export async function generateActionItems(projectId: string): Promise<GenerateActionItemsResult> {
+export async function generateActionItems(projectId: string, date: string): Promise<GenerateActionItemsResult> {
   const service = createServiceClient();
 
   const { data: project } = await service
@@ -101,11 +188,11 @@ export async function generateActionItems(projectId: string): Promise<GenerateAc
     return { status: "failed", itemsCreated: 0, itemsMerged: 0, error: "Project not found" };
   }
 
-  const loaded = await loadContext(service, project);
+  const loaded = await loadContext(service, project, date);
   if (!loaded) {
     return { status: "skipped", itemsCreated: 0, itemsMerged: 0 };
   }
-  const { context, eventIds } = loaded;
+  const { base, openActionItems, events, eventIds } = loaded;
 
   const { data: run, error: runError } = await service
     .from("llm_runs")
@@ -128,12 +215,66 @@ export async function generateActionItems(projectId: string): Promise<GenerateAc
 
   try {
     const provider = getLLMProvider();
-    const generation = await provider.generateActionItems(context);
+    const chunks = chunkArray(events, MAX_EVENTS_PER_CHUNK);
+
+    const extractions = await Promise.all(
+      chunks.map((chunk) => provider.generateActionItems({ ...base, newEvents: chunk })),
+    );
+
+    const allDrafts: ActionItemDraft[] = extractions.flatMap((e) => e.items);
+    const usages: LLMUsage[] = extractions.map((e) => e.usage);
+    const extractionChunksLog = extractions.map((e) => ({ prompt: e.prompt, response: e.response }));
+
+    let resolvedItems: ResolvedItem[];
+    let consolidationPromptLog: unknown = null;
+    let consolidationResponseLog: unknown = null;
+
+    if (allDrafts.length > 1) {
+      const draftsForConsolidation: DraftForConsolidation[] = allDrafts.map((draft, i) => ({
+        key: `d${i + 1}`,
+        draft,
+      }));
+      const consolidationResult = await provider.consolidateActionItems(openActionItems, draftsForConsolidation);
+      usages.push(consolidationResult.usage);
+      consolidationPromptLog = consolidationResult.prompt;
+      consolidationResponseLog = consolidationResult.response;
+
+      const draftByKey = new Map(draftsForConsolidation.map((d) => [d.key, d.draft]));
+      const openItemById = new Map(openActionItems.map((i) => [i.id, i]));
+
+      resolvedItems = consolidationResult.consolidation.groups.map((group) => {
+        const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
+        const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
+        // Never trust the model's echoed id/title pairing blindly — an id
+        // it invented or that no longer matches falls back to treating the
+        // group as new, same as sourceEventIds is validated below.
+        const matchedOpen = group.matchesOpenItemId ? openItemById.get(group.matchesOpenItemId) : undefined;
+        return {
+          matchesOpenItemId: matchedOpen?.id ?? null,
+          title: matchedOpen ? matchedOpen.title : group.canonicalTitle,
+          kind: group.kind,
+          description: group.mergedDescription,
+          priority: group.priority,
+          confidence: group.confidence,
+          ownerHint: group.ownerHint,
+          sourceEventIds,
+        };
+      });
+    } else {
+      resolvedItems = allDrafts.map((draft) => ({
+        matchesOpenItemId: null,
+        title: draft.title,
+        kind: draft.kind,
+        description: draft.description,
+        priority: draft.priority,
+        confidence: draft.confidence,
+        ownerHint: draft.ownerHint,
+        sourceEventIds: draft.sourceEventIds,
+      }));
+    }
 
     const validEventIds = new Set(eventIds);
-    const forDate = projectLocalDate(project.timezone);
-
-    const candidateHashes = generation.items.map((item) => normalizedTitleHash(item.title));
+    const candidateHashes = resolvedItems.map((item) => normalizedTitleHash(item.title));
     const { data: existingOpen } = candidateHashes.length
       ? await service
           .from("action_items")
@@ -148,8 +289,12 @@ export async function generateActionItems(projectId: string): Promise<GenerateAc
     let itemsMerged = 0;
     const sourceLinks: Database["public"]["Tables"]["action_item_source_events"]["Insert"][] = [];
 
-    for (const item of generation.items) {
+    for (const item of resolvedItems) {
       const hash = normalizedTitleHash(item.title);
+      // Re-checked on every iteration (not just against the DB snapshot
+      // taken above) so two resolved items that land on the same hash
+      // within this same run merge onto each other instead of both
+      // inserting — the bug the exact-hash-only design used to have.
       const existingId = existingByHash.get(hash);
       const sourceEventIds = item.sourceEventIds.filter((id) => validEventIds.has(id));
 
@@ -173,31 +318,73 @@ export async function generateActionItems(projectId: string): Promise<GenerateAc
             workspace_id: project.workspace_id,
           })),
         );
-      } else {
-        const newId = uuidv7();
-        await service.from("action_items").insert({
-          id: newId,
-          workspace_id: project.workspace_id,
-          project_id: project.id,
-          llm_run_id: run.id,
-          kind: item.kind,
-          title: item.title,
-          description: item.description ?? null,
-          priority: item.priority,
-          confidence_score: item.confidence,
-          owner_hint: item.ownerHint ?? null,
-          dedupe_hash: hash,
-          for_date: forDate,
-        });
-        itemsCreated += 1;
+        continue;
+      }
+
+      const newId = uuidv7();
+      const { error: insertError } = await service.from("action_items").insert({
+        id: newId,
+        workspace_id: project.workspace_id,
+        project_id: project.id,
+        llm_run_id: run.id,
+        kind: item.kind,
+        title: item.title,
+        description: item.description ?? null,
+        priority: item.priority,
+        confidence_score: item.confidence,
+        owner_hint: item.ownerHint ?? null,
+        dedupe_hash: hash,
+        for_date: date,
+      });
+
+      if (insertError) {
+        // action_items_open_dedupe_uniq (project_id, dedupe_hash) rejected
+        // this insert — another row with the same hash exists that our
+        // existingByHash snapshot didn't know about (a genuine concurrent
+        // writer, since same-run duplicates are already caught by the
+        // existingByHash check above). Fall through to updating that row
+        // instead of silently losing this item.
+        if (insertError.code !== "23505") throw new Error(`action_items insert failed: ${insertError.message}`);
+        const { data: conflictRow } = await service
+          .from("action_items")
+          .select("id")
+          .eq("project_id", project.id)
+          .eq("dedupe_hash", hash)
+          .in("status", ["pending", "in_progress"])
+          .maybeSingle();
+        if (!conflictRow) throw new Error(`action_items insert failed: ${insertError.message}`);
+        await service
+          .from("action_items")
+          .update({
+            description: item.description ?? null,
+            priority: item.priority,
+            confidence_score: item.confidence,
+            owner_hint: item.ownerHint ?? null,
+            llm_run_id: run.id,
+            generated_at: new Date().toISOString(),
+          })
+          .eq("id", conflictRow.id);
+        existingByHash.set(hash, conflictRow.id);
+        itemsMerged += 1;
         sourceLinks.push(
           ...sourceEventIds.map((eventId) => ({
-            action_item_id: newId,
+            action_item_id: conflictRow.id,
             normalized_event_id: eventId,
             workspace_id: project.workspace_id,
           })),
         );
+        continue;
       }
+
+      existingByHash.set(hash, newId);
+      itemsCreated += 1;
+      sourceLinks.push(
+        ...sourceEventIds.map((eventId) => ({
+          action_item_id: newId,
+          normalized_event_id: eventId,
+          workspace_id: project.workspace_id,
+        })),
+      );
     }
 
     if (sourceLinks.length > 0) {
@@ -216,18 +403,25 @@ export async function generateActionItems(projectId: string): Promise<GenerateAc
     const nowIso = new Date().toISOString();
     await service.from("normalized_events").update({ processed_at: nowIso }).in("id", eventIds);
 
+    const usage = sumUsage(usages);
     await service
       .from("llm_runs")
       .update({
         status: "succeeded",
         finished_at: nowIso,
-        prompt: generation.prompt as Database["public"]["Tables"]["llm_runs"]["Update"]["prompt"],
-        response: generation.response as Database["public"]["Tables"]["llm_runs"]["Update"]["response"],
-        prompt_tokens: generation.usage.promptTokens,
-        completion_tokens: generation.usage.completionTokens,
-        cache_read_tokens: generation.usage.cacheReadTokens,
-        cache_creation_tokens: generation.usage.cacheCreationTokens,
-        cost_usd: estimateCostUsd(generation.usage),
+        prompt: {
+          extractionChunks: extractionChunksLog.map((c) => c.prompt),
+          consolidation: consolidationPromptLog,
+        } as Database["public"]["Tables"]["llm_runs"]["Update"]["prompt"],
+        response: {
+          extractionChunks: extractionChunksLog.map((c) => c.response),
+          consolidation: consolidationResponseLog,
+        } as Database["public"]["Tables"]["llm_runs"]["Update"]["response"],
+        prompt_tokens: usage.promptTokens,
+        completion_tokens: usage.completionTokens,
+        cache_read_tokens: usage.cacheReadTokens,
+        cache_creation_tokens: usage.cacheCreationTokens,
+        cost_usd: estimateCostUsd(usage),
       })
       .eq("id", run.id);
 
