@@ -2,17 +2,15 @@
 
 import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
-import { STATUS_LABEL, type ActionItemRow, type BoardStatus, type WorkspaceMember } from "@/components/items/types";
+import { STATUS_LABEL, type ActionItemRow, type BoardStatus } from "@/components/items/types";
 import { BoardCard } from "./board-card";
 
 export function BoardColumn({
   status,
   items,
-  members,
 }: {
   status: BoardStatus;
   items: ActionItemRow[];
-  members: WorkspaceMember[];
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -31,7 +29,7 @@ export function BoardColumn({
       </div>
       <div className="flex flex-col gap-2">
         {items.map((item) => (
-          <BoardCard key={item.id} item={item} members={members} />
+          <BoardCard key={item.id} item={item} />
         ))}
       </div>
     </div>

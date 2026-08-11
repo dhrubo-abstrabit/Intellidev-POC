@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { BOARD_STATUSES, type ActionItemRow, type SourceEvent, type WorkspaceMember } from "@/components/items/types";
+import { BOARD_STATUSES, type ActionItemRow, type AssigneeOption, type SourceEvent } from "@/components/items/types";
+import { decodeAssigneeValue, encodeAssigneeValue } from "@/components/items/assignee";
 import { parseTaskManagementSearchParams } from "./filters";
 import { ViewToggle } from "./view-toggle";
 import { ItemFilters } from "./item-filters";
@@ -24,7 +25,7 @@ export default async function TaskManagementPage({
   let itemsQuery = supabase
     .from("action_items")
     .select(
-      "id, title, description, kind, priority, confidence_score, status, for_date, due_at, owner_hint, assignee_id, snoozed_until, assignee:users!action_items_assignee_id_fkey(id, full_name, avatar_url)",
+      "id, title, description, kind, priority, confidence_score, status, for_date, due_at, owner_hint, assignee_id, assignee_team_member_id, snoozed_until, assignee:users!action_items_assignee_id_fkey(id, full_name, avatar_url)",
     )
     .eq("project_id", projectId);
 
@@ -38,9 +39,17 @@ export default async function TaskManagementPage({
     itemsQuery = itemsQuery.in("kind", filters.kind);
   }
   if (filters.assignee === "unassigned") {
-    itemsQuery = itemsQuery.is("assignee_id", null);
+    // Two mutually-exclusive assignee columns (see
+    // action_items_single_assignee_chk) means "unassigned" has to rule out
+    // both, not just assignee_id.
+    itemsQuery = itemsQuery.is("assignee_id", null).is("assignee_team_member_id", null);
   } else if (filters.assignee) {
-    itemsQuery = itemsQuery.eq("assignee_id", filters.assignee);
+    const target = decodeAssigneeValue(filters.assignee);
+    // An unrecognized value degrades to "ignored" rather than throwing —
+    // same graceful-degradation rule a stale ?status= already gets under
+    // view=kanban below.
+    if (target?.kind === "user") itemsQuery = itemsQuery.eq("assignee_id", target.id);
+    else if (target?.kind === "team_member") itemsQuery = itemsQuery.eq("assignee_team_member_id", target.id);
   }
 
   // Kanban's four columns are the status filter; List uses the status param
@@ -54,12 +63,13 @@ export default async function TaskManagementPage({
       ? itemsQuery.order("priority", { ascending: false }).order("for_date", { ascending: false })
       : itemsQuery.order("for_date", { ascending: false }).order("priority", { ascending: false });
 
-  const [{ data: items }, { data: memberRows }, { count: snoozedCount }] = await Promise.all([
+  const [{ data: items }, { data: memberRows }, { data: rosterRows }, { count: snoozedCount }] = await Promise.all([
     itemsQuery,
     supabase
       .from("workspace_members")
       .select("users:users!workspace_members_user_id_fkey(id, full_name, email, avatar_url)")
       .eq("workspace_id", workspaceId),
+    supabase.from("team_members").select("id, name, email, role").eq("workspace_id", workspaceId),
     supabase
       .from("action_items")
       .select("id", { count: "exact", head: true })
@@ -67,11 +77,67 @@ export default async function TaskManagementPage({
       .eq("status", "snoozed"),
   ]);
 
-  const members: WorkspaceMember[] = (memberRows ?? [])
+  const users = (memberRows ?? [])
     .map((row) => row.users)
     .filter((user): user is NonNullable<typeof user> => user !== null);
+  const roster = rosterRows ?? [];
 
-  const rows: ActionItemRow[] = (items ?? []).map((item) => ({ ...item, assignee: item.assignee ?? null }));
+  // Real workspace users first, then roster contacts — both alphabetical —
+  // so the picker/filter can render two labeled groups (a bare name gives
+  // no signal about whether that person can actually log in and see this
+  // task; see assignee-picker.tsx).
+  const assignees: AssigneeOption[] = [
+    ...users
+      .map((u) => ({
+        kind: "user" as const,
+        id: u.id,
+        value: encodeAssigneeValue("user", u.id),
+        name: u.full_name ?? u.email,
+        email: u.email,
+        avatar_url: u.avatar_url,
+        role: null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    ...roster
+      .map((r) => ({
+        kind: "team_member" as const,
+        id: r.id,
+        value: encodeAssigneeValue("team_member", r.id),
+        name: r.name,
+        email: r.email,
+        avatar_url: null,
+        role: r.role,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  ];
+  // Roster contacts are always resolvable this way — assignee_team_member_id
+  // is `on delete set null`, so a non-null value always has a live
+  // team_members row in this workspace, already in `roster`. No second
+  // PostgREST embed needed (an unverified composite-FK embed hint risks a
+  // 400 on the whole page query for zero benefit over this free lookup).
+  const rosterById = new Map(roster.map((r) => [r.id, r]));
+
+  const rows: ActionItemRow[] = (items ?? []).map((item) => {
+    const rosterContact = item.assignee_team_member_id ? rosterById.get(item.assignee_team_member_id) : undefined;
+    const assignee = rosterContact
+      ? {
+          kind: "team_member" as const,
+          id: rosterContact.id,
+          value: encodeAssigneeValue("team_member", rosterContact.id),
+          name: rosterContact.name,
+          avatar_url: null,
+        }
+      : item.assignee
+        ? {
+            kind: "user" as const,
+            id: item.assignee.id,
+            value: encodeAssigneeValue("user", item.assignee.id),
+            name: item.assignee.full_name,
+            avatar_url: item.assignee.avatar_url,
+          }
+        : null;
+    return { ...item, assignee };
+  });
   const openItem = rows.find((row) => row.id === openItemId) ?? null;
 
   // Only fetched when a detail sheet is actually open, and only for that one
@@ -110,7 +176,7 @@ export default async function TaskManagementPage({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <ItemFilters filters={filters} members={members} />
+        <ItemFilters filters={filters} assignees={assignees} />
         {snoozedCount ? (
           <Link href="?view=list&status=snoozed" className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
             Snoozed ({snoozedCount})
@@ -124,10 +190,9 @@ export default async function TaskManagementPage({
           workspaceId={workspaceId}
           projectId={projectId}
           items={rows}
-          members={members}
         />
       ) : (
-        <ListView workspaceId={workspaceId} projectId={projectId} items={rows} members={members} />
+        <ListView workspaceId={workspaceId} projectId={projectId} items={rows} assignees={assignees} />
       )}
 
       <TaskDetailSheet
@@ -135,7 +200,7 @@ export default async function TaskManagementPage({
         sourceEvents={sourceEvents}
         workspaceId={workspaceId}
         projectId={projectId}
-        members={members}
+        assignees={assignees}
       />
     </div>
   );

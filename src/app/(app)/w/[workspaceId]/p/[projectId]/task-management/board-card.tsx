@@ -5,18 +5,14 @@ import { CSS } from "@dnd-kit/utilities";
 import { GripVerticalIcon } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PriorityBadge } from "@/components/items/status-badge";
-import type { ActionItemRow, WorkspaceMember } from "@/components/items/types";
+import type { ActionItemRow } from "@/components/items/types";
 import { cn } from "@/lib/utils";
-
-function assigneeNameFor(item: ActionItemRow, members: WorkspaceMember[]): string | null {
-  return item.assignee?.full_name ?? members.find((member) => member.id === item.assignee_id)?.full_name ?? null;
-}
 
 /** Static, hook-free copy rendered inside DragOverlay — the real BoardCard
  * below can't be reused there since useDraggable would register a second
  * node under the same id as the card being dragged. */
-export function BoardCardPreview({ item, members }: { item: ActionItemRow; members: WorkspaceMember[] }) {
-  const assigneeName = assigneeNameFor(item, members);
+export function BoardCardPreview({ item }: { item: ActionItemRow }) {
+  const assigneeName = item.assignee?.name ?? null;
   return (
     <div className="space-y-2 rounded-xl bg-card p-3 text-sm text-card-foreground shadow-lg ring-1 ring-foreground/10">
       <p className="font-medium">{item.title}</p>
@@ -28,9 +24,9 @@ export function BoardCardPreview({ item, members }: { item: ActionItemRow; membe
   );
 }
 
-export function BoardCard({ item, members }: { item: ActionItemRow; members: WorkspaceMember[] }) {
+export function BoardCard({ item }: { item: ActionItemRow }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: item.id });
-  const assigneeName = assigneeNameFor(item, members);
+  const assigneeName = item.assignee?.name ?? null;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();

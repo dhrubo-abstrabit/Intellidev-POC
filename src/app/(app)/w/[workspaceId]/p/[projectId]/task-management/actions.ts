@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { decodeAssigneeValue } from "@/components/items/assignee";
 import type { Database } from "@/lib/db/database.types";
 
 type ActionItemPriority = Database["public"]["Enums"]["action_item_priority"];
@@ -74,30 +75,56 @@ export async function updateActionItemAssignee(
   workspaceId: string,
   projectId: string,
   itemId: string,
-  assigneeId: string | null,
+  assigneeValue: string | null,
 ): Promise<{ message: string }> {
   await requireUser();
 
   const supabase = await createClient();
 
-  // Not a security boundary (RLS already scopes the write to this
-  // workspace, and a bogus id would fail the FK constraint regardless) —
-  // this just turns a raw Postgres FK-violation error into a clean message.
-  if (assigneeId) {
+  const target = assigneeValue ? decodeAssigneeValue(assigneeValue) : null;
+  if (assigneeValue && !target) {
+    throw new Error("Unrecognized assignee.");
+  }
+
+  if (target?.kind === "user") {
+    // This lookup IS the security boundary here (unlike the roster branch
+    // below): assignee_id's FK is to bare users(id), with no workspace
+    // scoping, so a bogus-but-real user id from another workspace would
+    // otherwise pass straight through to the write.
     const { data: member } = await supabase
       .from("workspace_members")
       .select("user_id")
       .eq("workspace_id", workspaceId)
-      .eq("user_id", assigneeId)
+      .eq("user_id", target.id)
       .maybeSingle();
     if (!member) {
       throw new Error("That person is not a member of this workspace.");
     }
+  } else if (target?.kind === "team_member") {
+    // Cosmetic here, unlike the user branch above — assignee_team_member_id
+    // has a composite FK to team_members(id, workspace_id), so a
+    // cross-workspace or nonexistent id would fail the FK regardless. This
+    // just turns that into a friendlier message.
+    const { data: contact } = await supabase
+      .from("team_members")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .eq("id", target.id)
+      .maybeSingle();
+    if (!contact) {
+      throw new Error("That person is not on this workspace's team roster.");
+    }
   }
 
+  // Both columns, every time — action_items_single_assignee_chk rejects a
+  // write that leaves the previous assignee's column populated when
+  // switching between a user and a roster contact.
   const { error } = await supabase
     .from("action_items")
-    .update({ assignee_id: assigneeId })
+    .update({
+      assignee_id: target?.kind === "user" ? target.id : null,
+      assignee_team_member_id: target?.kind === "team_member" ? target.id : null,
+    })
     .eq("id", itemId)
     .eq("project_id", projectId)
     .eq("workspace_id", workspaceId);
@@ -106,7 +133,7 @@ export async function updateActionItemAssignee(
   }
 
   revalidateTaskManagement(workspaceId, projectId);
-  return { message: assigneeId ? "Assigned" : "Unassigned" };
+  return { message: target ? "Assigned" : "Unassigned" };
 }
 
 const snoozeSchema = z.object({

@@ -10,9 +10,18 @@ export type ActionItemKind = Database["public"]["Enums"]["action_item_kind"];
 export type BoardStatus = Exclude<ActionItemStatus, "snoozed">;
 export const BOARD_STATUSES: BoardStatus[] = ["pending", "in_progress", "done", "dismissed"];
 
+export type AssigneeKind = "user" | "team_member";
+
+/** A task's resolved assignee — either a real workspace user (assignee_id)
+ * or a Team Members roster contact (assignee_team_member_id); the two
+ * columns are mutually exclusive (action_items_single_assignee_chk). `value`
+ * is the encoded picker/filter value (see ./assignee.ts) so a component can
+ * seed a Select or a link straight from a row without re-encoding. */
 export type AssigneeSummary = {
+  kind: AssigneeKind;
   id: string;
-  full_name: string | null;
+  value: string;
+  name: string | null;
   avatar_url: string | null;
 };
 
@@ -29,16 +38,30 @@ export type ActionItemRow = Pick<
   | "due_at"
   | "owner_hint"
   | "assignee_id"
+  | "assignee_team_member_id"
   | "snoozed_until"
 > & {
   assignee: AssigneeSummary | null;
 };
 
-export type WorkspaceMember = {
+/** One selectable entry in the assignee dropdown/filter — either a real
+ * workspace user or a Team Members roster contact. `name`/`value` are
+ * pre-resolved server-side (full_name ?? email for users; name for roster
+ * contacts) so every consumer stops duplicating that fallback. `role` is
+ * only ever set for roster contacts (team_members.role is free text; real
+ * users have no such field). Replaces the old user-only `WorkspaceMember`
+ * type — its use was entirely contained to this file and task-management/,
+ * and keeping that name once it can also hold a non-member roster contact
+ * would recreate exactly the confusion team_members' own migration comment
+ * warns against. */
+export type AssigneeOption = {
+  kind: AssigneeKind;
   id: string;
-  full_name: string | null;
+  value: string;
+  name: string;
   email: string;
   avatar_url: string | null;
+  role: string | null;
 };
 
 /** One normalized_events row (a Slack message, etc.) linked to an action
