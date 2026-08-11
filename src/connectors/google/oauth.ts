@@ -42,9 +42,10 @@ function expiresAtFrom(expiresIn: number | undefined): Date | undefined {
 }
 
 /**
- * Builds the Google consent screen URL. `scopes` should be the provider's
- * OWN scope list only (DRIVE_SCOPES, GMAIL_SCOPES, or CHAT_SCOPES) —
- * IDENTITY_SCOPES is always added here, so callers must not add it again.
+ * Builds the Google consent screen URL. `scopes` is the connector's own
+ * scope list — for the merged `google` connector, the union of Gmail, Drive
+ * and Chat (GOOGLE_ALL_SCOPES). IDENTITY_SCOPES is always added here, so
+ * callers must not add it again.
  *
  * Load-bearing params:
  * - access_type=offline: without it Google returns NO refresh_token and the
@@ -53,10 +54,11 @@ function expiresAtFrom(expiresIn: number | undefined): Date | undefined {
  *   per (user, client, scope-set) — reconnecting without this re-uses the
  *   existing grant and returns a bundle with no refresh_token at all.
  * - include_granted_scopes is deliberately OMITTED: it would carry forward
- *   every previously-granted scope onto the new token, so e.g. a Gmail
- *   connect could end up with a token that also reads Drive if the same
- *   Google account had connected Drive earlier. Three least-privilege
- *   grants is worth three separate consent screens.
+ *   every previously-granted scope onto the new token, quietly widening a
+ *   credential beyond what this authorize URL actually asked for. The
+ *   requested list stays the whole truth about what the resulting token can
+ *   do — which matters more, not less, now that one grant already spans
+ *   mail + files + chat (see scopes.ts and CLAUDE.md).
  * - scopes are space-joined (Google's convention) — NOT comma-joined like
  *   Slack's.
  */

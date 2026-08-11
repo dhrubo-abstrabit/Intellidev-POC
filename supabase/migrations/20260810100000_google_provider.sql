@@ -1,0 +1,20 @@
+-- Adds 'google' to connector_provider — the single merged connector that
+-- replaces the separate 'gmail', 'google_drive' and 'google_chat' ones (one
+-- OAuth grant, one credential, one integrations row, per-service config
+-- nested under integrations.config).
+--
+-- The three old values are deliberately RETAINED FOREVER and never dropped:
+-- every raw_events / normalized_events / connector_credentials /
+-- integrations row written before the merge still carries them, and Postgres
+-- has no safe way to remove an enum value that historical rows reference.
+-- They simply stop being produced — connectors/registry.ts no longer
+-- registers a connector for them, so the Integrations page renders a
+-- "this connector has moved, reconnect as Google" banner for any still-active
+-- legacy row instead of trying to sync it.
+--
+-- Postgres forbids USING a new enum value inside the same transaction that
+-- added it, so this migration does nothing else — any DDL/DML mentioning
+-- 'google' as a typed value must live in a later file (see
+-- 20260810100100_google_connector_comments.sql, which only references it
+-- inside comment strings, never as a typed value, so it is safe either way).
+alter type public.connector_provider add value if not exists 'google';

@@ -1,7 +1,6 @@
 import "server-only";
-import { googleAuthorizeUrl, exchangeGoogleCode, refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
+import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
-import { GMAIL_SCOPES } from "@/connectors/google/scopes";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
 import { stripHtml } from "@/connectors/google_drive/text";
@@ -39,7 +38,9 @@ const MAX_NORMALIZED_BODY_CHARS = 2000;
 
 const SKIP_LABELS = new Set(["DRAFT", "SPAM", "TRASH", "CHAT"]);
 
-interface GmailCursor {
+/** Exported so the merged `google` connector can nest it under its own
+ * cursor verbatim — see connectors/google/cursor.ts. */
+export interface GmailCursor {
   provider: "gmail";
   v: 1;
   /** Newest `internalDate` (epoch ms) among messages actually fetched.
@@ -99,18 +100,18 @@ function clampNormalizedBody(body: string | undefined): string | undefined {
   return body.length <= MAX_NORMALIZED_BODY_CHARS ? body : `${body.slice(0, MAX_NORMALIZED_BODY_CHARS)}\n…[truncated]`;
 }
 
+/**
+ * NOT registered in connectors/registry.ts anymore — the merged `google`
+ * connector owns the OAuth handshake and delegates fetch/normalize here (see
+ * connectors/google/index.ts). `getAuthorizeUrl`/`exchangeCode` are gone with
+ * it: there is no `api/oauth/gmail/callback` route left for them to redirect
+ * to, so keeping them would only offer a dead path. Everything below is
+ * still live, just called through `google`.
+ */
 export const gmailConnector: Connector<GmailCursor> = {
   id: "gmail",
   displayName: "Gmail",
   requiresOAuth: true,
-
-  getAuthorizeUrl(state: string): string {
-    return googleAuthorizeUrl({ provider: "gmail", scopes: GMAIL_SCOPES, state });
-  },
-
-  async exchangeCode(code: string): Promise<ConnectorCredentials> {
-    return exchangeGoogleCode("gmail", code, GMAIL_SCOPES);
-  },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
     const accessToken = credentials.tokens.access_token as string | undefined;

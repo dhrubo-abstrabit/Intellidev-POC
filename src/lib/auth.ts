@@ -56,3 +56,20 @@ export async function assertProjectMembership(workspaceId: string, projectId: st
     throw new Error("Not a member of this workspace, or project not found.");
   }
 }
+
+/**
+ * Workspace-level analog of assertProjectMembership: throws unless the
+ * current user is a member of `workspaceId`, checked via the user-scoped
+ * Supabase client so RLS's `current_workspace_ids()`-gated `workspaces`
+ * select policy IS the membership check. Membership only, not a role check —
+ * callers that need owner/admin rely on RLS write policies (e.g.
+ * `team_members_write_admin`) to enforce that, same boundary as its
+ * project-level counterpart.
+ */
+export async function assertWorkspaceMembership(workspaceId: string): Promise<void> {
+  const supabase = await createClient();
+  const { data: workspace } = await supabase.from("workspaces").select("id").eq("id", workspaceId).maybeSingle();
+  if (!workspace) {
+    throw new Error("Not a member of this workspace.");
+  }
+}

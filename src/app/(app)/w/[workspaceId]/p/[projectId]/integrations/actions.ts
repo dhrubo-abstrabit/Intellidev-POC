@@ -13,6 +13,7 @@ import { publishJob } from "@/lib/queue/qstash";
 import { loadCredentials } from "@/services/sync/credentials";
 import { getConfigSchema, isConfigScoped, scopeFingerprint } from "@/lib/db/schemas/integration-config";
 import type { ConfigFieldSpec } from "@/lib/db/schemas/integration-config";
+import { GOOGLE_CONFIG_SECTIONS } from "@/connectors/google/config";
 import type { Database, Json } from "@/lib/db/database.types";
 
 export interface SaveIntegrationConfigResult {
@@ -40,6 +41,33 @@ function parseFieldsFromFormData(fields: ConfigFieldSpec[], formData: FormData):
     } else {
       raw[field.key] = String(formData.get(field.key) ?? "");
     }
+  }
+  return raw;
+}
+
+/** Re-projects one namespaced section of a FormData into an un-prefixed view,
+ * so parseFieldsFromFormData can run against it unchanged. */
+function sectionFormData(prefix: string, formData: FormData): FormData {
+  const section = new FormData();
+  for (const [name, value] of formData.entries()) {
+    if (name.startsWith(`${prefix}.`)) section.append(name.slice(prefix.length + 1), value);
+  }
+  return section;
+}
+
+/** Builds `{gmail, drive, chat}` from ONE submit of the merged Google config
+ * form, whose inputs are namespaced `<section>.<fieldKey>` (plus a
+ * `<section>.enabled` checkbox) so three services' field keys can share a
+ * form without colliding. A section is null when its checkbox wasn't ticked
+ * — its inputs are ignored entirely rather than parsed and discarded, so
+ * nothing inside a service the user just turned off can fail validation. */
+function parseGoogleFieldsFromFormData(formData: FormData): Record<string, unknown> {
+  const raw: Record<string, unknown> = {};
+  for (const section of GOOGLE_CONFIG_SECTIONS) {
+    raw[section.key] =
+      formData.get(`${section.key}.enabled`) === "on"
+        ? parseFieldsFromFormData(section.fields, sectionFormData(section.key, formData))
+        : null;
   }
   return raw;
 }
@@ -233,7 +261,15 @@ export async function saveIntegrationConfig(
     return { error: `"${integration.provider}" has no configurable options.` };
   }
 
-  const raw = parseFieldsFromFormData(entry.fields, formData);
+  // Google submits three namespaced sections at once (see
+  // GoogleIntegrationConfigForm); every other connector submits one flat set
+  // of `entry.fields`. Both converge on the same parsed object from here
+  // down — validation, resolve(), scope-change detection, the
+  // pending -> connected flip and the audit log are all shared.
+  const raw =
+    integration.provider === "google"
+      ? parseGoogleFieldsFromFormData(formData)
+      : parseFieldsFromFormData(entry.fields, formData);
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid configuration." };
@@ -277,7 +313,42 @@ export async function saveIntegrationConfig(
   }
 
   if (scopeChanged) {
-    await service.from("integration_cursors").delete().eq("integration_id", integration.id).eq("scope_key", "default");
+    // A connector holding several independent sub-cursors in one row (only
+    // `google` today) gets to prune just the part its scope change actually
+    // invalidated — otherwise editing one sub-service's scope would reset
+    // the other two as collateral damage. Everything else keeps the original
+    // behavior: delete the row, resume from scratch.
+    let prunedCursor: Record<string, unknown> | null = null;
+    if (entry.pruneCursorOnScopeChange) {
+      const { data: cursorRow } = await service
+        .from("integration_cursors")
+        .select("cursor")
+        .eq("integration_id", integration.id)
+        .eq("scope_key", "default")
+        .maybeSingle();
+      const currentCursor = cursorRow?.cursor;
+      prunedCursor = entry.pruneCursorOnScopeChange(
+        previousConfig,
+        parsed.data,
+        currentCursor && typeof currentCursor === "object" && !Array.isArray(currentCursor)
+          ? (currentCursor as Record<string, unknown>)
+          : null,
+      );
+    }
+
+    if (prunedCursor) {
+      // UPDATE, not upsert: a non-null return means the hook was handed an
+      // existing cursor to prune, so the row is already there — and
+      // inventing one for an integration that has never synced would just
+      // be a lie about its resume position.
+      await service
+        .from("integration_cursors")
+        .update({ cursor: prunedCursor as Json })
+        .eq("integration_id", integration.id)
+        .eq("scope_key", "default");
+    } else {
+      await service.from("integration_cursors").delete().eq("integration_id", integration.id).eq("scope_key", "default");
+    }
   }
 
   await service.from("audit_logs").insert({

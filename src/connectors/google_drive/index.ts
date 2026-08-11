@@ -1,7 +1,6 @@
 import "server-only";
-import { googleAuthorizeUrl, exchangeGoogleCode, refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
+import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
-import { DRIVE_SCOPES } from "@/connectors/google/scopes";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
 import { googleDriveConfigSchema } from "./config";
@@ -138,18 +137,18 @@ async function extractTextForFile(
   };
 }
 
+/**
+ * NOT registered in connectors/registry.ts anymore — the merged `google`
+ * connector owns the OAuth handshake and delegates fetch/normalize here (see
+ * connectors/google/index.ts), and also reuses this connector's `validate` as
+ * its own liveness probe. `getAuthorizeUrl`/`exchangeCode` are gone with the
+ * registration: there is no `api/oauth/google_drive/callback` route left for
+ * them to redirect to.
+ */
 export const googleDriveConnector: Connector<GoogleDriveCursor> = {
   id: "google_drive",
   displayName: "Google Drive",
   requiresOAuth: true,
-
-  getAuthorizeUrl(state: string): string {
-    return googleAuthorizeUrl({ provider: "google_drive", scopes: DRIVE_SCOPES, state });
-  },
-
-  async exchangeCode(code: string): Promise<ConnectorCredentials> {
-    return exchangeGoogleCode("google_drive", code, DRIVE_SCOPES);
-  },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
     const accessToken = credentials.tokens.access_token as string | undefined;

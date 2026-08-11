@@ -46,9 +46,9 @@ describe("OAuth state", () => {
     // compares state.provider against the route's own `provider` param) —
     // this test pins that verifyOAuthState only proves authenticity/freshness,
     // not "was this issued for the provider you're about to use it with".
-    const token = createOAuthState("google_drive", "ws-1", "proj-1");
+    const token = createOAuthState("google", "ws-1", "proj-1");
     const verified = verifyOAuthState(token);
-    expect(verified?.provider).toBe("google_drive");
+    expect(verified?.provider).toBe("google");
     expect(verified?.provider).not.toBe("slack");
   });
 
@@ -56,7 +56,7 @@ describe("OAuth state", () => {
     const token = createOAuthState("slack", "ws-1", "proj-1");
     const [payload, signature] = token.split(".");
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    decoded.provider = "google_drive"; // attacker tries to relabel a Slack-issued state as Drive's
+    decoded.provider = "google"; // attacker tries to relabel a Slack-issued state as Google's
     const tamperedPayload = Buffer.from(JSON.stringify(decoded), "utf8").toString("base64url");
     expect(verifyOAuthState(`${tamperedPayload}.${signature}`)).toBeNull();
   });

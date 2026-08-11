@@ -1,4 +1,4 @@
-import type { ConnectorProvider } from "@/components/items/provider-badge";
+import type { ConnectorProvider, GoogleService } from "@/components/items/provider-badge";
 import type { ActionItemKind, ActionItemPriority, ActionItemStatus } from "@/components/items/types";
 
 /** One entry in the left-hand day rail — a day (in the project's timezone)
@@ -14,6 +14,10 @@ export type IntegrationSummary = {
   provider: ConnectorProvider;
   status: string;
   displayName: string | null;
+  /** provider === "google" only: which sub-services its config currently has
+   * enabled, so the connector strip can render one chip per service instead
+   * of a single opaque "Google" chip. Empty for every other provider. */
+  googleServices: GoogleService[];
 };
 
 /** A normalized_events row for the selected day, camelCased at the boundary
@@ -21,6 +25,10 @@ export type IntegrationSummary = {
 export type DayEvent = {
   id: string;
   provider: ConnectorProvider;
+  /** metadata.service for provider==='google' rows (the merged connector
+   * stamps it in normalize()); null for everything else, and for Google rows
+   * ingested before the merge. */
+  service: GoogleService | null;
   type: string;
   actor: string | null;
   actorDisplay: string | null;

@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
  * fetch), so there's no single layout that can own both the header and the
  * workspace switcher without a parallel-routes slot. Two call sites of this
  * component is simpler than that. */
-export function AppHeader({ workspaceSwitcher }: { workspaceSwitcher?: ReactNode }) {
+export function AppHeader({ workspaceSwitcher, nav }: { workspaceSwitcher?: ReactNode; nav?: ReactNode }) {
   return (
     <header className="flex items-center justify-between border-b px-6 py-3">
       <div className="flex items-center gap-4">
         <span className="font-semibold">Intellidev</span>
         {workspaceSwitcher}
+        {nav ? <div className="flex items-center gap-4 border-l pl-4 text-sm text-muted-foreground">{nav}</div> : null}
       </div>
       <form action={signOut}>
         <Button type="submit" variant="ghost" size="sm">
