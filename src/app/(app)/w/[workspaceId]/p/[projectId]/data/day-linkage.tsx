@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ProviderBadge } from "@/components/items/provider-badge";
 import { PriorityBadge, StatusBadge } from "@/components/items/status-badge";
+import { AsyncButton } from "@/components/dashboard/async-button";
 import { cn } from "@/lib/utils";
 import { projectTimeLabel } from "@/lib/date/project-day";
+import { extractActionItemsForDay } from "./actions";
 import type { DayActionPoint, DayEvent } from "./types";
 
 type Focus = { kind: "event" | "item"; id: string } | null;
@@ -28,12 +30,14 @@ export function DayLinkage({
   timezone,
   workspaceId,
   projectId,
+  selectedDay,
 }: {
   events: DayEvent[];
   actionPoints: DayActionPoint[];
   timezone: string;
   workspaceId: string;
   projectId: string;
+  selectedDay: string;
 }) {
   const [focus, setFocus] = useState<Focus>(null);
 
@@ -114,6 +118,17 @@ export function DayLinkage({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Action Points ({actionPoints.length})</CardTitle>
+          <CardAction>
+            <AsyncButton
+              action={extractActionItemsForDay.bind(null, workspaceId, projectId, selectedDay)}
+              loadingMessage={`Extracting for ${selectedDay}…`}
+              size="sm"
+              variant="outline"
+              data-testid="extract-day-action-points"
+            >
+              Extract for this day
+            </AsyncButton>
+          </CardAction>
         </CardHeader>
         <CardContent className="space-y-2">
           {actionPoints.length === 0 ? (
