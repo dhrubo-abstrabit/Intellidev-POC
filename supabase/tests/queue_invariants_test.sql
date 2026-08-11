@@ -3,9 +3,16 @@
 -- `supabase test db` (requires the local stack: `supabase start`).
 
 begin;
-select plan(9);
+select plan(10);
 
--- 1 & 2. Both extensions are installed.
+-- 1, 2 & 3. All three extensions dispatch_jobs()/dispatch_daily_tick()/
+--    reap_job_dispatches() depend on are installed. pg_net is checked
+--    explicitly and separately from pg_cron/pgmq: it was wrongly assumed
+--    pre-installed on every environment when this migration was first
+--    written (true on the local Docker image's own bootstrap, NOT true on
+--    a hosted project that predates pg_net being enabled by default — see
+--    20260811110000_pg_net_extension.sql), and nothing else here would
+--    have caught that gap before it reached production.
 select ok(
   exists(select 1 from pg_extension where extname = 'pg_cron'),
   'pg_cron extension is installed'
@@ -13,6 +20,10 @@ select ok(
 select ok(
   exists(select 1 from pg_extension where extname = 'pgmq'),
   'pgmq extension is installed'
+);
+select ok(
+  exists(select 1 from pg_extension where extname = 'pg_net'),
+  'pg_net extension is installed'
 );
 
 -- 3. The `jobs` queue exists.
