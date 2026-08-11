@@ -8,6 +8,8 @@ import { loadCredentials } from "@/services/sync/credentials";
 import { toBytea } from "@/lib/crypto/tokens";
 import { uuidv7 } from "@/lib/db/uuid";
 import { publishJob } from "@/lib/queue/qstash";
+import { projectToday } from "@/lib/date/project-day";
+import { settleBatchMembership, triggerDailyExtraction } from "@/services/sync/batch";
 import type { Database, Json } from "@/lib/db/database.types";
 
 export type IntegrationRow = Pick<
@@ -83,6 +85,12 @@ export async function runSync(
   integrationId: string,
   trigger: Database["public"]["Enums"]["sync_trigger"] = "manual",
   chainDepth = 0,
+  // Only ever passed on a self-chained follow-up (see the hasMore branch
+  // below) — pins the batch this integration reports to across hops so a
+  // chain spanning local midnight doesn't attribute to the wrong day. Every
+  // other caller (cron, manual "Sync Now") omits it and we compute "today"
+  // fresh, matching how src/app/api/cron/tick/route.ts seeded the batch.
+  batchDate?: string,
 ): Promise<RunSyncResult> {
   const service = createServiceClient();
 
@@ -94,6 +102,9 @@ export async function runSync(
   if (!integration) {
     return { status: "failed", eventsFetched: 0, eventsWritten: 0, hasMore: false, error: "Integration not found" };
   }
+
+  const { data: projectRow } = await service.from("projects").select("timezone").eq("id", integration.project_id).maybeSingle();
+  const effectiveBatchDate = batchDate ?? projectToday(projectRow?.timezone ?? "UTC");
 
   const { data: job, error: jobError } = await service
     .from("sync_jobs")
@@ -256,19 +267,6 @@ export async function runSync(
       })
       .eq("id", job.id);
 
-    if (eventsWritten > 0) {
-      // Best-effort: a failure to enqueue shouldn't fail an otherwise
-      // successful sync. Cron's next tick isn't a real backstop for THIS
-      // (it only re-syncs the integration, it never re-triggers the LLM
-      // job for events already marked ingested) — acceptable for now since
-      // publishJob failing here is rare and the schema note in
-      // normalized_events_unprocessed_idx means a future manual/cron sweep
-      // over unprocessed events would still catch it.
-      await publishJob("/api/jobs/llm", { projectId: integration.project_id }).catch((err) => {
-        console.error(`[sync] failed to enqueue LLM job for project ${integration.project_id}:`, err);
-      });
-    }
-
     if (fetchResult.hasMore && chainDepth < MAX_SYNC_CHAIN_DEPTH) {
       // The connector couldn't drain everything within its time budget (a
       // large Drive backlog, a busy Gmail mailbox). With a once-a-day cron
@@ -277,16 +275,40 @@ export async function runSync(
       // catches up — so chain one bounded follow-up job immediately instead.
       // This runs AFTER the sync_jobs row above is marked "succeeded" (not
       // "running") specifically because sync_jobs_one_active_per_integration
-      // would otherwise reject the follow-up job's own insert.
-      await publishJob("/api/jobs/sync", { integrationId: integration.id, trigger, chainDepth: chainDepth + 1 }).catch(
-        (err) => {
-          console.error(`[sync] failed to enqueue follow-up sync for integration ${integration.id}:`, err);
-        },
-      );
-    } else if (fetchResult.hasMore) {
-      console.warn(
-        `[sync] integration ${integration.id} still has more to fetch after ${MAX_SYNC_CHAIN_DEPTH} chained runs — deferring to the next scheduled sync`,
-      );
+      // would otherwise reject the follow-up job's own insert. Not terminal
+      // for today's batch yet — pin effectiveBatchDate through so the chain
+      // still reports to the same batch even if a hop crosses local midnight.
+      await publishJob("/api/jobs/sync", {
+        integrationId: integration.id,
+        trigger,
+        chainDepth: chainDepth + 1,
+        batchDate: effectiveBatchDate,
+      }).catch((err) => {
+        console.error(`[sync] failed to enqueue follow-up sync for integration ${integration.id}:`, err);
+      });
+    } else {
+      if (fetchResult.hasMore) {
+        console.warn(
+          `[sync] integration ${integration.id} still has more to fetch after ${MAX_SYNC_CHAIN_DEPTH} chained runs — deferring to the next scheduled sync`,
+        );
+      }
+
+      // Terminal for today, one way or another. If this integration belongs
+      // to a coordinated daily batch (src/services/sync/batch.ts), report in
+      // and let the batch fire extraction once every member has; otherwise
+      // fall back to the old immediate-trigger-on-write behavior (e.g. a
+      // manual "Sync Now" outside of any active batch).
+      const settled = await settleBatchMembership(service, {
+        projectId: integration.project_id,
+        integrationId: integration.id,
+        batchDate: effectiveBatchDate,
+        outcome: "succeeded",
+      });
+      if (settled.inBatch) {
+        if (settled.firedLlmJob) await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+      } else if (eventsWritten > 0) {
+        await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+      }
     }
 
     return {
@@ -327,6 +349,20 @@ export async function runSync(
         next_sync_at: new Date(Date.now() + backoffSeconds * 1000).toISOString(),
       })
       .eq("id", integration.id);
+
+    // A broken integration must not hang the rest of the project's batch —
+    // settle its membership (idempotent: a QStash-retried delivery of this
+    // same failure just finds itself already settled and no-ops) but never
+    // trigger extraction on a failure path, batch or not — no new data.
+    const settled = await settleBatchMembership(service, {
+      projectId: integration.project_id,
+      integrationId: integration.id,
+      batchDate: effectiveBatchDate,
+      outcome: "failed",
+    });
+    if (settled.inBatch && settled.firedLlmJob) {
+      await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+    }
 
     return { status: "failed", eventsFetched: 0, eventsWritten: 0, hasMore: false, error: message };
   }

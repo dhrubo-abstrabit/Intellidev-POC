@@ -53,6 +53,7 @@ export type Database = {
       action_items: {
         Row: {
           assignee_id: string | null
+          assignee_team_member_id: string | null
           confidence_score: number
           created_at: string
           dedupe_hash: string
@@ -76,6 +77,7 @@ export type Database = {
         }
         Insert: {
           assignee_id?: string | null
+          assignee_team_member_id?: string | null
           confidence_score: number
           created_at?: string
           dedupe_hash: string
@@ -99,6 +101,7 @@ export type Database = {
         }
         Update: {
           assignee_id?: string | null
+          assignee_team_member_id?: string | null
           confidence_score?: number
           created_at?: string
           dedupe_hash?: string
@@ -127,6 +130,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "action_items_assignee_team_member_id_fkey"
+            columns: ["assignee_team_member_id", "workspace_id"]
+            isOneToOne: false
+            referencedRelation: "team_members"
+            referencedColumns: ["id", "workspace_id"]
           },
           {
             foreignKeyName: "action_items_llm_run_id_workspace_id_fkey"
@@ -722,6 +732,86 @@ export type Database = {
             columns: ["integration_id", "workspace_id"]
             isOneToOne: false
             referencedRelation: "integrations"
+            referencedColumns: ["id", "workspace_id"]
+          },
+        ]
+      }
+      sync_batch_members: {
+        Row: {
+          batch_id: string
+          completed_at: string | null
+          created_at: string
+          id: string
+          integration_id: string
+          outcome: string | null
+          workspace_id: string
+        }
+        Insert: {
+          batch_id: string
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          integration_id: string
+          outcome?: string | null
+          workspace_id: string
+        }
+        Update: {
+          batch_id?: string
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          integration_id?: string
+          outcome?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_batch_members_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "sync_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_batch_members_integration_id_workspace_id_fkey"
+            columns: ["integration_id", "workspace_id"]
+            isOneToOne: false
+            referencedRelation: "integrations"
+            referencedColumns: ["id", "workspace_id"]
+          },
+        ]
+      }
+      sync_batches: {
+        Row: {
+          batch_date: string
+          created_at: string
+          id: string
+          llm_triggered_at: string | null
+          project_id: string
+          workspace_id: string
+        }
+        Insert: {
+          batch_date: string
+          created_at?: string
+          id?: string
+          llm_triggered_at?: string | null
+          project_id: string
+          workspace_id: string
+        }
+        Update: {
+          batch_date?: string
+          created_at?: string
+          id?: string
+          llm_triggered_at?: string | null
+          project_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_batches_project_id_workspace_id_fkey"
+            columns: ["project_id", "workspace_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
             referencedColumns: ["id", "workspace_id"]
           },
         ]

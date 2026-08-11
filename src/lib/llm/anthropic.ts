@@ -2,8 +2,15 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { llmEnv } from "@/lib/env";
-import { ActionItemGenerationSchema } from "./schema";
-import type { ActionItemContext, ActionItemGenerationResult, LLMProvider } from "./types";
+import { ActionItemGenerationSchema, ActionItemConsolidationSchema } from "./schema";
+import type {
+  ActionItemContext,
+  ActionItemGenerationResult,
+  ActionItemConsolidationResult,
+  DraftForConsolidation,
+  LLMProvider,
+  OpenActionItemSummary,
+} from "./types";
 
 const MODEL = "claude-haiku-4-5";
 const MAX_TOKENS = 8000;
@@ -24,10 +31,14 @@ Rules:
 - sourceEventIds must only contain ids from the NEW EVENTS list you are given below, and must genuinely support the item.
 - If there is nothing worth surfacing, return an empty items array. Do not pad output to seem useful.`;
 
-function renderProjectProfile(context: ActionItemContext): string {
-  const openItems = context.openActionItems.length
-    ? context.openActionItems.map((item) => `- [${item.kind}/${item.priority}] ${item.title}`).join("\n")
+function renderOpenItems(openActionItems: OpenActionItemSummary[]): string {
+  return openActionItems.length
+    ? openActionItems.map((item) => `- id=${item.id} [${item.kind}/${item.priority}] ${item.title}`).join("\n")
     : "(none)";
+}
+
+function renderProjectProfile(context: ActionItemContext): string {
+  const openItems = renderOpenItems(context.openActionItems);
 
   const summaries = context.recentSummaries.length
     ? context.recentSummaries.map((s) => `- ${s.date}: ${s.summary}`).join("\n")
@@ -67,6 +78,25 @@ function buildSystemBlocks(context: ActionItemContext): Anthropic.Messages.TextB
     // block, passed as the user message) is volatile and never cached.
     { type: "text", text: renderProjectProfile(context), cache_control: { type: "ephemeral" } },
   ];
+}
+
+const CONSOLIDATION_SYSTEM_PROMPT = `You are deduplicating a batch of draft action items — some may describe the same underlying issue as each other, or as an item already being tracked, even when worded differently (different phrasing, different level of detail, or written from a different connector's perspective).
+
+Rules:
+- Group draft items together if they describe the same underlying issue. A group can contain one draft (nothing to merge) or several.
+- If a group's issue matches an OPEN ITEM below, set matchesOpenItemId to that item's exact id from the list. Do not invent an id, and do not paraphrase its title — canonicalTitle is ignored for a matched group.
+- If a group is genuinely new (no existing open item covers it), matchesOpenItemId is null and canonicalTitle must be stable and specific enough to match verbatim next time this issue comes up (e.g. "Fix flaky checkout test", not "Fix the test that broke today").
+- mergedDescription should combine anything worth keeping from every draft in the group.
+- kind, priority, confidence, and ownerHint should reflect the group as a whole (e.g. the highest priority/confidence among its drafts, adjusted if merging several corroborating drafts increases your confidence; keep an ownerHint if any draft in the group has one).
+- Every draft key given to you must appear in exactly one group's draftKeys.`;
+
+function renderDraftsForConsolidation(drafts: DraftForConsolidation[]): string {
+  return drafts
+    .map(({ key, draft }) => {
+      const text = [draft.title, draft.description].filter(Boolean).join(" — ");
+      return `- key=${key} [${draft.kind}/${draft.priority}] confidence=${draft.confidence}\n  ${text}`;
+    })
+    .join("\n");
 }
 
 let client: Anthropic | undefined;
@@ -115,6 +145,39 @@ export const anthropicProvider: LLMProvider = {
       },
       model: MODEL,
       prompt: { system, messages: [{ role: "user", content: userContent }] },
+      response: message,
+    };
+  },
+
+  async consolidateActionItems(
+    openActionItems: OpenActionItemSummary[],
+    drafts: DraftForConsolidation[],
+  ): Promise<ActionItemConsolidationResult> {
+    const anthropic = getClient();
+    const userContent = `OPEN ITEMS:\n${renderOpenItems(openActionItems)}\n\nDRAFT ITEMS (${drafts.length}):\n${renderDraftsForConsolidation(drafts)}`;
+
+    const message = await anthropic.messages.parse({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      system: CONSOLIDATION_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userContent }],
+      output_config: { format: zodOutputFormat(ActionItemConsolidationSchema) },
+    });
+
+    if (!message.parsed_output) {
+      throw new Error("Model did not return parseable structured output for consolidation");
+    }
+
+    return {
+      consolidation: message.parsed_output,
+      usage: {
+        promptTokens: message.usage.input_tokens,
+        completionTokens: message.usage.output_tokens,
+        cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: message.usage.cache_creation_input_tokens ?? 0,
+      },
+      model: MODEL,
+      prompt: { system: CONSOLIDATION_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }] },
       response: message,
     };
   },
