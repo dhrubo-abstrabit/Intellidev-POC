@@ -456,6 +456,42 @@ export type Database = {
           },
         ]
       }
+      job_dispatches: {
+        Row: {
+          attempt: number
+          dispatched_at: string
+          error: string | null
+          id: string
+          msg_id: number
+          request_id: number | null
+          resolved_at: string | null
+          route: string
+          status_code: number | null
+        }
+        Insert: {
+          attempt: number
+          dispatched_at?: string
+          error?: string | null
+          id?: string
+          msg_id: number
+          request_id?: number | null
+          resolved_at?: string | null
+          route: string
+          status_code?: number | null
+        }
+        Update: {
+          attempt?: number
+          dispatched_at?: string
+          error?: string | null
+          id?: string
+          msg_id?: number
+          request_id?: number | null
+          resolved_at?: string | null
+          route?: string
+          status_code?: number | null
+        }
+        Relationships: []
+      }
       llm_runs: {
         Row: {
           cache_creation_tokens: number | null
@@ -1076,7 +1112,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      ack_job: { Args: { p_msg_id: number }; Returns: boolean }
       current_workspace_ids: { Args: never; Returns: string[] }
+      dispatch_daily_tick: { Args: never; Returns: undefined }
+      dispatch_jobs: { Args: never; Returns: undefined }
+      enqueue_job: {
+        Args: { p_delay_seconds?: number; p_payload: Json; p_route: string }
+        Returns: number
+      }
+      fail_job: {
+        Args: { p_attempt: number; p_error: string; p_msg_id: number }
+        Returns: boolean
+      }
       has_workspace_role: {
         Args: {
           p_roles: Database["public"]["Enums"]["workspace_role"][]
@@ -1088,6 +1135,7 @@ export type Database = {
         Args: { p_workspace_id: string }
         Returns: boolean
       }
+      reap_job_dispatches: { Args: never; Returns: undefined }
     }
     Enums: {
       action_item_kind: "action" | "risk" | "blocker" | "update" | "follow_up"
