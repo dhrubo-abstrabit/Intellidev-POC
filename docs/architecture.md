@@ -122,6 +122,30 @@ CLI flags and JSON event shapes move between releases. Pin versions in the image
 keep a contract test per driver asserting the event shape, so drift fails in CI rather
 than mid-run.
 
+### Harness capability matrix
+
+Measured in T2/T3 against `claude-code 2.1.228` and `codex-cli 0.147.0`. The gaps run
+in **both** directions, which is why the adapter declares them rather than reducing
+everything to what the weaker harness can do.
+
+| Capability               | Claude Code             | Codex                  | How the adapter compensates                                                      |
+| ------------------------ | ----------------------- | ---------------------- | -------------------------------------------------------------------------------- |
+| Mid-run steering         | yes, streaming stdin    | **no**                 | Codex queues; the engine resumes the thread with the steer as a follow-up prompt |
+| Token deltas for live UI | yes                     | **no**                 | Codex shows settled messages only; the UI must not assume a token stream         |
+| Native structured output | **no**                  | yes, `--output-schema` | Claude Code goes through the gateway's `stage_advance` tool                      |
+| Window reset + status    | yes, `rate_limit_event` | **no**                 | Codex window utilisation is fully estimated                                      |
+| Cost per turn            | yes, `total_cost_usd`   | **no**                 | Codex leaves `usdEst` absent rather than deriving it from a rate card            |
+| Self-report of tools/MCP | yes, `system/init`      | **no**                 | Codex reports no tool list; connection health needs a separate probe there       |
+
+Two structural differences worth knowing before reading either driver:
+
+- **The wire formats have nothing in common.** Claude Code streams message content
+  blocks; Codex streams typed _items_ wrapped in `item.started` / `item.completed`.
+  There is deliberately no shared base class — an abstraction over two dissimilar
+  shapes would cost more than it saves. What they share is the output type.
+- **`codex exec` hangs if stdin stays open.** Piped stdin is appended to the prompt as
+  a `<stdin>` block, so the driver closes stdin immediately after spawn.
+
 ### Canonical event envelope
 
 ```json

@@ -16,16 +16,20 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 
 ## Current status
 
-**T1–T2 complete.** 76 tests, typecheck clean. Verify with `pnpm install && pnpm check`.
+**T1–T3 complete.** 118 tests, typecheck clean. Verify with `pnpm install && pnpm check`.
 
 - **T1** — `@intellidev/shared`: event vocabulary, stage templates, manifest, toolset,
   run spec.
 - **T2** — `@intellidev/adapter`: Claude Code driver, NDJSON reassembly, event bus with
-  seq/ack/replay. Contract tests replay **real** `claude-code 2.1.228` output recorded
-  in `packages/adapter/test/fixtures/`, so they need no subprocess and spend no quota.
+  seq/ack/replay.
+- **T3** — Codex driver behind the same interface, plus a **cross-harness test**: both
+  CLIs were given the same task and downstream code cannot tell which one ran it.
 
-Next: T3, the Codex driver — the task that proves the abstraction is not
-Claude-Code-shaped.
+Contract tests replay **real** CLI output recorded in
+`packages/adapter/test/fixtures/`, so they need no subprocess and spend no quota. The
+[capability matrix](architecture.md) records where the two harnesses genuinely differ.
+
+Next: T4, the stage engine.
 
 ### Re-recording a fixture after a CLI upgrade
 
