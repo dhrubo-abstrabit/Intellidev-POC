@@ -179,8 +179,8 @@ export const DEFAULT_STAGE_TEMPLATE: z.input<typeof StageTemplate> = {
     {
       id: 'review',
       kind: 'agent',
-      // Cross-model review: written by one harness, reviewed by the other.
-      harness: 'codex',
+      // Cross-model review: the default harness writes, a different one reviews.
+      harness: 'claude-code',
       promptFile: 'prompts/review.md',
       tools: { mode: 'read_only' },
       gate: {

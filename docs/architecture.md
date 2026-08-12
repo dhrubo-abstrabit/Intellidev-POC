@@ -124,44 +124,73 @@ than mid-run.
 
 ### Harness capability matrix
 
-Measured in T2/T3 against `claude-code 2.1.228` and `codex-cli 0.147.0`. The gaps run
-in **both** directions, which is why the adapter declares them rather than reducing
-everything to what the weaker harness can do.
+Measured against real captures of `claude-code 2.1.228`, `codex-cli 0.147.0` and
+`opencode 1.18.16`. The gaps run in **every** direction, which is why the adapter
+declares them rather than reducing everything to what the weakest harness can do.
 
-| Capability               | Claude Code             | Codex                  | opencode      | How the adapter compensates                                                              |
-| ------------------------ | ----------------------- | ---------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| Mid-run steering         | yes, streaming stdin    | **no**                 | **no**        | Both one-shot harnesses queue; the engine folds the steer into the next attempt's prompt |
-| Token deltas for live UI | yes                     | **no**                 | yes           | Codex shows settled messages only; the UI must not assume a token stream                 |
-| Native structured output | **no**                  | yes, `--output-schema` | **no**        | Others go through the gateway's `stage_advance` tool                                     |
-| Window reset + status    | yes, `rate_limit_event` | not in `exec`          | **no**        | Codex via app-server; opencode is provider-agnostic so has no single window              |
-| Window used percent      | **no**                  | yes, via app-server    | **no**        | Claude Code utilisation stays derived                                                    |
-| Cost per turn            | yes, `total_cost_usd`   | **no**                 | yes, per step | Codex leaves `usdEst` absent rather than deriving it from a rate card                    |
-| Self-report of tools/MCP | yes, `system/init`      | **no**                 | **no**        | Only Claude Code enumerates its tools; health needs a probe elsewhere                    |
+| Capability               | Claude Code             | Codex                     | **opencode** (default)  | How the adapter compensates                                                              |
+| ------------------------ | ----------------------- | ------------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
+| Mid-run steering         | yes, streaming stdin    | **no**                    | **no**                  | Both one-shot harnesses queue; the engine folds the steer into the next attempt's prompt |
+| Token deltas for live UI | yes                     | **no**                    | **no** on `run`         | opencode's _server_ stream has deltas — see the upgrade note below                       |
+| Native skills            | yes                     | **no**                    | yes, `skills.paths`     | Codex gets `skill_list`/`skill_load` as gateway tools instead                            |
+| Per-tool permissions     | yes                     | **no**, sandbox mode only | yes, `permission` rules | For Codex the gateway enforces the whole policy                                          |
+| Native structured output | **no**                  | yes, `--output-schema`    | **no**                  | Others go through the gateway's `stage_advance` tool                                     |
+| Window reset + status    | yes, `rate_limit_event` | not in `exec`             | **no**                  | Codex via app-server; opencode is provider-agnostic so has no single window              |
+| Window used percent      | **no**                  | yes, via app-server       | **no**                  | Claude Code utilisation stays derived                                                    |
+| Cost per turn            | yes, `total_cost_usd`   | **no**                    | yes, per step           | Codex leaves `usdEst` absent rather than deriving it from a rate card                    |
+| Self-report of tools/MCP | yes, `system/init`      | **no**                    | **no**                  | Only Claude Code enumerates its tools                                                    |
 
 No two capability records match, and a test asserts that — if any pair did, a driver
 would be describing a harness nobody measured.
 
+**Why opencode is the default.** It is the richest projection target: native skills,
+MCP local _and_ remote servers, an `instructions` array, and per-tool permission
+rules. The cost is no token deltas on the `run` path, so its live feed shows settled
+messages rather than a token stream. Pointing that driver at `opencode serve` and its
+SSE stream would recover deltas — the upgrade path if the UI needs them.
+
 ### Wire formats: three, all different
 
-| Harness     | Shape                                            | End-of-turn signal |
-| ----------- | ------------------------------------------------ | ------------------ |
-| Claude Code | message content blocks                           | `result`           |
-| Codex       | typed items in `item.started` / `item.completed` | `turn.completed`   |
-| opencode    | flat event stream, dotted `type` + `properties`  | `session.idle`     |
+| Harness     | Shape                                            | End-of-turn signal                |
+| ----------- | ------------------------------------------------ | --------------------------------- |
+| Claude Code | message content blocks                           | `result`                          |
+| Codex       | typed items in `item.started` / `item.completed` | `turn.completed`                  |
+| opencode    | message parts in `{type, part}`                  | `step-finish` with `reason: stop` |
 
-opencode's is closest to our own event log. Its stream is also far chattier — it
-drives a TUI, so it carries permission prompts, LSP state and PTY lifecycle that mean
-nothing headless; the mapper ignores those by prefix and reports anything else as
-drift.
+There is deliberately no shared base class between the mappers — an abstraction over
+three dissimilar shapes would cost more than it saves. What they share is the output
+type, which is the only thing anything downstream depends on.
 
-Two structural differences worth knowing before reading either driver:
+**A correction worth keeping.** opencode's server SSE stream and its
+`run --format json` stream are **different formats**. The first version of that driver
+was written from the server's OpenAPI schema and was simply wrong: `run` emits parts,
+not `session.next.*` events. Capture beats inference, which is why every driver here is
+pinned to a recorded fixture.
 
-- **The wire formats have nothing in common.** Claude Code streams message content
-  blocks; Codex streams typed _items_ wrapped in `item.started` / `item.completed`.
-  There is deliberately no shared base class — an abstraction over two dissimilar
-  shapes would cost more than it saves. What they share is the output type.
-- **`codex exec` hangs if stdin stays open.** Piped stdin is appended to the prompt as
-  a `<stdin>` block, so the driver closes stdin immediately after spawn.
+Three more things only a capture showed:
+
+- **`codex exec` hangs if stdin stays open** — piped stdin is appended to the prompt as
+  a `<stdin>` block, so the driver closes stdin immediately after spawn. opencode needs
+  the same treatment.
+- **opencode emits a `tool` part once, already completed**, so one raw event has to
+  become both `tool.call` and `tool.result` or the UI shows an orphaned result.
+- **opencode has no file-change event** — a write is a tool call, so `file.changed` is
+  derived from write-tool names plus the input path, the same way the Claude Code driver
+  does it.
+
+### Config projection per harness
+
+What T8 writes at boot. opencode's config is a single JSON file and covers the most
+ground, which is the other half of why it is the default.
+
+| Concern           | Claude Code                 | Codex                       | opencode                                                     |
+| ----------------- | --------------------------- | --------------------------- | ------------------------------------------------------------ |
+| MCP servers       | `.mcp.json`                 | `config.toml [mcp_servers]` | `mcp.<name>` — local or remote, with headers and OAuth       |
+| Skills            | `.claude/skills/`           | gateway tools               | `skills.paths` / `skills.urls`                               |
+| Repo context      | `CLAUDE.md`                 | `AGENTS.md`                 | `instructions[]` — an array, so several files                |
+| Tool policy       | `settings.json` permissions | `-s <sandbox>`              | `permission.{read,edit,bash,…}` + `tools.<name>`             |
+| Per-stage persona | system append               | prompt prefix               | `agent.<name>` with its own model, prompt, tools, permission |
+| Model             | `--model`                   | `-m`                        | `model`, or `--model provider/model`                         |
 
 ### Reaching Codex usage data: the app-server option
 
@@ -298,8 +327,10 @@ The gateway also exposes `stage_state`, `stage_advance`, `task_context`, `run_ch
 and `ask_user`.
 
 **One deliberate exception:** where a harness has native skills, use them. Claude Code
-gets real files in `.claude/skills/` for progressive disclosure, and uses the gateway
-only for MCP servers. Levelling down to the weakest harness is the wrong consistency.
+(`.claude/skills/`) and opencode (`skills.paths`) both load skills from a directory with
+progressive disclosure, so they get real files and use the gateway only for MCP servers.
+Only Codex, which has no skill primitive, gets `skill_list` / `skill_load` as tools.
+Levelling all three down to the weakest would be the wrong consistency.
 
 ### Skills resolution
 

@@ -15,18 +15,25 @@ import { OpencodeMapper } from './mapper.js'
 export const OPENCODE_PINNED_VERSION = '1.18.16'
 
 /**
- * `opencode run` is one-shot like `codex exec`, so no mid-run steering. It does
- * stream text deltas and — unlike Codex — reports a per-step cost. Being
- * provider-agnostic, it has no single rolling window to report.
+ * Measured against a real run of opencode 1.18.16, which corrected two guesses:
  *
- * Verified from `opencode run --help` and the server's OpenAPI document at 1.18.16.
+ *  - **No streaming deltas.** `run --format json` emits complete `text` parts. The
+ *    server's SSE stream does have deltas, so switching this driver to
+ *    `opencode serve` would gain them — that is the upgrade path if the live UI
+ *    needs token-by-token output from this harness.
+ *  - **Cost is reported** on every `step-finish`, though free models report 0. The
+ *    field is real; the value depends on the model.
+ *
+ * Provider-agnostic by design, so there is no single rolling window to report.
  */
 export const OPENCODE_CAPABILITIES: HarnessCapabilities = {
   midRunSteering: false,
-  streamingDeltas: true,
+  streamingDeltas: false,
   nativeStructuredOutput: false,
   reportsWindowState: false,
   reportsCost: true,
+  nativeSkills: true,
+  perToolPermissions: true,
 }
 
 export interface OpencodeDriverOptions {

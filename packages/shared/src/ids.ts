@@ -26,6 +26,15 @@ export type StageId = z.infer<typeof StageId>
 export const HarnessId = z.enum(['claude-code', 'codex', 'opencode'])
 export type HarnessId = z.infer<typeof HarnessId>
 
+/**
+ * Default for new projects.
+ *
+ * opencode, because it is the richest projection target of the three: native skills
+ * via `skills.paths`, MCP local *and* remote servers, an `instructions` array, and
+ * per-tool permission rules. A project can override it per stage.
+ */
+export const DEFAULT_HARNESS: HarnessId = 'opencode'
+
 export const TaskStatus = z.enum([
   'not_started',
   'dispatched',

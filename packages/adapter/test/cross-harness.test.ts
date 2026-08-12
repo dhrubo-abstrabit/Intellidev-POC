@@ -17,9 +17,8 @@ import type { RawMapper } from '../src/driver/types.js'
  * not be able to tell which one ran it.
  *
  * All three fixtures are the same instruction — read `version.ts`, report the
- * version — from claude-code 2.1.228 and codex-cli 0.147.0 (real captures) and
- * opencode 1.18.16 (derived from its published OpenAPI document; see
- * opencode.contract.test.ts for why that one is weaker).
+ * version — captured from real runs of claude-code 2.1.228, codex-cli 0.147.0 and
+ * opencode 1.18.16.
  */
 
 function replay(mapper: RawMapper, path: string): EventBodyInput[] {
@@ -49,7 +48,7 @@ const opencode = (() => {
   const mapper = new OpencodeMapper()
   const events = replay(
     mapper,
-    join(import.meta.dirname, 'fixtures', 'opencode', 'spec-derived-run.jsonl'),
+    join(import.meta.dirname, 'fixtures', 'opencode', 'run-read-tool.jsonl'),
   )
   return { mapper, events, types: new Set(events.map((e) => e.type)) }
 })()
@@ -173,12 +172,29 @@ describe('capability differences are declared, not hidden', () => {
     expect(seen.size).toBe(records.length)
   })
 
+  it('splits on native skills, which decides how the gateway serves them', () => {
+    // Claude Code and opencode load skills from a directory themselves; Codex has no
+    // skill primitive, so the gateway exposes skill_list/skill_load as tools there.
+    expect(CLAUDE_CODE_CAPABILITIES.nativeSkills).toBe(true)
+    expect(OPENCODE_CAPABILITIES.nativeSkills).toBe(true)
+    expect(CODEX_CAPABILITIES.nativeSkills).toBe(false)
+  })
+
+  it('splits on per-tool permissions, which decides who enforces policy', () => {
+    // Codex can only be told all-or-nothing via a sandbox mode, so the gateway has
+    // to enforce the whole policy for it.
+    expect(CODEX_CAPABILITIES.perToolPermissions).toBe(false)
+    expect(CLAUDE_CODE_CAPABILITIES.perToolPermissions).toBe(true)
+    expect(OPENCODE_CAPABILITIES.perToolPermissions).toBe(true)
+  })
+
   it('only mid-run-steerable harnesses claim it, and each names its own gap', () => {
     // opencode differs from codex precisely by cost and deltas; that is the whole
     // reason it is worth having as a third option.
     expect(OPENCODE_CAPABILITIES.reportsCost).toBe(true)
     expect(CODEX_CAPABILITIES.reportsCost).toBe(false)
-    expect(OPENCODE_CAPABILITIES.streamingDeltas).toBe(true)
-    expect(CODEX_CAPABILITIES.streamingDeltas).toBe(false)
+    // Only Claude Code streams deltas on the path we drive.
+    expect(CLAUDE_CODE_CAPABILITIES.streamingDeltas).toBe(true)
+    expect(OPENCODE_CAPABILITIES.streamingDeltas).toBe(false)
   })
 })

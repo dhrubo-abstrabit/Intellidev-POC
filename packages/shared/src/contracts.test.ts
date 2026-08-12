@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canTransitionTask, isRunTerminal } from './ids.js'
+import { DEFAULT_HARNESS, canTransitionTask, isRunTerminal } from './ids.js'
 import { ProjectManifest, renderBranchName, slugify } from './manifest.js'
 import { DEFAULT_STAGE_TEMPLATE, StageTemplate } from './stages.js'
 import { attachmentInStage, blockingAttachments, resolveSkills } from './tools.js'
@@ -18,11 +18,19 @@ describe('stage templates', () => {
     ])
   })
 
-  it('reviews with the other harness, so review is genuinely cross-model', () => {
+  it('reviews with a different harness than the default, so review is cross-model', () => {
     const parsed = StageTemplate.parse(DEFAULT_STAGE_TEMPLATE)
     const review = parsed.stages.find((s) => s.id === 'review')
-    expect(review?.harness).toBe('codex')
+    // The invariant, not the literal: whoever writes the code must not review it.
+    expect(review?.harness).toBeDefined()
+    expect(review?.harness).not.toBe(DEFAULT_HARNESS)
     expect(review?.tools.mode).toBe('read_only')
+  })
+
+  it('leaves every other stage on the project default', () => {
+    const parsed = StageTemplate.parse(DEFAULT_STAGE_TEMPLATE)
+    const overridden = parsed.stages.filter((s) => s.harness !== undefined).map((s) => s.id)
+    expect(overridden).toEqual(['review'])
   })
 
   it('gives the design stage no write access', () => {

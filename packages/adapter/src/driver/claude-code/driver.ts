@@ -26,6 +26,8 @@ export const CLAUDE_CODE_CAPABILITIES: HarnessCapabilities = {
   nativeStructuredOutput: false,
   reportsWindowState: true,
   reportsCost: true,
+  nativeSkills: true,
+  perToolPermissions: true,
 }
 
 export interface ClaudeCodeDriverOptions {

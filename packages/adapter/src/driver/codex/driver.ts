@@ -26,6 +26,8 @@ export const CODEX_CAPABILITIES: HarnessCapabilities = {
   nativeStructuredOutput: true,
   reportsWindowState: false,
   reportsCost: false,
+  nativeSkills: false,
+  perToolPermissions: false,
 }
 
 /** Our tool policy → the sandbox Codex should run commands under. */

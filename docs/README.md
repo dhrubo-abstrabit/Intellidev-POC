@@ -18,7 +18,7 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 ## Shape
 
 - **Runtime**: AWS ECS on Fargate, scale-to-zero, 60–120 s dispatch budget
-- **Harnesses**: Claude Code, Codex CLI and opencode — each behind one driver interface
+- **Harnesses**: **opencode** (default), Claude Code, Codex CLI — each behind one driver
 - **Model auth**: subscription seats, scheduled as a pooled resource
 - **Language**: TypeScript end to end (control plane, adapter, UI)
 
@@ -43,20 +43,17 @@ they need no subprocess and spend no quota. The
 
 ### Fixture provenance
 
-Not all three are equal, and the difference matters:
+All three are **runtime captures**, not schemas:
 
-| Harness             | Fixture source                                | Strength        |
-| ------------------- | --------------------------------------------- | --------------- |
-| Claude Code 2.1.228 | real capture of `--output-format stream-json` | verified        |
-| Codex 0.147.0       | real capture of `exec --json`                 | verified        |
-| opencode 1.18.16    | derived from its published OpenAPI document   | **shapes only** |
+| Harness             | Captured from                                               |
+| ------------------- | ----------------------------------------------------------- |
+| Claude Code 2.1.228 | `-p --output-format stream-json --include-partial-messages` |
+| Codex 0.147.0       | `exec --json`                                               |
+| opencode 1.18.16    | `run --format json`                                         |
 
-opencode has no runtime capture because no provider is authenticated on this machine
-(`opencode providers list` → 0 credentials). Its event shapes come from the server's
-own OpenAPI spec, which is authoritative for the schema but does not prove that
-`opencode run --format json` emits exactly those objects. Authenticate a provider and
-record a fixture to close that gap; the drift assertions will name anything that
-differs.
+The opencode fixture replaced an earlier spec-derived one that was **wrong** — its
+server SSE stream and its `run` stream are different formats. That is why captures are
+mandatory here rather than nice to have.
 
 ### Re-recording a fixture after a CLI upgrade
 
@@ -68,7 +65,11 @@ claude -p "<prompt>" --output-format stream-json --verbose --include-partial-mes
 # codex — stdin must be closed or it waits forever
 codex exec --json --skip-git-repo-check -s read-only -C . "<prompt>" < /dev/null > out.jsonl
 
-# opencode — event schemas without needing credentials
+# opencode — free models need no credentials of your own
+opencode run --format json --dir . --auto --model opencode/nemotron-3.5-lightning-free \
+  "<prompt>" < /dev/null > out.jsonl
+
+# opencode config + part schemas — useful, but NOT the run wire format
 opencode serve --port 39917 & curl -s http://127.0.0.1:39917/doc > openapi.json
 ```
 

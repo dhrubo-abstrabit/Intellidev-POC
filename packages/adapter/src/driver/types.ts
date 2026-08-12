@@ -71,8 +71,19 @@ export interface HarnessCapabilities {
   nativeStructuredOutput: boolean
   /** Reports the provider's rolling-window reset and status. Claude Code only. */
   reportsWindowState: boolean
-  /** Reports a currency cost for the turn. Claude Code only. */
+  /** Reports a currency cost for the turn. */
   reportsCost: boolean
+  /**
+   * Loads skills from a directory itself, with progressive disclosure. Where true we
+   * hand the harness real files; where false the gateway exposes `skill_list` and
+   * `skill_load` as tools instead.
+   */
+  nativeSkills: boolean
+  /**
+   * Can allow or deny individual tools in its own config. Where false the gateway
+   * must enforce the whole policy, since the harness can only be told all-or-nothing.
+   */
+  perToolPermissions: boolean
 }
 
 export interface Session {

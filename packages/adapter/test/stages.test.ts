@@ -1,5 +1,6 @@
 import {
   AgentEvent,
+  DEFAULT_HARNESS,
   DEFAULT_STAGE_TEMPLATE,
   StageTemplate,
   type EventBodyInput,
@@ -27,6 +28,8 @@ class FakeDriver implements HarnessDriver {
       nativeStructuredOutput: false,
       reportsWindowState: true,
       reportsCost: true,
+      nativeSkills: true,
+      perToolPermissions: true,
     },
     private readonly emit: EventBodyInput[] = [
       { type: 'assistant.message', data: { text: 'done' } },
@@ -89,6 +92,7 @@ function harness(opts: {
   store?: MemoryStateStore
   prompts?: Partial<Record<StageId, string>>
   maxTotalStageRuns?: number
+  defaultHarness?: HarnessId
 }) {
   const template = StageTemplate.parse(opts.template)
   const events: EventBodyInput[] = []
@@ -109,7 +113,7 @@ function harness(opts: {
     runId: 'run_1',
     cwd: '/work/run_1',
     template,
-    defaultHarness: 'claude-code',
+    defaultHarness: opts.defaultHarness ?? 'claude-code',
     drivers: opts.drivers ?? { 'claude-code': new FakeDriver('claude-code') },
     commands: opts.commands ?? new ScriptedCommands([]),
     builtins: noBuiltins,
@@ -570,6 +574,8 @@ describe('steer carry-over for harnesses without mid-run steering', () => {
         nativeStructuredOutput: true,
         reportsWindowState: false,
         reportsCost: false,
+        nativeSkills: false,
+        perToolPermissions: false,
       },
       [{ type: 'assistant.message', data: { text: 'done' } }],
       ['also check the auth module'],
@@ -627,13 +633,14 @@ describe('failure handling', () => {
 
 describe('the shipped default template', () => {
   it('runs end to end when every gate passes', async () => {
-    const codex = new FakeDriver('codex')
-    const claude = new FakeDriver('claude-code')
+    const reviewer = new FakeDriver('claude-code')
+    const writer = new FakeDriver('opencode')
     const h = harness({
       template: DEFAULT_STAGE_TEMPLATE,
       commands: new ScriptedCommands([0, 0]),
-      drivers: { 'claude-code': claude, codex },
+      drivers: { opencode: writer, 'claude-code': reviewer },
       outputs: outputs({ review: { blocking: 0, findings: [] } }),
+      defaultHarness: DEFAULT_HARNESS,
     })
     const { outcome, state } = await h.engine.run()
     expect(outcome).toBe('succeeded')
@@ -646,7 +653,8 @@ describe('the shipped default template', () => {
       'review',
       'pr',
     ])
-    // Review really did run on the other harness.
-    expect(codex.requests.map((r) => r.stage)).toEqual(['review'])
+    // Review really did run on a different harness than the one that wrote the code.
+    expect(reviewer.requests.map((r) => r.stage)).toEqual(['review'])
+    expect(writer.requests.map((r) => r.stage)).not.toContain('review')
   })
 })
