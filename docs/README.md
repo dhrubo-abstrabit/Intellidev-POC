@@ -16,11 +16,26 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 
 ## Current status
 
-**T1 complete** — monorepo scaffold and `@intellidev/shared` canonical contracts:
-event vocabulary, stage templates, manifest, toolset, run spec. Typecheck clean,
-37 tests passing. Next: T2, the Claude Code driver.
+**T1–T2 complete.** 76 tests, typecheck clean. Verify with `pnpm install && pnpm check`.
 
-Verify with `pnpm install && pnpm check`.
+- **T1** — `@intellidev/shared`: event vocabulary, stage templates, manifest, toolset,
+  run spec.
+- **T2** — `@intellidev/adapter`: Claude Code driver, NDJSON reassembly, event bus with
+  seq/ack/replay. Contract tests replay **real** `claude-code 2.1.228` output recorded
+  in `packages/adapter/test/fixtures/`, so they need no subprocess and spend no quota.
+
+Next: T3, the Codex driver — the task that proves the abstraction is not
+Claude-Code-shaped.
+
+### Re-recording a fixture after a CLI upgrade
+
+```sh
+claude -p "<prompt>" --output-format stream-json --verbose --include-partial-messages \
+  --max-turns 3 --allowedTools Read < /dev/null > out.ndjson
+```
+
+Scrub paths, session ids and uuids before committing. The contract test will name
+whatever shape changed.
 
 - **Runtime**: AWS ECS on Fargate, scale-to-zero, 60–120 s dispatch budget
 - **Harnesses**: Claude Code and Codex CLI (exactly two, deliberately)

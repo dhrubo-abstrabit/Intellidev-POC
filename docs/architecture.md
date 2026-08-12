@@ -310,9 +310,23 @@ RETURNING id;
 - **On 429, park — don't die.** Finish the current tool call, park at the next gate,
   resume when the window rolls over.
 
-Remaining quota is an **estimate we maintain** from per-turn token records. Label it as
-one in the UI. On an elastic runtime this is the _only_ capacity constraint in the
-system — compute stretches, so tasks queue for a seat, never for a container.
+### What the harness actually tells us
+
+Corrected after recording real CLI output in T2, which contradicted the assumption that
+quota is entirely ours to infer. Claude Code emits a `rate_limit_event` carrying
+`rateLimitType` (e.g. `five_hour`), `resetsAt` and a `status` — so **window reset time
+and status are authoritative**, not estimated. Token counts are reported per turn with
+cache reads and writes broken out, plus `total_cost_usd` at the end.
+
+What remains ours to estimate is only **how much of the window is consumed**, since no
+percentage is published. The UI should therefore show the reset countdown and status as
+fact, and label only the utilisation bar as an estimate.
+
+`system/init` additionally reports each MCP server's `status`, which feeds connection
+health for free rather than needing a separate probe.
+
+On an elastic runtime seats are the _only_ capacity constraint in the system — compute
+stretches, so tasks queue for a seat, never for a container.
 
 ## 10. Data model
 
