@@ -277,15 +277,37 @@ const steerDelivered = z.object({
 })
 
 // ---------------------------------------------------------------------------
-// metering — quota is an estimate we maintain, and must be labelled as one
+// metering
 // ---------------------------------------------------------------------------
+
+/**
+ * Window state as reported by the harness itself, when it reports any.
+ *
+ * Claude Code emits a `rate_limit_event` carrying the seat's rolling-window type,
+ * reset time and status — so reset time and status are AUTHORITATIVE for that
+ * harness, not inferred. What is still ours to estimate is how much of the window
+ * has been consumed, since no percentage is published.
+ */
+export const RateLimitWindow = z.object({
+  /** Provider's own label, e.g. `five_hour` or `weekly`. Left open on purpose. */
+  type: z.string(),
+  resetsAt: z.string().datetime(),
+  status: z.enum(['allowed', 'allowed_warning', 'rejected']),
+  usingOverage: z.boolean().default(false),
+})
+export type RateLimitWindow = z.infer<typeof RateLimitWindow>
 
 const usageUpdated = z.object({
   type: z.literal('usage.updated'),
   data: TokenUsage.extend({
     usdEst: z.number().nonnegative().optional(),
-    /** Always true for seat-based auth: there is no authoritative quota to read. */
+    /**
+     * True when the token counts were inferred rather than reported by the harness.
+     * Both harnesses do report them, so this is normally false — but the UI must
+     * still label derived window *utilisation* as an estimate.
+     */
     estimate: z.boolean().default(true),
+    window: RateLimitWindow.optional(),
   }),
 })
 
