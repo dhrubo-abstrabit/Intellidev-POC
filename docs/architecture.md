@@ -133,7 +133,8 @@ everything to what the weaker harness can do.
 | Mid-run steering         | yes, streaming stdin    | **no**                 | Codex queues; the engine resumes the thread with the steer as a follow-up prompt |
 | Token deltas for live UI | yes                     | **no**                 | Codex shows settled messages only; the UI must not assume a token stream         |
 | Native structured output | **no**                  | yes, `--output-schema` | Claude Code goes through the gateway's `stage_advance` tool                      |
-| Window reset + status    | yes, `rate_limit_event` | **no**                 | Codex window utilisation is fully estimated                                      |
+| Window reset + status    | yes, `rate_limit_event` | not in `exec`          | Reachable via app-server — see below                                             |
+| Window **used percent**  | **no**                  | yes, via app-server    | Claude Code utilisation stays derived; Codex could be exact                      |
 | Cost per turn            | yes, `total_cost_usd`   | **no**                 | Codex leaves `usdEst` absent rather than deriving it from a rate card            |
 | Self-report of tools/MCP | yes, `system/init`      | **no**                 | Codex reports no tool list; connection health needs a separate probe there       |
 
@@ -145,6 +146,36 @@ Two structural differences worth knowing before reading either driver:
   shapes would cost more than it saves. What they share is the output type.
 - **`codex exec` hangs if stdin stays open.** Piped stdin is appended to the prompt as
   a `<stdin>` block, so the driver closes stdin immediately after spawn.
+
+### Reaching Codex usage data: the app-server option
+
+Neither CLI exposes usage through a plain non-interactive subcommand — `/status` and
+`/usage` are TUI-only, `codex login status` reports login only, and `codex doctor`
+reports auth configuration only. Claude Code does not need one, because
+`rate_limit_event` already arrives inline in the stream we parse.
+
+Codex has a **richer** path than `exec --json`, just not on the road we are on. The
+experimental `codex app-server` JSON-RPC protocol exposes:
+
+| Item                                   | Carries                                                                                       |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `GetAccountRateLimits`                 | `RateLimitSnapshot`: primary + secondary windows, `planType`, `rateLimitReachedType`, credits |
+| `RateLimitWindow`                      | **`usedPercent` (required)**, `resetsAt`, `windowDurationMins`                                |
+| `AccountRateLimitsUpdatedNotification` | pushed when the window moves                                                                  |
+| `ThreadTokenUsageUpdatedNotification`  | `TokenUsageBreakdown` plus `modelContextWindow`                                               |
+
+So on utilisation the asymmetry **reverses**: Codex can report an exact percentage,
+while Claude Code gives status and reset time but no number. Neither harness alone
+gives us both halves.
+
+**Not adopting this for M0.** It is marked experimental, it is a second protocol to
+track alongside `exec --json`, and seat metering is M3 work. Recorded because when M3
+arrives this is the difference between an estimated utilisation bar and a real one.
+Regenerate the bindings to check the shape rather than trusting this table:
+
+```sh
+codex app-server generate-json-schema --out <dir>   # or generate-ts
+```
 
 ### Canonical event envelope
 
@@ -342,9 +373,14 @@ quota is entirely ours to infer. Claude Code emits a `rate_limit_event` carrying
 and status are authoritative**, not estimated. Token counts are reported per turn with
 cache reads and writes broken out, plus `total_cost_usd` at the end.
 
-What remains ours to estimate is only **how much of the window is consumed**, since no
-percentage is published. The UI should therefore show the reset countdown and status as
-fact, and label only the utilisation bar as an estimate.
+What remains ours to estimate is **how much of the window is consumed**, since Claude
+Code publishes no percentage. The UI should therefore show the reset countdown and
+status as fact, and label only the utilisation bar as an estimate.
+
+Codex is the mirror image: its `exec --json` stream carries no window state at all, but
+its app-server protocol reports an exact `usedPercent` — see the capability matrix in §4.
+Neither harness gives us both halves, so the seat ledger keeps its own running total
+regardless and treats harness-reported figures as corrections to it.
 
 `system/init` additionally reports each MCP server's `status`, which feeds connection
 health for free rather than needing a separate probe.
