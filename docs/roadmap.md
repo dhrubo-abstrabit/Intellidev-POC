@@ -78,4 +78,4 @@ low single-digit percent of total cost and seats are the real lever.
 | Multi-host scheduling             | Fargate supplies elasticity                                      |
 | Shared cache volumes (EFS)        | Multi-attach limits and a permanent idle cost floor              |
 | Long-lived per-project containers | Two runs on one project would contend for a worktree             |
-| More than two harnesses           | Two proves the abstraction; a third is a driver, not a milestone |
+| Harness-specific platform forks   | A new harness is a driver plus a capability record, never a fork |

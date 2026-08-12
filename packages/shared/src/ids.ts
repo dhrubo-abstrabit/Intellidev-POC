@@ -18,8 +18,12 @@ export const StageId = z.enum([
 ])
 export type StageId = z.infer<typeof StageId>
 
-/** Exactly two harnesses, deliberately. A third is a driver, not a milestone. */
-export const HarnessId = z.enum(['claude-code', 'codex'])
+/**
+ * Three harnesses. Each is a driver behind one interface, never a fork of the
+ * platform — adding the third cost a driver and a capability record, which is the
+ * abstraction doing its job rather than a reason to redesign anything.
+ */
+export const HarnessId = z.enum(['claude-code', 'codex', 'opencode'])
 export type HarnessId = z.infer<typeof HarnessId>
 
 export const TaskStatus = z.enum([

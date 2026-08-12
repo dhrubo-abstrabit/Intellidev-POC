@@ -6,6 +6,8 @@ import { CLAUDE_CODE_CAPABILITIES, ClaudeCodeDriver } from '../src/driver/claude
 import { ClaudeCodeMapper } from '../src/driver/claude-code/mapper.js'
 import { CODEX_CAPABILITIES, CodexDriver } from '../src/driver/codex/driver.js'
 import { CodexMapper } from '../src/driver/codex/mapper.js'
+import { OPENCODE_CAPABILITIES, OpencodeDriver } from '../src/driver/opencode/driver.js'
+import { OpencodeMapper } from '../src/driver/opencode/mapper.js'
 import { NdjsonBuffer } from '../src/driver/ndjson.js'
 import type { RawMapper } from '../src/driver/types.js'
 
@@ -14,8 +16,10 @@ import type { RawMapper } from '../src/driver/types.js'
  * abstraction: both harnesses were given the same task, and downstream code must
  * not be able to tell which one ran it.
  *
- * Both fixtures are the same instruction — read `version.ts`, report the version —
- * recorded from claude-code 2.1.228 and codex-cli 0.147.0.
+ * All three fixtures are the same instruction — read `version.ts`, report the
+ * version — from claude-code 2.1.228 and codex-cli 0.147.0 (real captures) and
+ * opencode 1.18.16 (derived from its published OpenAPI document; see
+ * opencode.contract.test.ts for why that one is weaker).
  */
 
 function replay(mapper: RawMapper, path: string): EventBodyInput[] {
@@ -41,7 +45,22 @@ const codex = (() => {
   return { mapper, events, types: new Set(events.map((e) => e.type)) }
 })()
 
-describe('same task, both harnesses', () => {
+const opencode = (() => {
+  const mapper = new OpencodeMapper()
+  const events = replay(
+    mapper,
+    join(import.meta.dirname, 'fixtures', 'opencode', 'spec-derived-run.jsonl'),
+  )
+  return { mapper, events, types: new Set(events.map((e) => e.type)) }
+})()
+
+const ALL = [
+  { name: 'claude-code', source: claude },
+  { name: 'codex', source: codex },
+  { name: 'opencode', source: opencode },
+] as const
+
+describe('same task, every harness', () => {
   /** The shape a consumer relies on regardless of harness. */
   const REQUIRED: EventType[] = [
     'tool.call',
@@ -51,9 +70,10 @@ describe('same task, both harnesses', () => {
     'turn.boundary',
   ]
 
-  it.each(REQUIRED)('both produce %s', (type) => {
-    expect(claude.types.has(type), `claude-code missing ${type}`).toBe(true)
-    expect(codex.types.has(type), `codex missing ${type}`).toBe(true)
+  it.each(REQUIRED)('every harness produces %s', (type) => {
+    for (const { name, source } of ALL) {
+      expect(source.types.has(type), `${name} missing ${type}`).toBe(true)
+    }
   })
 
   it('neither emits an event type the other cannot', () => {
@@ -64,8 +84,8 @@ describe('same task, both harnesses', () => {
     expect({ onlyClaude, onlyCodex }).toEqual({ onlyClaude: [], onlyCodex: [] })
   })
 
-  it('both resolve a real tool name, never a placeholder', () => {
-    for (const source of [claude, codex]) {
+  it('all resolve a real tool name, never a placeholder', () => {
+    for (const { source } of ALL) {
       const results = source.events.filter((e) => e.type === 'tool.result')
       expect(results.length).toBeGreaterThan(0)
       for (const result of results) {
@@ -74,26 +94,29 @@ describe('same task, both harnesses', () => {
     }
   })
 
-  it('both end on a turn boundary, so steering has a defined injection point', () => {
-    expect(claude.events.at(-1)?.type).toBe('turn.boundary')
-    expect(codex.events.at(-1)?.type).toBe('turn.boundary')
+  it('all end on a turn boundary, so steering has a defined injection point', () => {
+    for (const { name, source } of ALL) {
+      expect(source.events.at(-1)?.type, `${name}`).toBe('turn.boundary')
+    }
   })
 
-  it('both surface a resume token, so a crashed stage continues', () => {
-    expect(claude.mapper.resumeToken).toBeTruthy()
-    expect(codex.mapper.resumeToken).toBeTruthy()
+  it('all surface a resume token, so a crashed stage continues', () => {
+    for (const { name, source } of ALL) {
+      expect(source.mapper.resumeToken, `${name}`).toBeTruthy()
+    }
   })
 
-  it('both report tokens as harness-reported rather than inferred', () => {
-    for (const source of [claude, codex]) {
+  it('all report tokens as harness-reported rather than inferred', () => {
+    for (const { source } of ALL) {
       const usage = source.events.findLast((e) => e.type === 'usage.updated')
       if (usage?.type === 'usage.updated') expect(usage.data.estimate).toBe(false)
     }
   })
 
-  it('recognises everything both CLIs emitted', () => {
-    expect(claude.mapper.unmapped).toEqual([])
-    expect(codex.mapper.unmapped).toEqual([])
+  it('recognises everything every CLI emitted', () => {
+    for (const { name, source } of ALL) {
+      expect(source.mapper.unmapped, `${name} drifted`).toEqual([])
+    }
   })
 })
 
@@ -134,12 +157,28 @@ describe('capability differences are declared, not hidden', () => {
   it('exposes capabilities on the driver, where the stage engine can plan on them', () => {
     expect(new ClaudeCodeDriver().capabilities.midRunSteering).toBe(true)
     expect(new CodexDriver().capabilities.midRunSteering).toBe(false)
+    expect(new OpencodeDriver().capabilities.midRunSteering).toBe(false)
   })
 
-  it('both drivers satisfy one id union', () => {
-    expect([new ClaudeCodeDriver().id, new CodexDriver().id].sort()).toEqual([
-      'claude-code',
-      'codex',
-    ])
+  it('every driver satisfies one id union', () => {
+    expect(
+      [new ClaudeCodeDriver().id, new CodexDriver().id, new OpencodeDriver().id].sort(),
+    ).toEqual(['claude-code', 'codex', 'opencode'])
+  })
+
+  it('no two harnesses have identical capabilities', () => {
+    // If any pair matches, a driver is describing a harness it did not measure.
+    const records = [CLAUDE_CODE_CAPABILITIES, CODEX_CAPABILITIES, OPENCODE_CAPABILITIES]
+    const seen = new Set(records.map((r) => JSON.stringify(r)))
+    expect(seen.size).toBe(records.length)
+  })
+
+  it('only mid-run-steerable harnesses claim it, and each names its own gap', () => {
+    // opencode differs from codex precisely by cost and deltas; that is the whole
+    // reason it is worth having as a third option.
+    expect(OPENCODE_CAPABILITIES.reportsCost).toBe(true)
+    expect(CODEX_CAPABILITIES.reportsCost).toBe(false)
+    expect(OPENCODE_CAPABILITIES.streamingDeltas).toBe(true)
+    expect(CODEX_CAPABILITIES.streamingDeltas).toBe(false)
   })
 })

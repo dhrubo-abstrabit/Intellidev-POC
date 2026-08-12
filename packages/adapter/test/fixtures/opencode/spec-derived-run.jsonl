@@ -1,0 +1,13 @@
+{"id":"evt_01","type":"session.created","properties":{"sessionID":"ses_0000000000000001","info":{"id":"ses_0000000000000001","title":"read version"}}}
+{"id":"evt_02","type":"session.next.step.started","properties":{"timestamp":1786566600000,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","agent":"build","model":{"providerID":"anthropic","modelID":"claude-opus-5"}}}
+{"id":"evt_03","type":"session.next.reasoning.started","properties":{"timestamp":1786566600100,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","reasoningID":"rsn_01"}}
+{"id":"evt_04","type":"session.next.tool.called","properties":{"timestamp":1786566600200,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","callID":"call_01","tool":"read","input":{"filePath":"/work/run-0001/version.ts"},"provider":{"providerID":"anthropic"}}}
+{"id":"evt_05","type":"session.next.tool.success","properties":{"timestamp":1786566600300,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","callID":"call_01","structured":{"content":"export const VERSION = \"1.2.3\""},"content":[{"type":"text","text":"export const VERSION = \"1.2.3\""}],"provider":{"providerID":"anthropic"}}}
+{"id":"evt_06","type":"session.next.text.started","properties":{"timestamp":1786566600400,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","textID":"txt_01"}}
+{"id":"evt_07","type":"session.next.text.delta","properties":{"timestamp":1786566600410,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","textID":"txt_01","delta":"1."}}
+{"id":"evt_08","type":"session.next.text.delta","properties":{"timestamp":1786566600420,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","textID":"txt_01","delta":"2.3"}}
+{"id":"evt_09","type":"session.next.text.ended","properties":{"timestamp":1786566600430,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","textID":"txt_01","text":"1.2.3"}}
+{"id":"evt_10","type":"session.next.step.ended","properties":{"timestamp":1786566600500,"sessionID":"ses_0000000000000001","assistantMessageID":"msg_01","finish":"stop","cost":0.0142,"tokens":{"input":812,"output":37,"reasoning":5,"cache":{"read":19165,"write":3156}}}}
+{"id":"evt_11","type":"file.edited","properties":{"file":"/work/run-0001/version.ts"}}
+{"id":"evt_12","type":"lsp.updated","properties":{"serverID":"tsserver"}}
+{"id":"evt_13","type":"session.idle","properties":{"sessionID":"ses_0000000000000001"}}

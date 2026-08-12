@@ -128,15 +128,31 @@ Measured in T2/T3 against `claude-code 2.1.228` and `codex-cli 0.147.0`. The gap
 in **both** directions, which is why the adapter declares them rather than reducing
 everything to what the weaker harness can do.
 
-| Capability               | Claude Code             | Codex                  | How the adapter compensates                                                      |
-| ------------------------ | ----------------------- | ---------------------- | -------------------------------------------------------------------------------- |
-| Mid-run steering         | yes, streaming stdin    | **no**                 | Codex queues; the engine resumes the thread with the steer as a follow-up prompt |
-| Token deltas for live UI | yes                     | **no**                 | Codex shows settled messages only; the UI must not assume a token stream         |
-| Native structured output | **no**                  | yes, `--output-schema` | Claude Code goes through the gateway's `stage_advance` tool                      |
-| Window reset + status    | yes, `rate_limit_event` | not in `exec`          | Reachable via app-server — see below                                             |
-| Window **used percent**  | **no**                  | yes, via app-server    | Claude Code utilisation stays derived; Codex could be exact                      |
-| Cost per turn            | yes, `total_cost_usd`   | **no**                 | Codex leaves `usdEst` absent rather than deriving it from a rate card            |
-| Self-report of tools/MCP | yes, `system/init`      | **no**                 | Codex reports no tool list; connection health needs a separate probe there       |
+| Capability               | Claude Code             | Codex                  | opencode      | How the adapter compensates                                                              |
+| ------------------------ | ----------------------- | ---------------------- | ------------- | ---------------------------------------------------------------------------------------- |
+| Mid-run steering         | yes, streaming stdin    | **no**                 | **no**        | Both one-shot harnesses queue; the engine folds the steer into the next attempt's prompt |
+| Token deltas for live UI | yes                     | **no**                 | yes           | Codex shows settled messages only; the UI must not assume a token stream                 |
+| Native structured output | **no**                  | yes, `--output-schema` | **no**        | Others go through the gateway's `stage_advance` tool                                     |
+| Window reset + status    | yes, `rate_limit_event` | not in `exec`          | **no**        | Codex via app-server; opencode is provider-agnostic so has no single window              |
+| Window used percent      | **no**                  | yes, via app-server    | **no**        | Claude Code utilisation stays derived                                                    |
+| Cost per turn            | yes, `total_cost_usd`   | **no**                 | yes, per step | Codex leaves `usdEst` absent rather than deriving it from a rate card                    |
+| Self-report of tools/MCP | yes, `system/init`      | **no**                 | **no**        | Only Claude Code enumerates its tools; health needs a probe elsewhere                    |
+
+No two capability records match, and a test asserts that — if any pair did, a driver
+would be describing a harness nobody measured.
+
+### Wire formats: three, all different
+
+| Harness     | Shape                                            | End-of-turn signal |
+| ----------- | ------------------------------------------------ | ------------------ |
+| Claude Code | message content blocks                           | `result`           |
+| Codex       | typed items in `item.started` / `item.completed` | `turn.completed`   |
+| opencode    | flat event stream, dotted `type` + `properties`  | `session.idle`     |
+
+opencode's is closest to our own event log. Its stream is also far chattier — it
+drives a TUI, so it carries permission prompts, LSP state and PTY lifecycle that mean
+nothing headless; the mapper ignores those by prefix and reports anything else as
+drift.
 
 Two structural differences worth knowing before reading either driver:
 
