@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentEvent, type EventBody } from '@intellidev/shared'
+import { AgentEvent, type EventBodyInput } from '@intellidev/shared'
 import { describe, expect, it } from 'vitest'
 import { ClaudeCodeMapper } from '../src/driver/claude-code/mapper.js'
 import { buildClaudeArgs, encodeUserMessage } from '../src/driver/claude-code/driver.js'
@@ -16,10 +16,10 @@ import { NdjsonBuffer } from '../src/driver/ndjson.js'
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'claude-code')
 
-function replay(fixture: string): { events: EventBody[]; mapper: ClaudeCodeMapper } {
+function replay(fixture: string): { events: EventBodyInput[]; mapper: ClaudeCodeMapper } {
   const mapper = new ClaudeCodeMapper()
   const buffer = new NdjsonBuffer()
-  const events: EventBody[] = []
+  const events: EventBodyInput[] = []
   const raw = readFileSync(join(FIXTURES, fixture), 'utf8')
   for (const parsed of buffer.push(raw)) events.push(...mapper.push(parsed))
   for (const parsed of buffer.flush()) events.push(...mapper.push(parsed))

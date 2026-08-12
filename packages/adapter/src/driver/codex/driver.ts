@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { preview, type EventBody, type HarnessId } from '@intellidev/shared'
+import { preview, type EventBodyInput, type HarnessId } from '@intellidev/shared'
 import { NdjsonBuffer } from '../ndjson.js'
 import { AsyncQueue } from '../queue.js'
 import type {
@@ -107,7 +107,7 @@ export class CodexDriver implements HarnessDriver {
 }
 
 class CodexSession implements Session {
-  readonly events = new AsyncQueue<EventBody>()
+  readonly events = new AsyncQueue<EventBodyInput>()
   private readonly mapper = new CodexMapper()
   private readonly stdout = new NdjsonBuffer()
   private readonly queuedSteers: string[] = []
@@ -165,7 +165,7 @@ class CodexSession implements Session {
     }
   }
 
-  private emit(bodies: EventBody[]): void {
+  private emit(bodies: EventBodyInput[]): void {
     for (const body of bodies) this.events.push(body)
   }
 

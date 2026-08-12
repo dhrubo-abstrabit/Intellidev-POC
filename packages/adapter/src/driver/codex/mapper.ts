@@ -1,4 +1,4 @@
-import { preview, type EventBody } from '@intellidev/shared'
+import { preview, type EventBodyInput } from '@intellidev/shared'
 import type { RawMapper, SessionInfo, UsageSnapshot } from '../types.js'
 import {
   COMMAND_TOOL_NAME,
@@ -58,7 +58,7 @@ export class CodexMapper implements RawMapper {
     }
   }
 
-  push(raw: unknown): EventBody[] {
+  push(raw: unknown): EventBodyInput[] {
     if (typeof raw !== 'object' || raw === null || !('type' in raw)) {
       this.unmappedSeen.add('<no type field>')
       return []
@@ -84,7 +84,7 @@ export class CodexMapper implements RawMapper {
     }
   }
 
-  private onItem(raw: unknown, completed: boolean): EventBody[] {
+  private onItem(raw: unknown, completed: boolean): EventBodyInput[] {
     const parsed = CxItemEvent.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('item<unparsed>')
@@ -108,7 +108,7 @@ export class CodexMapper implements RawMapper {
         }
         // Codex can complete an item we never saw start; synthesise the call so a
         // result is never orphaned in the UI.
-        const out: EventBody[] = []
+        const out: EventBodyInput[] = []
         if (!this.openItems.has(id)) {
           out.push({
             type: 'tool.call',
@@ -144,7 +144,7 @@ export class CodexMapper implements RawMapper {
       case 'file_change': {
         if (!completed) return []
         const changes = Array.isArray(item['changes']) ? item['changes'] : []
-        const out: EventBody[] = []
+        const out: EventBodyInput[] = []
         for (const change of changes) {
           if (typeof change !== 'object' || change === null) continue
           const record = change as Record<string, unknown>
@@ -198,13 +198,13 @@ export class CodexMapper implements RawMapper {
     }
   }
 
-  private onTurnCompleted(raw: unknown): EventBody[] {
+  private onTurnCompleted(raw: unknown): EventBodyInput[] {
     const parsed = CxTurnCompleted.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('turn.completed<unparsed>')
       return []
     }
-    const out: EventBody[] = []
+    const out: EventBodyInput[] = []
     const usage = parsed.data.usage
     if (usage) {
       this.usageSnapshot = {
@@ -227,7 +227,7 @@ export class CodexMapper implements RawMapper {
     return out
   }
 
-  private onTurnFailed(raw: unknown): EventBody[] {
+  private onTurnFailed(raw: unknown): EventBodyInput[] {
     const parsed = CxTurnFailed.safeParse(raw)
     const detail = parsed.success ? preview(parsed.data.error).text : 'turn failed'
     return [

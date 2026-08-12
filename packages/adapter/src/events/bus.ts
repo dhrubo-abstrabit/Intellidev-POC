@@ -1,4 +1,4 @@
-import { AgentEvent, type EventBody, type StageId } from '@intellidev/shared'
+import { AgentEvent, type EventBodyInput, type StageId } from '@intellidev/shared'
 
 /**
  * The one thing allowed to number the stream.
@@ -24,7 +24,7 @@ export class EventBus {
     this.stage = stage
   }
 
-  emit(body: EventBody): AgentEvent {
+  emit(body: EventBodyInput): AgentEvent {
     const event = AgentEvent.parse({
       seq: this.seq++,
       runId: this.runId,

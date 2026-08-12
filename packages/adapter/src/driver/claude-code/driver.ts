@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { preview, type EventBody, type HarnessId } from '@intellidev/shared'
+import { preview, type EventBodyInput, type HarnessId } from '@intellidev/shared'
 import { NdjsonBuffer } from '../ndjson.js'
 import { AsyncQueue } from '../queue.js'
 import type {
@@ -87,7 +87,7 @@ export class ClaudeCodeDriver implements HarnessDriver {
 }
 
 class ClaudeCodeSession implements Session {
-  readonly events = new AsyncQueue<EventBody>()
+  readonly events = new AsyncQueue<EventBodyInput>()
   private readonly mapper = new ClaudeCodeMapper()
   private readonly stdout = new NdjsonBuffer()
   private readonly steerQueue: Array<{ text: string }> = []
@@ -156,7 +156,7 @@ class ClaudeCodeSession implements Session {
     for (const raw of this.stdout.push(chunk)) this.emit(this.mapper.push(raw))
   }
 
-  private emit(bodies: EventBody[]): void {
+  private emit(bodies: EventBodyInput[]): void {
     for (const body of bodies) {
       this.events.push(body)
       if (body.type === 'turn.boundary') {

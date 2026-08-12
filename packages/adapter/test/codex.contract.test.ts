@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentEvent, type EventBody } from '@intellidev/shared'
+import { AgentEvent, type EventBodyInput } from '@intellidev/shared'
 import { describe, expect, it } from 'vitest'
 import {
   CODEX_CAPABILITIES,
@@ -14,10 +14,10 @@ import { NdjsonBuffer } from '../src/driver/ndjson.js'
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'codex')
 
-function replay(fixture: string): { events: EventBody[]; mapper: CodexMapper } {
+function replay(fixture: string): { events: EventBodyInput[]; mapper: CodexMapper } {
   const mapper = new CodexMapper()
   const buffer = new NdjsonBuffer()
-  const events: EventBody[] = []
+  const events: EventBodyInput[] = []
   for (const parsed of buffer.push(readFileSync(join(FIXTURES, fixture), 'utf8'))) {
     events.push(...mapper.push(parsed))
   }

@@ -404,6 +404,15 @@ export const EventBody = z.discriminatedUnion('type', [
 ])
 export type EventBody = z.infer<typeof EventBody>
 
+/**
+ * What an emitter passes in, before defaults are applied.
+ *
+ * Drivers and the stage engine build events; the bus parses them and fills in
+ * defaults like `truncated: false`. Making callers restate those defaults would be
+ * noise, so emit paths take this and only the log holds the settled `EventBody`.
+ */
+export type EventBodyInput = z.input<typeof EventBody>
+
 export const EventType = z.enum([
   'run.provisioning',
   'bundle.fetched',

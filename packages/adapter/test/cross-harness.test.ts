@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { EventBody, EventType } from '@intellidev/shared'
+import type { EventBodyInput, EventType } from '@intellidev/shared'
 import { describe, expect, it } from 'vitest'
 import { CLAUDE_CODE_CAPABILITIES, ClaudeCodeDriver } from '../src/driver/claude-code/driver.js'
 import { ClaudeCodeMapper } from '../src/driver/claude-code/mapper.js'
@@ -18,9 +18,9 @@ import type { RawMapper } from '../src/driver/types.js'
  * recorded from claude-code 2.1.228 and codex-cli 0.147.0.
  */
 
-function replay(mapper: RawMapper, path: string): EventBody[] {
+function replay(mapper: RawMapper, path: string): EventBodyInput[] {
   const buffer = new NdjsonBuffer()
-  const events: EventBody[] = []
+  const events: EventBodyInput[] = []
   for (const raw of buffer.push(readFileSync(path, 'utf8'))) events.push(...mapper.push(raw))
   for (const raw of buffer.flush()) events.push(...mapper.push(raw))
   return events

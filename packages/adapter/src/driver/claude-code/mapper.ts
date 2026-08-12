@@ -1,4 +1,4 @@
-import { preview, type EventBody } from '@intellidev/shared'
+import { preview, type EventBodyInput } from '@intellidev/shared'
 import type { RawMapper, SessionInfo, UsageSnapshot } from '../types.js'
 import {
   CcAssistant,
@@ -52,7 +52,7 @@ export class ClaudeCodeMapper implements RawMapper {
     return this.sessionInfo
   }
 
-  push(raw: unknown): EventBody[] {
+  push(raw: unknown): EventBodyInput[] {
     if (typeof raw !== 'object' || raw === null || !('type' in raw)) {
       this.unmappedSeen.add('<no type field>')
       return []
@@ -78,7 +78,7 @@ export class ClaudeCodeMapper implements RawMapper {
     }
   }
 
-  private onSystem(raw: unknown): EventBody[] {
+  private onSystem(raw: unknown): EventBodyInput[] {
     const parsed = CcSystemInit.safeParse(raw)
     // A non-init `system` message carries nothing we consume.
     if (!parsed.success) return []
@@ -97,13 +97,13 @@ export class ClaudeCodeMapper implements RawMapper {
     return []
   }
 
-  private onAssistant(raw: unknown): EventBody[] {
+  private onAssistant(raw: unknown): EventBodyInput[] {
     const parsed = CcAssistant.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('assistant<unparsed>')
       return []
     }
-    const out: EventBody[] = []
+    const out: EventBodyInput[] = []
     if (parsed.data.session_id) this.session = parsed.data.session_id
 
     for (const block of parsed.data.message.content) {
@@ -150,13 +150,13 @@ export class ClaudeCodeMapper implements RawMapper {
     return out
   }
 
-  private onUser(raw: unknown): EventBody[] {
+  private onUser(raw: unknown): EventBodyInput[] {
     const parsed = CcUser.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('user<unparsed>')
       return []
     }
-    const out: EventBody[] = []
+    const out: EventBodyInput[] = []
     for (const block of parsed.data.message.content) {
       if (block.type !== 'tool_result' || !('tool_use_id' in block)) continue
       const id = String(block.tool_use_id)
@@ -179,7 +179,7 @@ export class ClaudeCodeMapper implements RawMapper {
     return out
   }
 
-  private onResult(raw: unknown): EventBody[] {
+  private onResult(raw: unknown): EventBodyInput[] {
     const parsed = CcResult.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('result<unparsed>')
@@ -188,7 +188,7 @@ export class ClaudeCodeMapper implements RawMapper {
     const m = parsed.data
     if (m.session_id) this.session = m.session_id
 
-    const out: EventBody[] = []
+    const out: EventBodyInput[] = []
     if (m.usage) {
       // Totals for the whole invocation supersede our running sum.
       this.usageSnapshot = {
@@ -230,7 +230,7 @@ export class ClaudeCodeMapper implements RawMapper {
     return out
   }
 
-  private onRateLimit(raw: unknown): EventBody[] {
+  private onRateLimit(raw: unknown): EventBodyInput[] {
     const parsed = CcRateLimitEvent.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('rate_limit_event<unparsed>')
@@ -250,7 +250,7 @@ export class ClaudeCodeMapper implements RawMapper {
     }
     this.usageSnapshot = { ...this.usageSnapshot, window }
 
-    const out: EventBody[] = [
+    const out: EventBodyInput[] = [
       {
         type: 'usage.updated',
         data: {
@@ -270,7 +270,7 @@ export class ClaudeCodeMapper implements RawMapper {
     return out
   }
 
-  private onStreamEvent(raw: unknown): EventBody[] {
+  private onStreamEvent(raw: unknown): EventBodyInput[] {
     const parsed = CcStreamEvent.safeParse(raw)
     if (!parsed.success) {
       this.unmappedSeen.add('stream_event<unparsed>')

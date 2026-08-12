@@ -1,4 +1,4 @@
-import type { EventBody, HarnessId, StageId, TokenUsage } from '@intellidev/shared'
+import type { EventBodyInput, HarnessId, StageId, TokenUsage } from '@intellidev/shared'
 
 /**
  * The seam that keeps the harness replaceable.
@@ -80,7 +80,7 @@ export interface Session {
    * Normalised events, in order. Bodies only — the adapter's event bus assigns
    * `seq`, `runId` and `ts`, because only one thing may number the stream.
    */
-  readonly events: AsyncIterable<EventBody>
+  readonly events: AsyncIterable<EventBodyInput>
   /**
    * Queued; injected at the next turn boundary, never mid tool-call. On a harness
    * without `midRunSteering` this only queues — see `pendingSteers`.
@@ -118,7 +118,7 @@ export interface HarnessDriver {
  * alternative is silently dropping new message types.
  */
 export interface RawMapper {
-  push(raw: unknown): EventBody[]
+  push(raw: unknown): EventBodyInput[]
   readonly unmapped: readonly string[]
   usage(): UsageSnapshot
   info(): SessionInfo | null

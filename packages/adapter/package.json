@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@intellidev/shared": "workspace:*",
+    "ajv": "^8.20.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
