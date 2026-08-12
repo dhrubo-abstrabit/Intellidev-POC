@@ -1,3 +1,4 @@
+import { createRedactor, type AgentEvent } from '@intellidev/shared'
 import { describe, expect, it } from 'vitest'
 import { NdjsonBuffer } from '../src/driver/ndjson.js'
 import { AsyncQueue } from '../src/driver/queue.js'
@@ -129,5 +130,58 @@ describe('EventBus', () => {
     bus.ack(1)
     bus.ack(0)
     expect(bus.pending).toBe(0)
+  })
+})
+
+describe('EventBus redaction', () => {
+  const clock = () => new Date('2026-08-13T09:00:00.000Z')
+
+  it('redacts secrets out of payloads before they are numbered', () => {
+    const seen: AgentEvent[] = []
+    const redactor = createRedactor({ DATABASE_URL: 'postgres://u:pw@host/db' })
+    const bus = new EventBus('run_1', (e) => seen.push(e), clock, redactor)
+    bus.emit({
+      type: 'command.output',
+      data: {
+        command: 'pnpm test',
+        stream: 'stdout',
+        chunk: 'connecting to postgres://u:pw@host/db',
+      },
+    })
+    const event = seen[0]
+    expect(event?.type).toBe('command.output')
+    if (event?.type === 'command.output') {
+      expect(event.data.chunk).toBe('connecting to [redacted:DATABASE_URL]')
+      expect(event.data.chunk).not.toContain('pw@host')
+    }
+  })
+
+  it('redacts nested payloads without breaking the schema', () => {
+    const seen: AgentEvent[] = []
+    const redactor = createRedactor({ TOKEN: 'ghs_averylongtokenvalue' })
+    const bus = new EventBus('run_1', (e) => seen.push(e), clock, redactor)
+    // Numbers must survive, or the redacted event would no longer parse.
+    bus.emit({
+      type: 'diff.produced',
+      data: { filesChanged: 3, insertions: 10, deletions: 2 },
+    })
+    bus.emit({
+      type: 'tool.result',
+      data: { id: 't1', name: 'Bash', ok: true, resultPreview: 'used ghs_averylongtokenvalue' },
+    })
+    expect(seen).toHaveLength(2)
+    if (seen[0]?.type === 'diff.produced') expect(seen[0].data.filesChanged).toBe(3)
+    if (seen[1]?.type === 'tool.result') {
+      expect(seen[1].data.resultPreview).toBe('used [redacted:TOKEN]')
+    }
+  })
+
+  it('leaves events untouched when the run has no secrets', () => {
+    const seen: AgentEvent[] = []
+    const bus = new EventBus('run_1', (e) => seen.push(e), clock)
+    bus.emit({ type: 'assistant.message', data: { text: 'nothing secret here' } })
+    if (seen[0]?.type === 'assistant.message') {
+      expect(seen[0].data.text).toBe('nothing secret here')
+    }
   })
 })

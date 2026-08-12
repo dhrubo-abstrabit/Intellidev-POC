@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { EnvSpec } from './env.js'
 import { HarnessId } from './ids.js'
 import { StageTemplate } from './stages.js'
 
@@ -24,6 +25,31 @@ export const ServiceRef = z.object({
   portMappings: z.array(z.number().int().positive()).default([]),
 })
 export type ServiceRef = z.infer<typeof ServiceRef>
+
+/**
+ * How we talk to the git host, and who the commits belong to.
+ *
+ * Commits are authored by the GitHub App's bot identity, never a person: a run is not
+ * a human, and attributing its commits to one makes `git blame` lie.
+ */
+export const GitStrategy = z.object({
+  host: z.enum(['github']).default('github'),
+  authorName: z.string().default('intellidev[bot]'),
+  authorEmail: z.string().default('intellidev[bot]@users.noreply.github.com'),
+  /** Blobless clone: full history, blobs fetched on demand. Much faster on big repos. */
+  partialClone: z.boolean().default(true),
+  /** Both need the credential helper too, so both are opt-in rather than assumed. */
+  lfs: z.boolean().default(false),
+  submodules: z.boolean().default(false),
+  /** Delete the run's branch when a run fails, so failures do not litter the remote. */
+  deleteBranchOnFailure: z.boolean().default(true),
+  /**
+   * What to do when the base branch moved while the run worked. Reporting beats
+   * auto-rebasing: a silent rebase can turn a clean diff into a wrong one.
+   */
+  onBaseMoved: z.enum(['report', 'rebase']).default('report'),
+})
+export type GitStrategy = z.infer<typeof GitStrategy>
 
 export const RuntimeSpec = z.object({
   /** Resolved by mise inside the container and cached in S3. */
@@ -93,6 +119,8 @@ export const ProjectManifest = z.object({
   skillDirs: z.array(z.string()).default(['./skills']),
   /** Rendered into CLAUDE.md and AGENTS.md. */
   contextFile: z.string().default('./context/repo.md'),
+  git: GitStrategy.default({}),
+  env: EnvSpec,
   stageTemplate: StageTemplate,
   policy: PolicySpec.default({}),
   budget: BudgetSpec.default({}),

@@ -1,4 +1,11 @@
-import { AgentEvent, type EventBodyInput, type StageId } from '@intellidev/shared'
+import {
+  AgentEvent,
+  noopRedactor,
+  redactDeep,
+  type EventBodyInput,
+  type Redactor,
+  type StageId,
+} from '@intellidev/shared'
 
 /**
  * The one thing allowed to number the stream.
@@ -17,6 +24,12 @@ export class EventBus {
     private readonly runId: string,
     private readonly sink: (event: AgentEvent) => void,
     private readonly now: () => Date = () => new Date(),
+    /**
+     * Applied to every payload before it is numbered. Redacting here rather than at
+     * call sites is deliberate: one forgotten call site is a permanent leak, because
+     * this log outlives the run.
+     */
+    private readonly redactor: Redactor = noopRedactor,
   ) {}
 
   /** Bootstrap events carry a null stage; everything after is stamped. */
@@ -30,7 +43,7 @@ export class EventBus {
       runId: this.runId,
       ts: this.now().toISOString(),
       stage: this.stage,
-      ...body,
+      ...redactDeep(body, this.redactor),
     })
     this.buffer.push(event)
     this.sink(event)

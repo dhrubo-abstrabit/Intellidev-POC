@@ -384,6 +384,82 @@ refuse a request from a stage that should not need it.
   by the broker. One file per run container, for the one seat that run was assigned.
 - **MCP upstreams**: held by the gateway, never handed to a harness.
 
+## 8b. Git and environment, per project
+
+### Git
+
+One GitHub App, installed against selected repositories. The App's private key never
+leaves the control plane; installation tokens are minted per run, scoped to that
+project's repos, 1 h TTL, and pulled on demand through the broker (§8) so a run that
+outlives a token keeps working.
+
+| Concern            | Decision                                                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host               | GitHub only for M0. A second host is a credential provider, not a redesign.                                                                    |
+| Repos per project  | One primary repo. `repos[]` is plural for later; the worktree logic assumes one.                                                               |
+| Commit identity    | The App's **bot** identity, never a person. A run is not a human, and attributing its commits to one makes `git blame` lie.                    |
+| Clone              | Blobless partial clone by default — full history, blobs on demand. Big repos are otherwise most of the cache-restore budget.                   |
+| Isolation          | Mirror restored from S3 per run, then `git worktree add`. Each run has its own copy, so concurrent runs never contend.                         |
+| LFS / submodules   | Opt-in. Both need the credential helper too, so neither is assumed.                                                                            |
+| Base moved mid-run | **Report, don't rebase.** A silent rebase can turn a clean diff into a wrong one.                                                              |
+| Failed run         | Delete the run's branch, so failures don't litter the remote.                                                                                  |
+| Protected `main`   | Fine, and desirable — the PR is the boundary. Force-push and history rewrite are deny-listed in the adapter, not just discouraged in a prompt. |
+
+### Environment: the uncomfortable part
+
+A test suite reads `process.env`. There is no way to hand `pnpm test` a database URL
+through a unix socket. So **any secret a run's tests need is reachable by the
+model-authored code in that container** — it can read the environment, read the
+rendered `.env`, or write a test that prints one.
+
+That collides with the non-negotiable "no long-lived secrets in the container
+environment", and the honest resolution is to narrow the claim rather than pretend the
+container is a boundary it is not:
+
+> Broker-held credentials — GitHub tokens, seat material, MCP upstream tokens — never
+> become environment variables, because nothing inside the container except the adapter
+> needs them. Project secrets that tests genuinely need **do** become environment
+> variables, and are therefore assumed compromised by the run.
+
+Hiding is not the control. **Scoping is.** Three tiers, deliberately separate:
+
+| Tier               | Where it lives                                                    | Visible to the agent   |
+| ------------------ | ----------------------------------------------------------------- | ---------------------- |
+| `env.vars`         | plaintext in the manifest, versioned                              | yes, by design         |
+| `env.secrets`      | a _reference_ to a vault entry; the value is resolved at dispatch | yes, once materialised |
+| Broker credentials | never in env at all                                               | no                     |
+
+Four rules follow, and the schema enforces the first two:
+
+1. **Every secret must be attested sandbox-scoped.** `sandboxAttested` defaults to
+   `false`, so silence is treated as production and dispatch refuses. Production
+   credentials do not enter a run container.
+2. **`SecretRef` is `.strict()` and has no value field**, so a secret cannot be pasted
+   into a manifest that gets versioned and read in a PR diff.
+3. **Secrets are stage-scoped**, exactly like tool attachments. The design stage has no
+   business holding database credentials.
+4. **Reserved names are rejected.** A project quietly setting `GITHUB_TOKEN` would break
+   the credential helper in a way that surfaces as a git failure three stages later.
+
+The real containment is the **egress allowlist** (§12): a leaked sandbox key is worth
+little if the network refuses to carry it anywhere.
+
+### Redaction happens at the bus
+
+The event log is the one artefact that leaves the container — it goes to Postgres, to
+the UI, to the audit trail. A secret only has to be printed once, by a test or a stack
+trace, to be in that log permanently.
+
+So every string in every payload is scanned **at the event bus**, before the event is
+numbered and persisted. Not at call sites: call sites cannot be trusted to remember,
+and one missed site is a leak that outlives the run.
+
+Two details that matter in practice. Longer secrets are replaced first, so a secret
+that is a prefix of another cannot leave a recognisable tail behind. And values shorter
+than eight characters are **never** redacted — redacting `test` would turn the whole log
+into markers and destroy the ability to debug anything. Short secrets are a project
+configuration problem, and the redactor reports them as skipped rather than pretending.
+
 ## 9. Seats as a scheduled resource
 
 Because harnesses authenticate with subscription seats, the limit is a rolling window on

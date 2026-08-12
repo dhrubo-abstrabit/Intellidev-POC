@@ -97,8 +97,11 @@ Carried from the design discussion. Breaking one of these is a design change,
 not an implementation detail.
 
 1. **Never mount a host Docker socket.** Model-authored code runs in these containers.
-2. **No long-lived secrets in the container environment.** Credentials are pulled
-   on demand from a broker over a unix socket.
+2. **Broker credentials are never environment variables.** GitHub tokens, seat
+   material and MCP upstream tokens are pulled on demand over a unix socket. Project
+   secrets that tests genuinely need _are_ env vars and are therefore assumed
+   compromised by the run — so they must be sandbox-scoped, and dispatch refuses any
+   secret not attested as such.
 3. **Manifests are immutable and runs pin a version.** Editing a project never
    changes the meaning of a run already in flight.
 4. **`run_events` is the only source of run state.** UI, resume and audit read the
@@ -106,3 +109,5 @@ not an implementation detail.
 5. **Every usage record carries its seat.** Per-project cost attribution on a shared
    subscription account is impossible to backfill.
 6. **The PR is the boundary.** Nothing writes to `main`.
+7. **Redaction happens at the event bus**, never at call sites. One forgotten call site
+   is a permanent leak, because the log outlives the run.
