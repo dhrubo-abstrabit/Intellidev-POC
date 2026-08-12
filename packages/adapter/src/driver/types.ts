@@ -48,14 +48,50 @@ export interface SessionInfo {
   capabilities: string[]
 }
 
+/**
+ * Where the harnesses genuinely differ. Written down rather than papered over,
+ * because the stage engine has to compensate for each gap explicitly — and because
+ * levelling everything down to the weakest harness would be the wrong consistency.
+ *
+ * Verified against claude-code 2.1.228 and codex-cli 0.147.0 in T2/T3.
+ */
+export interface HarnessCapabilities {
+  /**
+   * Whether a steer can reach a running turn. Claude Code accepts streaming stdin;
+   * Codex `exec` takes one prompt and runs to completion, so steering it means
+   * resuming the thread with a follow-up prompt after the stage ends.
+   */
+  midRunSteering: boolean
+  /** Token-level deltas for the live UI feed, rather than settled messages only. */
+  streamingDeltas: boolean
+  /**
+   * A native way to constrain the final response to a JSON Schema. Codex has
+   * `--output-schema`; Claude Code goes through our `stage_advance` gateway tool.
+   */
+  nativeStructuredOutput: boolean
+  /** Reports the provider's rolling-window reset and status. Claude Code only. */
+  reportsWindowState: boolean
+  /** Reports a currency cost for the turn. Claude Code only. */
+  reportsCost: boolean
+}
+
 export interface Session {
   /**
    * Normalised events, in order. Bodies only — the adapter's event bus assigns
    * `seq`, `runId` and `ts`, because only one thing may number the stream.
    */
   readonly events: AsyncIterable<EventBody>
-  /** Queued; injected at the next turn boundary, never mid tool-call. */
+  /**
+   * Queued; injected at the next turn boundary, never mid tool-call. On a harness
+   * without `midRunSteering` this only queues — see `pendingSteers`.
+   */
   send(text: string): Promise<void>
+  /**
+   * Steers that were queued but never delivered, because the harness had no
+   * boundary left to inject them at. The stage engine resumes the session with
+   * these rather than silently dropping what a human typed.
+   */
+  pendingSteers(): string[]
   /** A separate verb from steering: jumps the queue and stops the stage. */
   interrupt(): Promise<void>
   usage(): UsageSnapshot
@@ -69,6 +105,8 @@ export interface Session {
 
 export interface HarnessDriver {
   readonly id: HarnessId
+  /** Static per harness, so the stage engine can plan around the gaps. */
+  readonly capabilities: HarnessCapabilities
   /** Write this harness's own config files from the canonical bundle. */
   materialise(paths: { cwd: string; home: string }): Promise<void>
   start(req: StageRequest): Promise<Session>

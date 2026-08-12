@@ -2,10 +2,31 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { preview, type EventBody, type HarnessId } from '@intellidev/shared'
 import { NdjsonBuffer } from '../ndjson.js'
 import { AsyncQueue } from '../queue.js'
-import type { HarnessDriver, Session, SessionInfo, StageRequest, UsageSnapshot } from '../types.js'
+import type {
+  HarnessCapabilities,
+  HarnessDriver,
+  Session,
+  SessionInfo,
+  StageRequest,
+  UsageSnapshot,
+} from '../types.js'
 import { ClaudeCodeMapper } from './mapper.js'
 
 export const CLAUDE_CODE_PINNED_VERSION = '2.1.228'
+
+/**
+ * Streaming stdin means a steer can reach a turn in flight, and the CLI reports both
+ * cost and the provider's rolling-window state. What it lacks is a native
+ * response-schema flag, so structured output goes through our `stage_advance`
+ * gateway tool instead.
+ */
+export const CLAUDE_CODE_CAPABILITIES: HarnessCapabilities = {
+  midRunSteering: true,
+  streamingDeltas: true,
+  nativeStructuredOutput: false,
+  reportsWindowState: true,
+  reportsCost: true,
+}
 
 export interface ClaudeCodeDriverOptions {
   /** Overridable so tests and the golden image can point at an absolute path. */
@@ -45,6 +66,7 @@ export function encodeUserMessage(text: string): string {
 
 export class ClaudeCodeDriver implements HarnessDriver {
   readonly id: HarnessId = 'claude-code'
+  readonly capabilities = CLAUDE_CODE_CAPABILITIES
 
   constructor(private readonly opts: ClaudeCodeDriverOptions = {}) {}
 
@@ -169,6 +191,10 @@ class ClaudeCodeSession implements Session {
   async send(text: string): Promise<void> {
     this.steerQueue.push({ text })
     this.flushSteers()
+  }
+
+  pendingSteers(): string[] {
+    return this.steerQueue.map((s) => s.text)
   }
 
   /**
