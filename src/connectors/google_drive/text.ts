@@ -26,7 +26,10 @@ export type TextPlan =
 const DOWNLOAD_MAX_BYTES = 256 * 1024;
 const TEXT_RESERVE_MS = 4000;
 
-const DOWNLOADABLE_TEXT_MIME_TYPES = new Set([
+// Exported for reuse by services/attachments/extract.ts, which routes
+// Slack/Gmail/Chat attachments through the same plain-text-ish mime list
+// rather than maintaining a second copy.
+export const DOWNLOADABLE_TEXT_MIME_TYPES = new Set([
   "text/plain",
   "text/markdown",
   "text/csv",

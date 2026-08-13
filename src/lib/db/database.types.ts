@@ -336,6 +336,97 @@ export type Database = {
           },
         ]
       }
+      event_attachments: {
+        Row: {
+          created_at: string
+          download_ref: Json
+          error: string | null
+          extracted_chars: number | null
+          extracted_text: string | null
+          filename: string | null
+          id: string
+          integration_id: string
+          mime_type: string | null
+          normalized_event_id: string
+          project_id: string
+          provider: Database["public"]["Enums"]["connector_provider"]
+          provider_attachment_id: string
+          size_bytes: number | null
+          skip_reason: string | null
+          status: string
+          storage_path: string | null
+          text_truncated: boolean
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          download_ref?: Json
+          error?: string | null
+          extracted_chars?: number | null
+          extracted_text?: string | null
+          filename?: string | null
+          id: string
+          integration_id: string
+          mime_type?: string | null
+          normalized_event_id: string
+          project_id: string
+          provider: Database["public"]["Enums"]["connector_provider"]
+          provider_attachment_id: string
+          size_bytes?: number | null
+          skip_reason?: string | null
+          status?: string
+          storage_path?: string | null
+          text_truncated?: boolean
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          download_ref?: Json
+          error?: string | null
+          extracted_chars?: number | null
+          extracted_text?: string | null
+          filename?: string | null
+          id?: string
+          integration_id?: string
+          mime_type?: string | null
+          normalized_event_id?: string
+          project_id?: string
+          provider?: Database["public"]["Enums"]["connector_provider"]
+          provider_attachment_id?: string
+          size_bytes?: number | null
+          skip_reason?: string | null
+          status?: string
+          storage_path?: string | null
+          text_truncated?: boolean
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_attachments_integration_id_workspace_id_fkey"
+            columns: ["integration_id", "workspace_id"]
+            isOneToOne: false
+            referencedRelation: "integrations"
+            referencedColumns: ["id", "workspace_id"]
+          },
+          {
+            foreignKeyName: "event_attachments_normalized_event_id_fkey"
+            columns: ["normalized_event_id"]
+            isOneToOne: false
+            referencedRelation: "normalized_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "event_attachments_project_id_workspace_id_fkey"
+            columns: ["project_id", "workspace_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id", "workspace_id"]
+          },
+        ]
+      }
       integration_cursors: {
         Row: {
           created_at: string
@@ -1134,6 +1225,13 @@ export type Database = {
       is_workspace_member: {
         Args: { p_workspace_id: string }
         Returns: boolean
+      }
+      prune_event_attachments: {
+        Args: { p_older_than_days?: number }
+        Returns: {
+          deleted_objects: number
+          deleted_rows: number
+        }[]
       }
       reap_job_dispatches: { Args: never; Returns: undefined }
     }

@@ -64,6 +64,22 @@ export type AssigneeOption = {
   role: string | null;
 };
 
+/** One event_attachments row for a SourceEvent/DayEvent, camelCased at the
+ * boundary. Deliberately omits storage_path/download_ref — the client only
+ * ever needs enough to render a status and, once extracted, ask
+ * getAttachmentPreviewUrl (./attachment-actions) for a fresh signed URL by
+ * id. Shared between task-management's TaskDetailSheet and the Project Data
+ * tab's DayLinkage — both show the same normalized_events rows, just via a
+ * different route in. */
+export type AttachmentSummary = {
+  id: string;
+  filename: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  status: "pending" | "extracted" | "skipped" | "failed";
+  skipReason: string | null;
+};
+
 /** One normalized_events row (a Slack message, etc.) linked to an action
  * item via action_item_source_events — the "why was this created" trail. */
 export type SourceEvent = {
@@ -74,6 +90,7 @@ export type SourceEvent = {
   title: string | null;
   body: string | null;
   occurredAt: string;
+  attachments: AttachmentSummary[];
 };
 
 export const STATUS_LABEL: Record<ActionItemStatus, string> = {

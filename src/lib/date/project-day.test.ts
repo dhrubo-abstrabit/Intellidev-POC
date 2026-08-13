@@ -80,4 +80,38 @@ describe("utcWindowForDay", () => {
     expect(window.lt).toBe(new Date(window.lt).toISOString());
     expect(window.gte < window.lt).toBe(true);
   });
+
+  describe("with a timeZone", () => {
+    it("returns the exact local-midnight boundaries for UTC, with no buffer", () => {
+      const window = utcWindowForDay("2026-08-01", "UTC");
+      expect(window.gte).toBe("2026-08-01T00:00:00.000Z");
+      expect(window.lt).toBe("2026-08-02T00:00:00.000Z");
+    });
+
+    it("returns the exact local-midnight boundaries for a positive offset (Asia/Kolkata, +05:30)", () => {
+      const window = utcWindowForDay("2026-08-01", "Asia/Kolkata");
+      expect(window.gte).toBe("2026-07-31T18:30:00.000Z");
+      expect(window.lt).toBe("2026-08-01T18:30:00.000Z");
+    });
+
+    it("returns the exact local-midnight boundaries for a negative offset (America/Los_Angeles, PDT)", () => {
+      const window = utcWindowForDay("2026-08-01", "America/Los_Angeles");
+      expect(window.gte).toBe("2026-08-01T07:00:00.000Z");
+      expect(window.lt).toBe("2026-08-02T07:00:00.000Z");
+    });
+
+    it("does not leave a gap: the exact lt of one day equals the exact gte of the next", () => {
+      const day1 = utcWindowForDay("2026-08-01", "Asia/Kolkata");
+      const day2 = utcWindowForDay("2026-08-02", "Asia/Kolkata");
+      expect(day1.lt).toBe(day2.gte);
+    });
+
+    it("handles a spring-forward DST transition correctly (America/Los_Angeles, 2026-03-08)", () => {
+      // Clocks skip 02:00 -> 03:00 local at 2026-03-08T10:00:00Z (still PST, UTC-8,
+      // until that instant). Local midnight on 2026-03-08 is unaffected by the
+      // transition (it happens later that day), so it's still a clean UTC-8 offset.
+      const window = utcWindowForDay("2026-03-08", "America/Los_Angeles");
+      expect(window.gte).toBe("2026-03-08T08:00:00.000Z");
+    });
+  });
 });

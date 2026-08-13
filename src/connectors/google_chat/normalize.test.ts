@@ -83,6 +83,58 @@ describe("googleChatConnector.normalize", () => {
     expect(drafts[0].body).toBe("<b>hi</b>");
   });
 
+  it("keeps an attachment-only message with no text/formattedText — regression test for the old `if (!message.text && !message.formattedText) return []` blanket drop", () => {
+    const drafts = googleChatConnector.normalize({
+      occurredAt: new Date("2026-01-01T12:00:00Z"),
+      payload: {
+        name: "spaces/AAAA/messages/BBBB",
+        sender: { name: "users/104871234567890123456", type: "HUMAN" },
+        space_name: "spaces/AAAA",
+        attachment: [
+          {
+            contentName: "spec.pdf",
+            contentType: "application/pdf",
+            attachmentDataRef: { resourceName: "spaces/AAAA/messages/BBBB/attachments/CCCC" },
+          },
+        ],
+      },
+    });
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].body).toBe("[shared 1 file(s)]");
+    expect(drafts[0].attachments).toEqual([
+      {
+        providerAttachmentId: "spaces/AAAA/messages/BBBB/attachments/CCCC",
+        filename: "spec.pdf",
+        mimeType: "application/pdf",
+        downloadRef: { kind: "chat_media", resourceName: "spaces/AAAA/messages/BBBB/attachments/CCCC" },
+      },
+    ]);
+  });
+
+  it("maps a Drive-hosted attachment to a drive downloadRef", () => {
+    const drafts = googleChatConnector.normalize({
+      occurredAt: new Date(),
+      payload: {
+        name: "spaces/AAAA/messages/BBBB",
+        text: "shared a doc",
+        space_name: "spaces/AAAA",
+        attachment: [{ contentName: "roadmap.gdoc", driveDataRef: { driveFileId: "1a2b3c" } }],
+      },
+    });
+    expect(drafts[0].attachments).toEqual([
+      { providerAttachmentId: "1a2b3c", filename: "roadmap.gdoc", mimeType: undefined, downloadRef: { kind: "drive", fileId: "1a2b3c" } },
+    ]);
+  });
+
+  it("still drops a card-only message with neither text/formattedText nor any attachment", () => {
+    const drafts = googleChatConnector.normalize({
+      occurredAt: new Date(),
+      payload: { name: "spaces/AAAA/messages/BBBB", space_name: "spaces/AAAA" },
+    });
+    expect(drafts).toHaveLength(0);
+  });
+
   it("every emitted type matches the normalized_events CHECK constraint's regex", () => {
     const drafts = googleChatConnector.normalize({
       occurredAt: new Date(),

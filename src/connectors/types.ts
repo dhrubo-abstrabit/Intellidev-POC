@@ -71,6 +71,42 @@ export interface NormalizedEventDraft {
    * constraint — must be deterministic for the same underlying event across
    * re-syncs (e.g. `${type}:${resource}:${revision}`). */
   dedupeKey: string;
+  /** Attachments discovered on this event (Slack files[], Gmail MIME parts
+   * with an attachmentId, Chat attachment[]). normalize() only DESCRIBES
+   * these — it's pure/no-I/O, so it can't download bytes here. Persisted as
+   * event_attachments rows (status='pending') by run-sync.ts, then actually
+   * downloaded/parsed later by the separate /api/jobs/attachments job. See
+   * services/attachments/ and the event_attachments migration's header
+   * comment for why this is a separate async step. */
+  attachments?: AttachmentDraft[];
+}
+
+/** One attachment discovered on a message/email, described but not yet
+ * fetched. `providerAttachmentId` + the owning event form the
+ * event_attachments idempotency key, so it MUST be stable across re-syncs of
+ * the same underlying message (a Slack file id, a Gmail MIME part's
+ * attachmentId, a Chat attachmentDataRef.resourceName) — never a generated
+ * value. */
+export interface AttachmentDraft {
+  providerAttachmentId: string;
+  filename?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  /** Opaque, provider-specific handle handed back to downloadAttachment()
+   * verbatim later — never interpreted by run-sync.ts or normalize(). See
+   * event_attachments.download_ref's column comment for the concrete shapes
+   * per provider. */
+  downloadRef: Record<string, unknown>;
+}
+
+/** Result of a successful downloadAttachment() call. `mimeType` is returned
+ * separately from AttachmentDraft.mimeType because the provider's download
+ * response is sometimes more trustworthy than the metadata seen at fetchSince
+ * time (e.g. a server-set Content-Type) — services/attachments/extract.ts
+ * prefers this value when present. */
+export interface DownloadedAttachment {
+  bytes: Buffer;
+  mimeType?: string;
 }
 
 /**
@@ -110,6 +146,25 @@ export interface Connector<TCursor = unknown> {
    * function — no I/O, no side effects, so it's trivially unit-testable
    * against fixture payloads. */
   normalize(raw: RawPayload): NormalizedEventDraft[];
+
+  /** Fetch one attachment's raw bytes, given the `downloadRef` a prior
+   * normalize() call produced. Called by the /api/jobs/attachments job, NOT
+   * during fetchSince — downloading and parsing every attachment inline
+   * would blow the 45s sync budget on the first Slack channel with a few
+   * PDFs in it. Omit entirely for connectors with no attachment support
+   * (mock) — services/attachments/run-extraction.ts skips the whole
+   * download step when this is undefined.
+   *
+   * MUST return `null` (never throw) for a single bad/inaccessible file —
+   * mirrors connectors/google_drive/text.ts's fetchFileText contract: one
+   * weird attachment must never fail the whole extraction run. `deadline` is
+   * carved per-attachment by the caller; check it before starting a large
+   * download, same as every other connector loop boundary. */
+  downloadAttachment?(
+    credentials: ConnectorCredentials,
+    downloadRef: Record<string, unknown>,
+    deadline: FetchDeadline,
+  ): Promise<DownloadedAttachment | null>;
 
   /** Revoke the token with the provider, where the provider supports it.
    * Best-effort — the caller still deletes/updates local rows regardless of

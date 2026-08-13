@@ -157,6 +157,7 @@ export async function runSync(
     }));
 
     let eventsWritten = 0;
+    let attachmentsPending = 0;
     if (rawRows.length > 0) {
       // raw_events' dedupe indexes are PARTIAL (`where provider_event_id is
       // not null` / `where provider_event_id is null and payload_hash is not
@@ -199,30 +200,38 @@ export async function runSync(
 
       const rawIdByProviderEventId = new Map(insertedRaw.map((r) => [r.provider_event_id, r.id]));
 
-      const normalizedRows = fetchResult.rawPayloads
+      // Kept alongside its NormalizedEventDraft (not just the DB row) so the
+      // attachment-persistence step below can read draft.attachments without
+      // calling connector.normalize() a second time on the same raw payload
+      // — normalize() is pure, but there's no reason to pay for it twice.
+      const normalizedDrafts = fetchResult.rawPayloads
         .filter((raw) => raw.providerEventId && rawIdByProviderEventId.has(raw.providerEventId))
         .flatMap((raw) =>
           connector.normalize(raw).map((draft) => ({
-            id: uuidv7(),
-            workspace_id: integration.workspace_id,
-            project_id: integration.project_id,
-            integration_id: integration.id,
-            raw_event_id: rawIdByProviderEventId.get(raw.providerEventId!) ?? null,
-            provider: integration.provider,
-            type: draft.type,
-            actor: draft.actor ?? null,
-            actor_display: draft.actorDisplay ?? null,
-            actor_email: draft.actorEmail ?? null,
-            resource: draft.resource ?? null,
-            resource_type: draft.resourceType ?? null,
-            resource_url: draft.resourceUrl ?? null,
-            title: draft.title ?? null,
-            body: draft.body ?? null,
-            occurred_at: draft.occurredAt.toISOString(),
-            metadata: (draft.metadata ?? {}) as Json,
-            dedupe_key: draft.dedupeKey,
+            draft,
+            row: {
+              id: uuidv7(),
+              workspace_id: integration.workspace_id,
+              project_id: integration.project_id,
+              integration_id: integration.id,
+              raw_event_id: rawIdByProviderEventId.get(raw.providerEventId!) ?? null,
+              provider: integration.provider,
+              type: draft.type,
+              actor: draft.actor ?? null,
+              actor_display: draft.actorDisplay ?? null,
+              actor_email: draft.actorEmail ?? null,
+              resource: draft.resource ?? null,
+              resource_type: draft.resourceType ?? null,
+              resource_url: draft.resourceUrl ?? null,
+              title: draft.title ?? null,
+              body: draft.body ?? null,
+              occurred_at: draft.occurredAt.toISOString(),
+              metadata: (draft.metadata ?? {}) as Json,
+              dedupe_key: draft.dedupeKey,
+            },
           })),
         );
+      const normalizedRows = normalizedDrafts.map((d) => d.row);
 
       if (normalizedRows.length > 0) {
         const { data: insertedNormalized, error: normalizedError } = await service
@@ -231,6 +240,66 @@ export async function runSync(
           .select("id");
         if (normalizedError) throw new Error(`normalized_events insert failed: ${normalizedError.message}`);
         eventsWritten = insertedNormalized?.length ?? 0;
+      }
+
+      // Persist any attachments the connector's normalize() described (pure,
+      // no download here — see connectors/types.ts's AttachmentDraft doc
+      // comment for why that's a separate async job). Config-gated the same
+      // way every other client-writable numeric/boolean config field is:
+      // untyped read, default true, never trust the shape (integrations.config
+      // is jsonb any workspace admin can PATCH directly).
+      const processAttachmentsConfig = (integration.config as Record<string, unknown> | null)?.processAttachments;
+      const draftsWithAttachments =
+        processAttachmentsConfig === false
+          ? []
+          : normalizedDrafts.filter((d) => d.draft.attachments && d.draft.attachments.length > 0);
+
+      if (draftsWithAttachments.length > 0) {
+        // The normalized_events upsert above only RETURNS newly-inserted
+        // rows (ignoreDuplicates: true) — a draft with attachments may
+        // belong to a row that already existed from an earlier partial run
+        // of this same sync (chained via hasMore), so resolve every such
+        // row's id by dedupe_key rather than trusting insertedNormalized.
+        const dedupeKeys = draftsWithAttachments.map((d) => d.draft.dedupeKey);
+        const eventIdByDedupeKey = new Map<string, string>();
+        for (const keyChunk of chunk(dedupeKeys, DEDUPE_CHUNK_SIZE)) {
+          const { data: existingEvents, error: existingEventsError } = await service
+            .from("normalized_events")
+            .select("id, dedupe_key")
+            .eq("integration_id", integration.id)
+            .in("dedupe_key", keyChunk);
+          if (existingEventsError) {
+            throw new Error(`normalized_events lookup for attachments failed: ${existingEventsError.message}`);
+          }
+          for (const row of existingEvents ?? []) eventIdByDedupeKey.set(row.dedupe_key, row.id);
+        }
+
+        const attachmentRows = draftsWithAttachments.flatMap(({ draft }) => {
+          const normalizedEventId = eventIdByDedupeKey.get(draft.dedupeKey);
+          if (!normalizedEventId) return []; // shouldn't happen — the upsert above just wrote or already had this row
+          return (draft.attachments ?? []).map((a) => ({
+            id: uuidv7(),
+            workspace_id: integration.workspace_id,
+            project_id: integration.project_id,
+            integration_id: integration.id,
+            normalized_event_id: normalizedEventId,
+            provider: integration.provider,
+            provider_attachment_id: a.providerAttachmentId,
+            filename: a.filename ?? null,
+            mime_type: a.mimeType ?? null,
+            size_bytes: a.sizeBytes ?? null,
+            download_ref: a.downloadRef as Json,
+          }));
+        });
+
+        for (const rowChunk of chunk(attachmentRows, RAW_INSERT_CHUNK_SIZE)) {
+          const { data: insertedAttachments, error: attachmentsError } = await service
+            .from("event_attachments")
+            .upsert(rowChunk, { onConflict: "normalized_event_id,provider_attachment_id", ignoreDuplicates: true })
+            .select("id");
+          if (attachmentsError) throw new Error(`event_attachments insert failed: ${attachmentsError.message}`);
+          attachmentsPending += insertedAttachments?.length ?? 0;
+        }
       }
     }
 
@@ -297,17 +366,53 @@ export async function runSync(
       // to a coordinated daily batch (src/services/sync/batch.ts), report in
       // and let the batch fire extraction once every member has; otherwise
       // fall back to the old immediate-trigger-on-write behavior (e.g. a
-      // manual "Sync Now" outside of any active batch).
-      const settled = await settleBatchMembership(service, {
-        projectId: integration.project_id,
-        integrationId: integration.id,
-        batchDate: effectiveBatchDate,
-        outcome: "succeeded",
-      });
-      if (settled.inBatch) {
-        if (settled.firedLlmJob) await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
-      } else if (eventsWritten > 0) {
-        await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+      // manual "Sync Now" outside of any active batch). EXCEPT: if this run
+      // discovered attachments that still need downloading/parsing, hand
+      // settle-and-trigger responsibility to /api/jobs/attachments instead —
+      // normalized_events.body is already fixed above, so extracted text can
+      // only reach the LLM if extraction happens BEFORE triggerDailyExtraction
+      // fires. If the handoff enqueue itself fails, fall through to settling
+      // immediately below rather than leaving the batch (or this project's
+      // extraction) waiting on a job that was never actually queued.
+      let handedOffToAttachmentsJob = false;
+      if (attachmentsPending > 0) {
+        try {
+          await enqueueJob("/api/jobs/attachments", {
+            integrationId: integration.id,
+            batchDate: effectiveBatchDate,
+            chainDepth: 0,
+          });
+          handedOffToAttachmentsJob = true;
+        } catch (err) {
+          console.error(
+            `[sync] failed to enqueue attachments job for integration ${integration.id} — settling batch immediately; this run's attachment text will be missing from today's extraction:`,
+            err,
+          );
+        }
+      }
+
+      if (!handedOffToAttachmentsJob) {
+        const settled = await settleBatchMembership(service, {
+          projectId: integration.project_id,
+          integrationId: integration.id,
+          batchDate: effectiveBatchDate,
+          outcome: "succeeded",
+        });
+        if (settled.inBatch) {
+          if (settled.firedLlmJob) {
+            await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+          } else if (settled.alreadySettled && eventsWritten > 0) {
+            // This integration already reported in for today's batch
+            // earlier (its one-shot trigger already fired) — a LATER sync
+            // with new events must fire its own extraction, or those events
+            // would sit unprocessed until tomorrow's batch or its backlog
+            // sweep. Safe to call more than once a day: triggerDailyExtraction
+            // only ever picks up events with processed_at still null.
+            await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+          }
+        } else if (eventsWritten > 0) {
+          await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+        }
       }
     }
 

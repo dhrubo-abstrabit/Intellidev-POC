@@ -5,6 +5,7 @@ import { parseProjectDataSearchParams } from "./filters";
 import { DayRail } from "./day-rail";
 import { ConnectorStrip } from "./connector-strip";
 import { DayLinkage } from "./day-linkage";
+import type { AttachmentSummary } from "@/components/items/types";
 import type { DayActionPoint, DayEvent, DayIndexEntry, IntegrationSummary } from "./types";
 
 // The manual "Extract for this day" button below runs generateActionItems
@@ -120,23 +121,47 @@ export default async function ProjectDataPage({
   // The query above deliberately over-fetches a day on either side (see
   // utcWindowForDay) because a project-local day isn't a UTC day — this is
   // the filter that actually buckets rows into the selected local day.
-  const dayEvents: DayEvent[] = (eventRows ?? [])
-    .filter((row) => projectDayKey(row.occurred_at, timezone) === selectedDay)
-    .map((row) => ({
-      id: row.id,
-      provider: row.provider,
-      service: serviceFromMetadata(row.metadata),
-      type: row.type,
-      actor: row.actor,
-      actorDisplay: row.actor_display,
-      title: row.title,
-      body: row.body,
-      occurredAt: row.occurred_at,
-      resourceUrl: row.resource_url,
-      processed: row.processed_at !== null,
-    }));
+  const dayRows = (eventRows ?? []).filter((row) => projectDayKey(row.occurred_at, timezone) === selectedDay);
+  const dayEventIds = dayRows.map((row) => row.id);
 
-  const dayEventIds = dayEvents.map((event) => event.id);
+  // Grouped by normalized_event_id ahead of the map below so each DayEvent
+  // gets its own attachments without a per-row query. One event carrying
+  // more than one file (a Slack message with two uploads, a multi-attachment
+  // email) is the reason this is a list, not a single nullable column.
+  const attachmentsByEvent = new Map<string, AttachmentSummary[]>();
+  if (dayEventIds.length > 0) {
+    const { data: attachmentRows } = await supabase
+      .from("event_attachments")
+      .select("id, normalized_event_id, filename, mime_type, size_bytes, status, skip_reason")
+      .in("normalized_event_id", dayEventIds);
+    for (const row of attachmentRows ?? []) {
+      const list = attachmentsByEvent.get(row.normalized_event_id) ?? [];
+      list.push({
+        id: row.id,
+        filename: row.filename,
+        mimeType: row.mime_type,
+        sizeBytes: row.size_bytes,
+        status: row.status as AttachmentSummary["status"],
+        skipReason: row.skip_reason,
+      });
+      attachmentsByEvent.set(row.normalized_event_id, list);
+    }
+  }
+
+  const dayEvents: DayEvent[] = dayRows.map((row) => ({
+    id: row.id,
+    provider: row.provider,
+    service: serviceFromMetadata(row.metadata),
+    type: row.type,
+    actor: row.actor,
+    actorDisplay: row.actor_display,
+    title: row.title,
+    body: row.body,
+    occurredAt: row.occurred_at,
+    resourceUrl: row.resource_url,
+    processed: row.processed_at !== null,
+    attachments: attachmentsByEvent.get(row.id) ?? [],
+  }));
 
   // Action points are grouped by *source message day*, not by
   // action_items.for_date (the day the LLM run happened) — an item citing

@@ -1,4 +1,11 @@
-import type { Connector, ConnectorCredentials, FetchResult, NormalizedEventDraft, RawPayload } from "@/connectors/types";
+import type {
+  Connector,
+  ConnectorCredentials,
+  DownloadedAttachment,
+  FetchResult,
+  NormalizedEventDraft,
+  RawPayload,
+} from "@/connectors/types";
 
 /** No OAuth grant, so `credentials.tokens` is always empty — present only to
  * satisfy the shared `ConnectorCredentials` shape the sync engine expects
@@ -41,10 +48,15 @@ export const mockConnector: Connector<MockCursor> = {
       const seq = startSeq + i;
       const author = SAMPLE_AUTHORS[seq % SAMPLE_AUTHORS.length];
       const text = SAMPLE_MESSAGES[seq % SAMPLE_MESSAGES.length];
+      // Deterministic: exactly one message per batch carries a sample
+      // attachment, so run-sync.integration.test.ts can assert on a
+      // predictable event_attachments row without needing real provider
+      // credentials or a network call.
+      const hasAttachment = seq % BATCH_SIZE === 2;
       rawPayloads.push({
         providerEventId: `mock:${seq}`,
         occurredAt: new Date(),
-        payload: { seq, author, text, channel_id: "mock-general", channel_name: "general" },
+        payload: { seq, author, text, channel_id: "mock-general", channel_name: "general", hasAttachment },
       });
     }
 
@@ -56,7 +68,14 @@ export const mockConnector: Connector<MockCursor> = {
   },
 
   normalize(raw: RawPayload): NormalizedEventDraft[] {
-    const message = raw.payload as { seq: number; author: string; text: string; channel_id: string; channel_name: string };
+    const message = raw.payload as {
+      seq: number;
+      author: string;
+      text: string;
+      channel_id: string;
+      channel_name: string;
+      hasAttachment?: boolean;
+    };
     return [
       {
         type: "message.posted",
@@ -68,8 +87,26 @@ export const mockConnector: Connector<MockCursor> = {
         occurredAt: raw.occurredAt ?? new Date(),
         metadata: { channel_id: message.channel_id, channel_name: message.channel_name },
         dedupeKey: `message.posted:${message.channel_id}:${message.seq}`,
+        attachments: message.hasAttachment
+          ? [
+              {
+                providerAttachmentId: `mock-att-${message.seq}`,
+                filename: "sample.txt",
+                mimeType: "text/plain",
+                sizeBytes: 36,
+                downloadRef: { seq: message.seq },
+              },
+            ]
+          : undefined,
       },
     ];
+  },
+
+  async downloadAttachment(): Promise<DownloadedAttachment | null> {
+    // No real provider to call — returns fixed bytes so
+    // services/attachments/run-extraction.ts has something real to parse
+    // and upload when exercised against the mock connector.
+    return { bytes: Buffer.from("Sample attachment text for testing."), mimeType: "text/plain" };
   },
 
   async disconnect(): Promise<void> {

@@ -69,6 +69,47 @@ function findPart(part: GmailMessagePart, mimeType: string): GmailMessagePart | 
   return undefined;
 }
 
+export interface CollectedAttachment {
+  attachmentId: string;
+  filename: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+/**
+ * Depth-first walk collecting every MIME part that carries a downloadable
+ * attachment. Deliberately separate from findPart's traversal above (which
+ * stops dead at the first attachmentId it meets, because it's hunting for
+ * body text) — this one visits every node, including inside multipart
+ * containers, so a message with several files attached surfaces all of
+ * them, not just the first.
+ *
+ * Requires a non-empty `filename`: Gmail also assigns an `attachmentId` to
+ * inline content (e.g. a `cid:`-referenced image embedded in an HTML body),
+ * which arrives with no filename and isn't something a user "attached" in
+ * any meaningful sense — including it would mean every marketing email's
+ * embedded logo shows up as an attachment to extract.
+ */
+export function collectAttachments(payload: GmailMessagePart | undefined): CollectedAttachment[] {
+  if (!payload) return [];
+  const found: CollectedAttachment[] = [];
+
+  function visit(part: GmailMessagePart): void {
+    if (part.body?.attachmentId && part.filename) {
+      found.push({
+        attachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType,
+        sizeBytes: part.body.size,
+      });
+    }
+    for (const child of part.parts ?? []) visit(child);
+  }
+
+  visit(payload);
+  return found;
+}
+
 // Matches the start of a quoted-reply block across the major mail clients:
 // Gmail/Apple Mail's "On <date>, <name> wrote:", Outlook's "-----Original
 // Message-----", an Outlook plain header block, or 3+ consecutive

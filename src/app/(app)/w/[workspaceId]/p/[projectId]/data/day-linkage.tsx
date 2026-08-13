@@ -6,6 +6,7 @@ import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/componen
 import { Badge } from "@/components/ui/badge";
 import { ProviderBadge } from "@/components/items/provider-badge";
 import { PriorityBadge, StatusBadge } from "@/components/items/status-badge";
+import { AttachmentRow } from "@/components/items/attachment-row";
 import { AsyncButton } from "@/components/dashboard/async-button";
 import { cn } from "@/lib/utils";
 import { projectTimeLabel } from "@/lib/date/project-day";
@@ -85,13 +86,25 @@ export function DayLinkage({
             <p className="text-sm text-muted-foreground">No messages for this day and connector.</p>
           ) : (
             events.map((event) => (
-              <button
+              // A <div role="button">, not a real <button> — AttachmentRow's
+              // own Preview control is a real <button>, and nesting a
+              // <button> inside a <button> is invalid HTML that browsers
+              // silently mangle (the inner control loses its click). Keyboard
+              // activation (Enter/Space) is wired by hand to keep the same
+              // affordance a native button gave for free.
+              <div
                 key={event.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 data-testid={`event-${event.id}`}
                 onClick={() => toggle({ kind: "event", id: event.id })}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  toggle({ kind: "event", id: event.id });
+                }}
                 className={cn(
-                  "w-full rounded-lg bg-muted/30 p-2.5 text-left text-sm ring-1 ring-foreground/10 transition-all",
+                  "w-full cursor-pointer rounded-lg bg-muted/30 p-2.5 text-left text-sm ring-1 ring-foreground/10 transition-all",
                   eventClass(event.id),
                 )}
               >
@@ -111,7 +124,10 @@ export function DayLinkage({
                 {event.body ? (
                   <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p>
                 ) : null}
-              </button>
+                {event.attachments.map((attachment) => (
+                  <AttachmentRow key={attachment.id} attachment={attachment} workspaceId={workspaceId} projectId={projectId} />
+                ))}
+              </div>
             ))
           )}
         </CardContent>

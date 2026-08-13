@@ -14,10 +14,36 @@ import type { ConnectorConfigSchema, ConfigFieldSpec } from "@/lib/db/schemas/in
  * read path (each sub-connector re-parsing its own slice at fetchSince
  * time), exactly as it was before the merge.
  */
+// Hard ceiling enforced server-side regardless of what a client PATCHes into
+// integrations.config directly via PostgREST — see connectors/types.ts's
+// FetchContext doc comment on why a client-writable numeric field must never
+// be trusted as unbounded. maxAttachmentsPerRun can only ever LOWER this,
+// never raise it.
+export const MAX_ATTACHMENTS_PER_RUN_CEILING = 25;
+const DEFAULT_MAX_ATTACHMENTS_PER_RUN = 15;
+
 export const googleConfigSchema = z.object({
   gmail: gmailConfigSchema.nullable().default(null),
   drive: googleDriveConfigSchema.nullable().default(null),
   chat: googleChatConfigSchema.nullable().default(null),
+  // Top-level (not nested per sub-service): whether to download and extract
+  // text from Gmail/Chat attachments at all. Read by
+  // services/attachments/run-extraction.ts and run-sync.ts, NOT by
+  // fetchSince — normalize() always describes attachments it finds, and this
+  // flag only gates whether the separate attachments job acts on them.
+  // Deliberately NOT exposed as a config-form field — enabled by default for
+  // everyone, with no UI to turn it off. Kept on the schema (rather than a
+  // bare constant) so it's still a normal, bounded, defaultable value on
+  // every saved config, and still overridable by hand via direct PostgREST
+  // if that's ever needed.
+  processAttachments: z.coerce.boolean().catch(true).default(true),
+  maxAttachmentsPerRun: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_ATTACHMENTS_PER_RUN_CEILING)
+    .catch(DEFAULT_MAX_ATTACHMENTS_PER_RUN)
+    .default(DEFAULT_MAX_ATTACHMENTS_PER_RUN),
 });
 
 export type GoogleConfig = z.infer<typeof googleConfigSchema>;

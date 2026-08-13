@@ -5,6 +5,7 @@ import { ArrowRightIcon, CalendarIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { AttachmentRow } from "@/components/items/attachment-row";
 import { cn } from "@/lib/utils";
 import { formatItemDate } from "@/components/items/format";
 import type { ActionItemRow, AssigneeOption, SourceEvent } from "@/components/items/types";
@@ -128,6 +129,9 @@ export function TaskDetailSheet({
                       <p className="mt-1 whitespace-pre-wrap break-words text-foreground">
                         {event.body ?? event.title ?? "(no content)"}
                       </p>
+                      {event.attachments.map((attachment) => (
+                        <AttachmentRow key={attachment.id} attachment={attachment} workspaceId={workspaceId} projectId={projectId} />
+                      ))}
                     </div>
                   ))}
                 </div>

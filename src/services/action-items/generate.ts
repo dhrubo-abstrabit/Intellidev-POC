@@ -11,7 +11,11 @@ import type { Database } from "@/lib/db/database.types";
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
 
-const PROMPT_VERSION = "action-items-v2";
+// Bumped to v3: NEW EVENTS now carries extracted attachment text (see
+// renderNewEvents in lib/llm/anthropic.ts) — prompt_version is how llm_runs
+// rows are compared over time, and this is a real change to what the model
+// is shown, not a formatting tweak.
+const PROMPT_VERSION = "action-items-v3";
 // Per-call cap on how many of the day's events go into a single extraction
 // call; a day with more than this across all connectors is split into
 // multiple chunks run in parallel (see generateActionItems) rather than
@@ -22,6 +26,10 @@ const MAX_EVENTS_PER_CHUNK = 200;
 // comment documents the same trap. Page through in chunks of this size
 // rather than relying on a single unbounded .select().
 const EVENT_FETCH_PAGE_SIZE = 1000;
+// Same chunking rationale as above, applied to the event_attachments join's
+// .in(normalized_event_id) lookup — well under max_rows and under whatever
+// URL-length ceiling Kong (Supabase's gateway) enforces for a large batch.
+const ATTACHMENT_FETCH_CHUNK_SIZE = 150;
 
 export interface GenerateActionItemsResult {
   status: "succeeded" | "skipped" | "failed";
@@ -97,6 +105,41 @@ async function fetchUnprocessedEventsForDay(
   return rows.filter((row) => row.occurred_at && projectDayKey(row.occurred_at, timezone) === date);
 }
 
+type ExtractedAttachmentRow = Pick<
+  Database["public"]["Tables"]["event_attachments"]["Row"],
+  "normalized_event_id" | "filename" | "mime_type" | "extracted_text" | "text_truncated"
+>;
+
+/** Batch-fetches every EXTRACTED attachment for a set of events, keyed by
+ * their owning normalized_event_id. `status='extracted'` only — pending/
+ * skipped/failed rows have no text to contribute, and a pending row in
+ * particular means extraction just hasn't happened yet by the time this
+ * runs (see run-sync.ts's attachments-job handoff for why that should be
+ * rare, not why it's impossible: a chain that hit MAX_ATTACHMENT_CHAIN_DEPTH
+ * settles anyway with stragglers left pending). */
+async function fetchExtractedAttachments(
+  service: ServiceClient,
+  eventIds: string[],
+): Promise<Map<string, ExtractedAttachmentRow[]>> {
+  const byEvent = new Map<string, ExtractedAttachmentRow[]>();
+  if (eventIds.length === 0) return byEvent;
+
+  for (const idChunk of chunkArray(eventIds, ATTACHMENT_FETCH_CHUNK_SIZE)) {
+    const { data, error } = await service
+      .from("event_attachments")
+      .select("normalized_event_id, filename, mime_type, extracted_text, text_truncated")
+      .in("normalized_event_id", idChunk)
+      .eq("status", "extracted");
+    if (error) throw new Error(`event_attachments fetch failed: ${error.message}`);
+    for (const row of data ?? []) {
+      const list = byEvent.get(row.normalized_event_id) ?? [];
+      list.push(row);
+      byEvent.set(row.normalized_event_id, list);
+    }
+  }
+  return byEvent;
+}
+
 interface LoadedContext {
   base: Omit<ActionItemContext, "newEvents">;
   openActionItems: OpenActionItemSummary[];
@@ -111,6 +154,8 @@ async function loadContext(
 ): Promise<LoadedContext | null> {
   const eventRows = await fetchUnprocessedEventsForDay(service, project.id, date, project.timezone);
   if (eventRows.length === 0) return null;
+
+  const attachmentsByEvent = await fetchExtractedAttachments(service, eventRows.map((e) => e.id));
 
   const { data: openItems } = await service
     .from("action_items")
@@ -146,6 +191,12 @@ async function loadContext(
       title: e.title,
       body: e.body,
       occurredAt: e.occurred_at,
+      attachments: attachmentsByEvent.get(e.id)?.map((a) => ({
+        filename: a.filename,
+        mimeType: a.mime_type,
+        text: a.extracted_text ?? "",
+        truncated: a.text_truncated,
+      })),
     })),
     eventIds: eventRows.map((e) => e.id),
   };

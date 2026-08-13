@@ -69,6 +69,13 @@ function parseGoogleFieldsFromFormData(formData: FormData): Record<string, unkno
         ? parseFieldsFromFormData(section.fields, sectionFormData(section.key, formData))
         : null;
   }
+  // processAttachments/maxAttachmentsPerRun (connectors/google/config.ts)
+  // are deliberately NOT read here — they have no form fields to read from,
+  // so `raw` simply omits them and googleConfigSchema's own
+  // .default(true)/.default(15) applies on every save. Reading them from
+  // formData with no matching input would silently write `false` on every
+  // save instead (a missing checkbox is indistinguishable from an unchecked
+  // one) — the opposite of "enabled by default, hidden from the form".
   return raw;
 }
 
