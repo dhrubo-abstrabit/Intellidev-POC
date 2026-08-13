@@ -1,4 +1,5 @@
 import { preview, type EventBodyInput } from '@intellidev/shared'
+import { isGatewayToolName } from '../../gateway/naming.js'
 import type { RawMapper, SessionInfo, UsageSnapshot } from '../types.js'
 import {
   IGNORED_PARTS,
@@ -131,6 +132,9 @@ export class OpencodeMapper implements RawMapper {
     const callID = typeof props['callID'] === 'string' ? props['callID'] : null
     if (!callID) return []
     const name = typeof props['tool'] === 'string' ? props['tool'] : 'unknown'
+    // The gateway already logged this call under its own name; emitting it again would
+    // double-count every gateway tool in the log and in the PR body.
+    if (isGatewayToolName(name)) return []
     const state = (props['state'] ?? {}) as Record<string, unknown>
     const status = String(state['status'] ?? 'completed')
 

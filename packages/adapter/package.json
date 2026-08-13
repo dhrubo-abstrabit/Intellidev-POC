@@ -5,6 +5,10 @@
   "type": "module",
   "description": "Runs inside the run container. Owns harness drivers, the stage engine, the MCP gateway, the credential broker and the git workflow.",
   "main": "./src/index.ts",
+  "bin": {
+    "intellidev-adapter": "./src/cli/adapter.ts",
+    "intellidev-cred": "./src/cli/cred.ts"
+  },
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",

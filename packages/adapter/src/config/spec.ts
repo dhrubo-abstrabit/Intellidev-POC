@@ -12,8 +12,18 @@ export interface ProjectionSpec {
   cwd: string
   /** Pinned per run so a developer's real home is never written to. */
   home: string
-  /** How a harness reaches the gateway: our own binary, spoken over stdio. */
-  gateway: { command: string; args: readonly string[] }
+  /**
+   * How a harness reaches the gateway.
+   *
+   * Loopback HTTP rather than stdio, verified against all three CLIs. If the harness
+   * spawned the gateway itself it would be a separate process from the adapter, and every
+   * built-in tool would need a second IPC hop back for stage state and event emission.
+   * In-process over 127.0.0.1 removes that entirely.
+   *
+   * The token is passed by header where a harness supports one, and by environment
+   * variable for Codex, which reads `bearer_token_env_var`.
+   */
+  gateway: { url: string; token: string; tokenEnvVar: string }
   /** Absolute path to the resolved skills directory, or null when there are none. */
   skillsDir: string | null
   skills: readonly SkillRef[]

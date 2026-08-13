@@ -1,0 +1,430 @@
+import { mkdir, readFile } from 'node:fs/promises'
+import { join, resolve as resolvePath } from 'node:path'
+import {
+  type AgentEvent,
+  type HarnessId,
+  type RunOutcome,
+  type RunSpec,
+  type StageId,
+  type SkillRef,
+  type StageRecord,
+  type ToolPolicy,
+} from '@intellidev/shared'
+import { materialiseConfig } from '../config/materialise.js'
+import type { ProjectionSpec } from '../config/spec.js'
+import { CredentialBroker } from '../credentials/broker.js'
+import { BrokerClient } from '../credentials/client.js'
+import { materialiseStageEnv, writeDotenv } from '../credentials/stage-env.js'
+import type { CredentialProvider } from '../credentials/types.js'
+import { ClaudeCodeDriver } from '../driver/claude-code/driver.js'
+import { CodexDriver } from '../driver/codex/driver.js'
+import { OpencodeDriver } from '../driver/opencode/driver.js'
+import type { HarnessDriver } from '../driver/types.js'
+import { EventBus } from '../events/bus.js'
+import { buildBuiltinTools } from '../gateway/builtins.js'
+import { Gateway } from '../gateway/gateway.js'
+import { GatewayHttpServer } from '../gateway/http.js'
+import { ToolRegistry } from '../gateway/registry.js'
+import { UpstreamPool } from '../gateway/upstream.js'
+import { GitBuiltins } from '../git/builtins.js'
+import { GitRunner } from '../git/exec.js'
+import { GitHubClient } from '../git/github.js'
+import { RunRepo } from '../git/repo.js'
+import { StageEngine } from '../stages/engine.js'
+import { ShellCommandRunner } from '../stages/shell.js'
+import { FileStateStore } from '../stages/state.js'
+import type { RunStateStore } from '../stages/types.js'
+import { discoverSkills } from './skills.js'
+import type { EventSink } from './sinks.js'
+
+/**
+ * Boot a run and drive it to an outcome.
+ *
+ * The seam where everything meets: broker, repo, config projection, gateway, drivers,
+ * stage engine, git. Every dependency is injected, so the whole path can be exercised
+ * against a temp repo and a fake harness.
+ *
+ * The order is not arbitrary:
+ *
+ *  1. **broker** — the repo needs credentials before it can fetch
+ *  2. **repo and worktree** — config projection writes *into* the worktree
+ *  3. **skills and upstream tools** — the gateway needs them before any harness starts
+ *  4. **gateway** — its URL goes into harness config, so it must be listening first
+ *  5. **config projection** — everything it references now exists
+ *  6. **stages** — the only step that runs a model
+ */
+export interface RunOptions {
+  spec: RunSpec
+  credentials: CredentialProvider
+  sink: EventSink
+  paths?: { brokerSocket?: string; statePath?: string; bundleRoot?: string; home?: string }
+  /** Overridden in tests; real runs use the three CLIs. */
+  drivers?: Partial<Record<HarnessId, HarnessDriver>>
+  store?: RunStateStore
+  /** Wire everything up and stop before running a model. */
+  dryRun?: boolean
+  now?: () => Date
+}
+
+export interface RunResultSummary {
+  outcome: RunOutcome
+  records: StageRecord[]
+  events: AgentEvent[]
+  prUrl?: string
+  /** Questions the agent asked with nobody to answer them. */
+  questions: string[]
+  /** Credential requests made, granted or refused. */
+  credentialRequests: number
+  gatewayUrl: string
+}
+
+export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
+  const { spec } = opts
+  const bundleRoot = opts.paths?.bundleRoot ?? '/opt/project'
+  const brokerSocket = opts.paths?.brokerSocket ?? spec.brokerSocket
+  const home = opts.paths?.home ?? resolvePath(spec.git.worktreePath, '..', '.home')
+  await mkdir(home, { recursive: true })
+
+  const events: AgentEvent[] = []
+  const questions: string[] = []
+  const outputs = new Map<StageId, unknown>()
+  let records: StageRecord[] = []
+  /**
+   * Filled after the worktree exists, because repo-native skills live inside it and the
+   * control plane has never seen them.
+   */
+  let skills: SkillRef[] = [...spec.toolset.skills]
+  /** Rebuilt per stage, so a stage only ever sees the secrets scoped to it. */
+  let stageEnv: Record<string, string> = {}
+
+  // Mutable because the gateway, the broker and the built-in tools all need to know which
+  // stage is current, and they are wired before the first stage begins.
+  let stage: StageId | null = null
+  let attempt = 1
+
+  const bus = new EventBus(
+    spec.runId,
+    (event) => {
+      events.push(event)
+      opts.sink(event)
+    },
+    opts.now,
+  )
+  bus.emit({ type: 'run.provisioning', data: { message: `harness ${spec.harness}` } })
+
+  // 1. Broker.
+  const broker = new CredentialBroker({
+    socketPath: brokerSocket,
+    provider: opts.credentials,
+    currentStage: () => stage,
+  })
+  await broker.start()
+  const brokerClient = new BrokerClient(brokerSocket)
+
+  const upstream = new UpstreamPool({
+    token: async (serverId) => (await brokerClient.mcpToken(serverId)).token,
+  })
+
+  const commands = new ShellCommandRunner({ emit: (event) => bus.emit(event) })
+  const registry = new ToolRegistry()
+
+  const gateway = new Gateway({
+    registry,
+    builtins: buildBuiltinTools({
+      task: spec.task,
+      template: spec.stageTemplate,
+      // Closures, so these follow the stage rather than freezing at wiring time.
+      stage: () => stage ?? spec.stageTemplate.stages[0]!.id,
+      attempt: () => attempt,
+      commands,
+      cwd: spec.git.worktreePath,
+      // A closure: discovery happens after the worktree is checked out.
+      get skills() {
+        return skills
+      },
+      bundleRoot,
+      onStageOutput: (s, output) => outputs.set(s, output),
+      onQuestion: (question) => questions.push(question),
+      perCheckTimeoutSec: spec.limits.perStageTimeoutSec,
+    }),
+    upstream,
+    stage: () => stage ?? spec.stageTemplate.stages[0]!.id,
+    policy: () => policyFor(spec, stage),
+    emit: (event) => bus.emit(event),
+  })
+  const gatewayHttp = new GatewayHttpServer({ gateway })
+
+  try {
+    // 2. Repo and worktree.
+    const git = new GitRunner({
+      home,
+      identity: { name: spec.manifest.git.authorName, email: spec.manifest.git.authorEmail },
+      credentialHelper: '!intellidev-cred git',
+      env: { INTELLIDEV_BROKER_SOCKET: brokerSocket },
+    })
+    const repo = new RunRepo(git, {
+      mirror: join(spec.git.mirrorPath, 'repo.git'),
+      worktree: spec.git.worktreePath,
+    })
+
+    const restoreStart = Date.now()
+    const mirror = await repo.ensureMirror(spec.git.repoUrl, {
+      partial: spec.manifest.git.partialClone,
+    })
+    bus.emit({
+      type: 'cache.restored',
+      data: { hit: mirror === 'fetched', bytes: 0, durationMs: Date.now() - restoreStart },
+    })
+
+    const baseSha = await repo.resolve(spec.git.baseBranch)
+    await repo.createWorktree(spec.git.branch, baseSha)
+    bus.emit({
+      type: 'worktree.ready',
+      data: { branch: spec.git.branch, baseSha, path: spec.git.worktreePath },
+    })
+
+    // 3. Upstream tools.
+    for (const entry of spec.toolset.servers) {
+      const connected = await upstream.connect(entry.server)
+      if (!connected.ok) {
+        // A `required` server should have blocked dispatch, so reaching here means it was
+        // optional: degrade that server rather than lose the run.
+        bus.emit({
+          type: 'error',
+          data: {
+            code: 'upstream_unavailable',
+            message: `${entry.server.id}: ${connected.error ?? 'unknown'}`,
+            retryable: true,
+          },
+        })
+        continue
+      }
+      registry.registerUpstream(entry.server.id, connected.tools, entry.attachment)
+    }
+
+    // 4. Gateway, before any config references its URL.
+    const gatewayUrl = await gatewayHttp.start()
+
+    // 5. Config projection, after discovering skills the spec could not know about.
+    skills = await discoverSkills({
+      bundleRoot,
+      worktree: spec.git.worktreePath,
+      declared: spec.toolset.skills,
+    })
+    await materialiseConfig({
+      harness: spec.harness,
+      cwd: spec.git.worktreePath,
+      home,
+      gateway: {
+        url: gatewayUrl,
+        token: gatewayHttp.token,
+        tokenEnvVar: GATEWAY_TOKEN_ENV,
+      },
+      skillsDir: skills.length > 0 ? join(bundleRoot, 'skills') : null,
+      skills,
+      context: await readContext(bundleRoot, spec),
+      // Baseline only. Per-stage scoping is the gateway's, because this file is written
+      // once and the stage moves.
+      policy: { mode: 'full', allow: [], deny: spec.manifest.policy.tools.deny },
+      ...modelFor(spec),
+    } satisfies ProjectionSpec)
+
+    bus.emit({
+      type: 'run.started',
+      data: { harness: spec.harness, manifestVersion: spec.manifestVersion },
+    })
+
+    if (opts.dryRun) {
+      bus.emit({ type: 'run.finished', data: { outcome: 'succeeded', reason: 'dry run' } })
+      return {
+        outcome: 'succeeded',
+        records,
+        events,
+        questions,
+        credentialRequests: broker.log.length,
+        gatewayUrl,
+      }
+    }
+
+    // 6. Stages.
+    const github = new GitHubClient({ token: () => gitToken(brokerClient) })
+    const builtins = new GitBuiltins({
+      repo,
+      github,
+      bus,
+      git: spec.manifest.git,
+      task: spec.task,
+      harness: spec.harness,
+      repoUrl: spec.git.repoUrl,
+      baseBranch: spec.git.baseBranch,
+      branch: spec.git.branch,
+      baseSha,
+      snapshot: () => ({ events, records }),
+    })
+
+    const engine = new StageEngine({
+      runId: spec.runId,
+      cwd: spec.git.worktreePath,
+      template: spec.stageTemplate,
+      defaultHarness: spec.harness,
+      drivers: opts.drivers ?? defaultDrivers(),
+      commands,
+      builtins,
+      outputs: { take: (s) => outputs.get(s) },
+      store: opts.store ?? new FileStateStore(statePath(opts, spec)),
+      bus,
+      prompts: await loadPrompts(bundleRoot, spec),
+      perStageTimeoutSec: spec.limits.perStageTimeoutSec,
+      onStageEnter: async (next, nextAttempt) => {
+        stage = next
+        attempt = nextAttempt
+        stageEnv = await prepareStageEnv(spec, next, brokerClient, bus)
+      },
+      env: () => ({ ...stageEnv, [GATEWAY_TOKEN_ENV]: gatewayHttp.token }),
+      ...(opts.now ? { now: opts.now } : {}),
+    })
+
+    const result = await engine.run()
+    records = result.state.records
+    const pr = events.find((e) => e.type === 'pr.opened')
+
+    return {
+      outcome: result.outcome,
+      records,
+      events,
+      questions,
+      credentialRequests: broker.log.length,
+      gatewayUrl,
+      ...(pr?.type === 'pr.opened' ? { prUrl: pr.data.url } : {}),
+    }
+  } finally {
+    // Ordered so nothing is left listening if an earlier close throws.
+    await gatewayHttp.stop().catch(() => undefined)
+    await upstream.close().catch(() => undefined)
+    await broker.stop().catch(() => undefined)
+  }
+}
+
+export const GATEWAY_TOKEN_ENV = 'INTELLIDEV_GATEWAY_TOKEN'
+
+function policyFor(spec: RunSpec, stage: StageId | null): ToolPolicy {
+  const found = spec.stageTemplate.stages.find((s) => s.id === stage)
+  // Unknown stage means nothing has started; deny by default rather than guessing.
+  return found?.tools ?? { mode: 'none', allow: [], deny: [] }
+}
+
+function modelFor(spec: RunSpec): { model?: string } {
+  const configured = spec.manifest.harnesses.models[spec.harness]?.model
+  return configured ? { model: configured } : {}
+}
+
+/** Drivers for a real run. The gateway token reaches them via the engine's stage env. */
+function defaultDrivers(): Partial<Record<HarnessId, HarnessDriver>> {
+  return {
+    'claude-code': new ClaudeCodeDriver(),
+    codex: new CodexDriver(),
+    opencode: new OpencodeDriver(),
+  }
+}
+
+function statePath(opts: RunOptions, spec: RunSpec): string {
+  return (
+    opts.paths?.statePath ?? resolvePath(spec.git.worktreePath, '..', `${spec.runId}.state.json`)
+  )
+}
+
+/** Pull the password out of the git credential protocol reply. */
+async function gitToken(client: BrokerClient): Promise<string> {
+  const reply = await client.gitCredential('protocol=https\nhost=github.com\n\n')
+  return /^password=(.*)$/m.exec(reply)?.[1]?.trim() ?? ''
+}
+
+/**
+ * Resolve secrets for a stage and render the dotenv most repos expect.
+ *
+ * Failures here are reported, not fatal: a missing optional secret should make a test fail
+ * with a readable error rather than stop the run before it starts.
+ */
+async function prepareStageEnv(
+  spec: RunSpec,
+  stage: StageId,
+  client: BrokerClient,
+  bus: EventBus,
+): Promise<Record<string, string>> {
+  try {
+    const resolved = await materialiseStageEnv({ envSpec: spec.manifest.env, stage, client })
+    if (resolved.unresolved.length > 0) {
+      bus.emit({
+        type: 'error',
+        data: {
+          code: 'secrets_unresolved',
+          message: `unresolved: ${resolved.unresolved.join(', ')}`,
+          retryable: false,
+        },
+      })
+    }
+    if (spec.manifest.env.dotenvPath && Object.keys(resolved.env).length > 0) {
+      await writeDotenv({
+        worktree: spec.git.worktreePath,
+        dotenvPath: spec.manifest.env.dotenvPath,
+        env: resolved.env,
+      })
+    }
+    return resolved.env
+  } catch (error) {
+    bus.emit({
+      type: 'error',
+      data: {
+        code: 'stage_env_failed',
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    })
+    return {}
+  }
+}
+
+async function readContext(bundleRoot: string, spec: RunSpec): Promise<string> {
+  const path = join(bundleRoot, spec.manifest.contextFile.replace(/^\.\//, ''))
+  return readFile(path, 'utf8').catch(
+    () => `# ${spec.manifest.project}\n\nNo context document was provided for this project.`,
+  )
+}
+
+/**
+ * Stage prompts, from the bundle with the task appended.
+ *
+ * The task is appended rather than left to a tool call: an agent that never calls
+ * `task_context` would otherwise be working blind, and the cost of including it is a few
+ * hundred tokens.
+ */
+async function loadPrompts(
+  bundleRoot: string,
+  spec: RunSpec,
+): Promise<Partial<Record<StageId, string>>> {
+  const prompts: Partial<Record<StageId, string>> = {}
+  for (const stageDef of spec.stageTemplate.stages) {
+    if (stageDef.kind !== 'agent' || !stageDef.promptFile) continue
+    const body = await readFile(
+      join(bundleRoot, stageDef.promptFile.replace(/^\.\//, '')),
+      'utf8',
+    ).catch(() => `You are working on the "${stageDef.id}" stage of this task.`)
+
+    prompts[stageDef.id] = [
+      body.trim(),
+      '',
+      '---',
+      '',
+      `## Task: ${spec.task.title}`,
+      '',
+      spec.task.description.trim(),
+      ...(spec.task.details ? ['', spec.task.details.trim()] : []),
+      ...(spec.task.acceptanceCriteria.length > 0
+        ? ['', '**Acceptance criteria**', ...spec.task.acceptanceCriteria.map((c) => `- ${c}`)]
+        : []),
+      '',
+      'Call `stage_state` to see exactly what this stage’s gate will check.',
+    ].join('\n')
+  }
+  return prompts
+}

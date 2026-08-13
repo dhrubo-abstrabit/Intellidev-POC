@@ -12,11 +12,14 @@
     "build": "pnpm -r build",
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yaml,yml}\"",
-    "check": "pnpm format:check && pnpm typecheck && pnpm test"
+    "check": "pnpm format:check && pnpm typecheck && pnpm test",
+    "adapter": "tsx packages/adapter/src/cli/adapter.ts",
+    "cred": "tsx packages/adapter/src/cli/cred.ts"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "prettier": "^3.3.3",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }

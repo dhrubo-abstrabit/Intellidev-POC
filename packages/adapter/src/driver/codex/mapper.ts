@@ -1,4 +1,5 @@
 import { preview, type EventBodyInput } from '@intellidev/shared'
+import { isGatewayToolName } from '../../gateway/naming.js'
 import type { RawMapper, SessionInfo, UsageSnapshot } from '../types.js'
 import {
   COMMAND_TOOL_NAME,
@@ -167,6 +168,8 @@ export class CodexMapper implements RawMapper {
       case 'mcp_tool_call': {
         const server = typeof item['server'] === 'string' ? item['server'] : undefined
         const name = typeof item['tool'] === 'string' ? item['tool'] : 'mcp_tool'
+        // Already logged by the gateway; see gateway/naming.ts.
+        if (isGatewayToolName(name) || (server && isGatewayToolName(`${server}__x`))) return []
         if (!completed) {
           this.openItems.set(id, { name, input: '' })
           return [

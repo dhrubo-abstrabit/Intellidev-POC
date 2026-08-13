@@ -38,6 +38,23 @@ export interface StageEngineDeps {
    * gate, but a pathological onFail graph could still ping-pong between stages.
    */
   maxTotalStageRuns?: number
+  /**
+   * Called when a stage is entered, before it runs.
+   *
+   * Exists so the engine does not have to know about the credential broker or the MCP
+   * gateway: both need to know which stage is current, and wiring them in here would make
+   * the state machine depend on both. Awaited, because stage-scoped secrets have to be in
+   * place before the stage starts.
+   */
+  onStageEnter?: (stage: StageId, attempt: number) => Promise<void>
+  /**
+   * Environment for the harness process.
+   *
+   * Carries two things the harness genuinely needs: the gateway bearer token (Codex reads
+   * it from the environment rather than config) and the stage's resolved project secrets,
+   * because the agent runs the same tests the gate will run and they read `process.env`.
+   */
+  env?: () => Record<string, string>
   now?: () => Date
 }
 
@@ -120,6 +137,8 @@ export class StageEngine {
     this.deps.bus.enterStage(stage.id)
     const startedAt = this.now().toISOString()
     this.deps.bus.emit({ type: 'stage.entered', data: { attempt: visits } })
+    // Before the stage runs: secrets scoped to it, and gateway filtering pointed at it.
+    if (this.deps.onStageEnter) await this.deps.onStageEnter(stage.id, visits)
 
     const harness = stage.harness ?? this.deps.defaultHarness
     const ctx: StageContext = {
@@ -265,6 +284,7 @@ export class StageEngine {
       timeoutSec: this.perStageTimeoutSec,
       ...(stage.model ? { model: stage.model } : {}),
       ...(ctx.resume ? { resume: ctx.resume } : {}),
+      ...(this.deps.env ? { env: this.deps.env() } : {}),
     }
 
     const session = await driver.start(req)

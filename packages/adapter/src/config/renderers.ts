@@ -36,8 +36,9 @@ export const renderClaudeCode: Renderer = (spec) => {
       contents: stableStringify({
         mcpServers: {
           [GATEWAY_SERVER_NAME]: {
-            command: spec.gateway.command,
-            args: [...spec.gateway.args],
+            type: 'http',
+            url: spec.gateway.url,
+            headers: { Authorization: `Bearer ${spec.gateway.token}` },
           },
         },
       }),
@@ -100,7 +101,11 @@ export const renderCodex: Renderer = (spec) => ({
         tables: [
           {
             path: ['mcp_servers', GATEWAY_SERVER_NAME],
-            values: { command: spec.gateway.command, args: [...spec.gateway.args] },
+            // Verified against codex 0.147.0: `codex mcp add --url
+            // --bearer-token-env-var` writes exactly these two keys. Codex reads the
+            // token from the environment rather than config, which keeps the secret out
+            // of a file we render.
+            values: { url: spec.gateway.url, bearer_token_env_var: spec.gateway.tokenEnvVar },
           },
         ],
       }),
@@ -158,9 +163,9 @@ export const renderOpencode: Renderer = (spec) => ({
         ...(spec.model ? { model: spec.model } : {}),
         mcp: {
           [GATEWAY_SERVER_NAME]: {
-            type: 'local',
-            // opencode takes the command as a single argv array, unlike the other two.
-            command: [spec.gateway.command, ...spec.gateway.args],
+            type: 'remote',
+            url: spec.gateway.url,
+            headers: { Authorization: `Bearer ${spec.gateway.token}` },
             enabled: true,
           },
         },

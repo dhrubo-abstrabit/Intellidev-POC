@@ -1,4 +1,5 @@
 import { preview, type EventBodyInput } from '@intellidev/shared'
+import { isGatewayToolName } from '../../gateway/naming.js'
 import type { RawMapper, SessionInfo, UsageSnapshot } from '../types.js'
 import {
   CcAssistant,
@@ -124,6 +125,8 @@ export class ClaudeCodeMapper implements RawMapper {
           const name = String(block.name)
           const input = 'input' in block ? block.input : undefined
           this.pendingTools.set(id, { name, input })
+          // Already logged by the gateway under its own name; see gateway/naming.ts.
+          if (isGatewayToolName(name)) break
           const p = preview(input ?? {})
           out.push({
             type: 'tool.call',
@@ -162,6 +165,10 @@ export class ClaudeCodeMapper implements RawMapper {
       const id = String(block.tool_use_id)
       const pending = this.pendingTools.get(id)
       const name = pending?.name ?? 'unknown'
+      if (isGatewayToolName(name)) {
+        this.pendingTools.delete(id)
+        continue
+      }
       const isError = 'is_error' in block ? Boolean(block.is_error) : false
       const p = preview('content' in block ? block.content : undefined)
       out.push({

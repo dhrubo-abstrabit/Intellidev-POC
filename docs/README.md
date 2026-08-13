@@ -24,7 +24,7 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 
 ## Current status
 
-**T1–T8 complete, plus a third harness.** 373 tests, typecheck clean.
+**T1–T8 complete, plus a third harness and a runnable local path.** 399 tests, typecheck clean.
 Verify with `pnpm install && pnpm check`.
 
 | Task | Ships                                                                                 |
@@ -38,6 +38,9 @@ Verify with `pnpm install && pnpm check`.
 Contract tests replay recorded CLI output from `packages/adapter/test/fixtures/`, so
 they need no subprocess and spend no quota. The
 [capability matrix](architecture.md) records where the three harnesses differ.
+
+A real task has been run end to end against a real repo with a real model:
+see [running-locally.md](running-locally.md).
 
 **Next:** T9, the control plane — Postgres schema, manual task form, dispatch endpoint.
 

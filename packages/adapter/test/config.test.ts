@@ -35,7 +35,11 @@ function spec(over: Partial<ProjectionSpec> = {}): ProjectionSpec {
     harness: 'opencode',
     cwd: '/work/run-1',
     home: '/home/adapter',
-    gateway: { command: '/opt/intellidev/gateway', args: ['serve', '--run', 'run-1'] },
+    gateway: {
+      url: 'http://127.0.0.1:7717/mcp',
+      token: 'gwt_secret_value',
+      tokenEnvVar: 'INTELLIDEV_GATEWAY_TOKEN',
+    },
     skillsDir: '/opt/project/skills',
     skills,
     context: '# acme-web\n\nUse pnpm. Never edit generated files.',
@@ -59,7 +63,7 @@ describe('every harness gets exactly one MCP server', () => {
       .join('\n')
     // The whole reason three config formats do not become three tool configurations.
     expect(config).toContain(GATEWAY_SERVER_NAME)
-    expect(config).toContain('/opt/intellidev/gateway')
+    expect(config).toContain('http://127.0.0.1:7717/mcp')
     // No other server may appear.
     expect(config).not.toMatch(/sentry|linear/i)
   })
@@ -85,9 +89,7 @@ describe('every harness gets exactly one MCP server', () => {
     for (const { harness, files, links } of projections) {
       const all = [...files.map((f) => f.contents), ...links.map((l) => l.target)].join('\n')
       // ...but the gateway invocation is byte-identical everywhere.
-      expect(all, harness).toContain('/opt/intellidev/gateway')
-      expect(all, harness).toContain('serve')
-      expect(all, harness).toContain('run-1')
+      expect(all, harness).toContain('http://127.0.0.1:7717/mcp')
 
       // The context body is the same text in every projection.
       const context = files.find((f) => /CLAUDE\.md|AGENTS\.md/.test(f.path))
@@ -116,7 +118,11 @@ describe('claude-code projection', () => {
   it('writes .mcp.json in the worktree with only the gateway', () => {
     const mcp = JSON.parse(fileFor(projection, '.mcp.json')!.contents)
     expect(Object.keys(mcp.mcpServers)).toEqual([GATEWAY_SERVER_NAME])
-    expect(mcp.mcpServers[GATEWAY_SERVER_NAME].args).toEqual(['serve', '--run', 'run-1'])
+    expect(mcp.mcpServers[GATEWAY_SERVER_NAME]).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:7717/mcp',
+      headers: { Authorization: 'Bearer gwt_secret_value' },
+    })
   })
 
   it('pre-approves the gateway but not individual tools', () => {
@@ -183,8 +189,11 @@ describe('codex projection', () => {
 
   it('declares the gateway as an mcp_servers table', () => {
     expect(toml).toContain(`[mcp_servers.${GATEWAY_SERVER_NAME}]`)
-    expect(toml).toContain('command = "/opt/intellidev/gateway"')
-    expect(toml).toContain('args = ["serve", "--run", "run-1"]')
+    // Exactly the keys `codex mcp add --url --bearer-token-env-var` writes.
+    expect(toml).toContain('url = "http://127.0.0.1:7717/mcp"')
+    expect(toml).toContain('bearer_token_env_var = "INTELLIDEV_GATEWAY_TOKEN"')
+    // Codex reads the token from the environment, so it must not be inline.
+    expect(toml).not.toContain('gwt_secret_value')
   })
 
   it('never asks for approval, since nothing can answer', () => {
@@ -218,10 +227,11 @@ describe('opencode projection', () => {
   const projection = renderForHarness(spec({ harness: 'opencode' }))
   const config = JSON.parse(fileFor(projection, 'opencode.json')!.contents)
 
-  it('declares the gateway as a local mcp server with one argv array', () => {
+  it('declares the gateway as a remote mcp server', () => {
     expect(config.mcp[GATEWAY_SERVER_NAME]).toEqual({
-      type: 'local',
-      command: ['/opt/intellidev/gateway', 'serve', '--run', 'run-1'],
+      type: 'remote',
+      url: 'http://127.0.0.1:7717/mcp',
+      headers: { Authorization: 'Bearer gwt_secret_value' },
       enabled: true,
     })
   })

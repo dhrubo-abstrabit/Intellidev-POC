@@ -1,0 +1,109 @@
+{
+  "runId": "run_local_0001",
+  "taskId": "task_local_0001",
+  "projectId": "proj_example",
+  "manifestVersion": 1,
+  "manifest": {
+    "version": 1,
+    "project": "example",
+    "repos": [{ "url": "REPLACE_ME_WITH_A_REPO_URL", "defaultBranch": "main" }],
+    "harnesses": {
+      "default": "opencode",
+      "allowed": ["opencode", "claude-code", "codex"],
+      "seatPool": "local",
+      "models": {
+        "opencode": { "model": "opencode/nemotron-3.5-lightning-free" }
+      }
+    },
+    "contextFile": "./context/repo.md",
+    "skillDirs": ["./skills"],
+    "stageTemplate": {
+      "name": "local-minimal",
+      "stages": [
+        {
+          "id": "design",
+          "kind": "agent",
+          "promptFile": "prompts/design.md",
+          "tools": { "mode": "read_only" }
+        },
+        { "id": "branch", "kind": "builtin", "action": "git.create_branch" },
+        {
+          "id": "code",
+          "kind": "agent",
+          "promptFile": "prompts/code.md",
+          "tools": { "mode": "full" }
+        },
+        {
+          "id": "test",
+          "kind": "agent",
+          "promptFile": "prompts/fix.md",
+          "tools": { "mode": "full" },
+          "gate": { "kind": "command", "run": "echo no tests configured" },
+          "maxAttempts": 2,
+          "onFail": "code"
+        },
+        { "id": "pr", "kind": "builtin", "action": "github.open_pr" }
+      ]
+    },
+    "env": {
+      "vars": { "NODE_ENV": "test" },
+      "secrets": [],
+      "dotenvPath": null
+    }
+  },
+  "bundle": { "url": "file:///dev/null", "digest": "local" },
+  "task": {
+    "id": "task_local_0001",
+    "title": "Add a hello function",
+    "description": "Add a `hello(name)` function that returns a greeting, and export it.",
+    "acceptanceCriteria": ["hello('world') returns a string containing 'world'"]
+  },
+  "harness": "opencode",
+  "stageTemplate": {
+    "name": "local-minimal",
+    "stages": [
+      {
+        "id": "design",
+        "kind": "agent",
+        "promptFile": "prompts/design.md",
+        "tools": { "mode": "read_only" }
+      },
+      { "id": "branch", "kind": "builtin", "action": "git.create_branch" },
+      {
+        "id": "code",
+        "kind": "agent",
+        "promptFile": "prompts/code.md",
+        "tools": { "mode": "full" }
+      },
+      {
+        "id": "test",
+        "kind": "agent",
+        "promptFile": "prompts/fix.md",
+        "tools": { "mode": "full" },
+        "gate": { "kind": "command", "run": "echo no tests configured" },
+        "maxAttempts": 2,
+        "onFail": "code"
+      },
+      { "id": "pr", "kind": "builtin", "action": "github.open_pr" }
+    ]
+  },
+  "toolset": { "servers": [], "skills": [] },
+  "git": {
+    "repoUrl": "REPLACE_ME_WITH_A_REPO_URL",
+    "baseBranch": "main",
+    "branch": "feat/add-hello-local-0001",
+    "mirrorPath": "/tmp/intellidev-example/cache",
+    "worktreePath": "/tmp/intellidev-example/work/run_local_0001"
+  },
+  "seat": { "id": "local", "pool": "local", "provider": "local" },
+  "limits": {
+    "wallClockSec": 3600,
+    "idleKillSec": 600,
+    "perStageTimeoutSec": 900,
+    "tokensMax": 2000000,
+    "usdEstMax": 5
+  },
+  "controlPlaneUrl": "http://127.0.0.1:4000",
+  "streamUrl": "ws://127.0.0.1:4000/runs/run_local_0001/stream",
+  "brokerSocket": "/tmp/intellidev-example/broker.sock"
+}

@@ -21,6 +21,7 @@ import {
   namespacedToolName,
   registerToolset,
 } from '../src/gateway/registry.js'
+import { isGatewayToolName } from '../src/gateway/naming.js'
 import { flattenContent } from '../src/gateway/upstream.js'
 import type { CommandRunner } from '../src/stages/types.js'
 
@@ -449,5 +450,28 @@ describe('flattenContent', () => {
 
   it('handles a non-array payload', () => {
     expect(flattenContent('plain')).toBe('plain')
+  })
+})
+
+describe('gateway tool de-duplication', () => {
+  it('recognises how each harness namespaces a gateway tool', () => {
+    // Found by running a real task: every gateway call was landing in the log twice.
+    expect(isGatewayToolName('intellidev_stage_state')).toBe(true)
+    expect(isGatewayToolName('mcp__intellidev__stage_state')).toBe(true)
+    expect(isGatewayToolName('intellidev__run_check')).toBe(true)
+    expect(isGatewayToolName('intellidev.run_check')).toBe(true)
+  })
+
+  it('leaves a harness own tools alone', () => {
+    // The harness stays authoritative for tools that never touch the gateway.
+    expect(isGatewayToolName('read')).toBe(false)
+    expect(isGatewayToolName('bash')).toBe(false)
+    expect(isGatewayToolName('Edit')).toBe(false)
+    expect(isGatewayToolName('sentry__search')).toBe(false)
+    expect(isGatewayToolName('')).toBe(false)
+  })
+
+  it('does not match a tool that merely starts with the same letters', () => {
+    expect(isGatewayToolName('intellidevious_tool')).toBe(false)
   })
 })
