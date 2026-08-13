@@ -380,6 +380,40 @@ refuse a request from a stage that should not need it.
   tokens are scoped to the project's repos, 1 h TTL. A git credential helper
   (`intellidev-cred git`) pulls on demand, so a run that outlives its token keeps
   working — the push at minute 90 transparently gets a fresh one.
+
+### What makes the broker a boundary, and what does not
+
+A unix socket is **not** secret from a process running as the same user. If the adapter
+and the harness shared a uid, the agent could simply connect to the socket and ask for a
+GitHub token — the broker would be bookkeeping, not a boundary.
+
+So the container runs **two uids**:
+
+|         | uid | Can open the socket                 | Does                                        |
+| ------- | --- | ----------------------------------- | ------------------------------------------- |
+| Adapter | A   | yes                                 | all git and PR work, gates, the MCP gateway |
+| Harness | B   | **no** — socket is 0600, owned by A | writes code in the worktree                 |
+
+The agent therefore cannot obtain a GitHub token, and if it runs `git push` itself the
+push fails — which is correct, because pushing is ours, not the model's. The worktree is
+writable by B; the socket is not.
+
+Project secrets are the deliberate exception: they land in the environment of the
+processes that run tests, which the agent can read. That is accepted and bounded by
+sandbox attestation and the egress allowlist (§8b), not pretended away.
+
+Three properties the broker buys, in order of importance:
+
+1. **Pull, not push.** Nothing long-lived sits in the environment, and refresh is
+   automatic because every request checks expiry first.
+2. **An audit trail.** Every credential use is a recorded request, including refusals.
+   An injected environment variable leaves no such trace.
+3. **Stage scoping.** A request can be refused because the stage asking has no business
+   with it. This is the one thing an environment variable can never do.
+
+Refresh happens **before** expiry by a 60-second margin, and concurrent callers share a
+single fetch — four git operations starting at once must not mint four tokens.
+
 - **Seats**: OAuth material written to the harness credential file at boot and refreshed
   by the broker. One file per run container, for the one seat that run was assigned.
 - **MCP upstreams**: held by the gateway, never handed to a harness.
