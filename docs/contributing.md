@@ -61,3 +61,13 @@ pnpm check    # format:check → typecheck → test
 ```
 
 `pnpm format` rewrites files; run it before `pnpm check` if formatting fails.
+
+## Verifying before a commit
+
+```sh
+pnpm check && git commit ...
+```
+
+Use `&&`, not two separate commands. `pnpm check` chains format → typecheck → test, and
+piping its output through `grep` masks the exit code — which is how broken code gets
+committed while the test summary looks green.
