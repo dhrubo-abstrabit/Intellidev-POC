@@ -107,7 +107,7 @@ export default async function IntegrationsPage({
               const entry = isRetired ? undefined : getConfigSchema(integration.provider);
 
               return (
-              <Card key={integration.id} className="transition-colors hover:ring-brand-teal-400">
+              <Card key={integration.id}>
                 <Collapsible>
                   <CardHeader className="flex flex-row items-start justify-between gap-2">
                     <div>
@@ -222,7 +222,7 @@ export default async function IntegrationsPage({
           <h2 className="mb-4 text-base font-semibold">Available</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {availableConnectors.map((connector) => (
-              <Card key={connector.id} className="transition-colors hover:ring-brand-teal-400">
+              <Card key={connector.id}>
                 <CardHeader>
                   <CardTitle className="text-base">{connector.displayName}</CardTitle>
                 </CardHeader>
