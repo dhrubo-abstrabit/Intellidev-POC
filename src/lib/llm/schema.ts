@@ -8,7 +8,7 @@ export const ActionItemDraftSchema = z.object({
    * new event is about the same issue, so re-running the generator refines
    * that row instead of duplicating it. There is no separate dedupe key. */
   title: z.string().min(1).max(300),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(2000).nonoptional(),
   priority: z.enum(["low", "medium", "high", "urgent"]),
   confidence: z.number().min(0).max(1),
   ownerHint: z.string().max(200).optional(),

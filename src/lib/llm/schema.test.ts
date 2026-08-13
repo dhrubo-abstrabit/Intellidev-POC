@@ -4,12 +4,27 @@ import { ActionItemGenerationSchema, ActionItemConsolidationSchema } from "./sch
 describe("ActionItemGenerationSchema", () => {
   it("accepts a well-formed generation with the optional fields omitted", () => {
     const result = ActionItemGenerationSchema.safeParse({
-      items: [{ kind: "action", title: "Fix flaky checkout test", priority: "medium", confidence: 0.8 }],
+      items: [
+        {
+          kind: "action",
+          title: "Fix flaky checkout test",
+          description: "Checkout test intermittently fails in CI on retries.",
+          priority: "medium",
+          confidence: 0.8,
+        },
+      ],
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.items[0].sourceEventIds).toEqual([]);
     }
+  });
+
+  it("rejects a missing description", () => {
+    const result = ActionItemGenerationSchema.safeParse({
+      items: [{ kind: "action", title: "Fix flaky checkout test", priority: "medium", confidence: 0.8 }],
+    });
+    expect(result.success).toBe(false);
   });
 
   it("accepts an empty items array (the model choosing to surface nothing)", () => {
