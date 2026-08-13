@@ -88,6 +88,11 @@ export default async function IntegrationsPage({
 
   return (
     <div className="space-y-8">
+      <div>
+        <h1 className="text-lg font-semibold">Integrations</h1>
+        <p className="text-sm text-muted-foreground">Connect and manage the sources this project pulls activity from.</p>
+      </div>
+
       {connectStatus && connectStatus !== "connected" ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {CONNECT_STATUS_MESSAGE[connectStatus] ?? `Connecting ${connectedProvider ?? "the connector"} failed (${connectStatus}).`}

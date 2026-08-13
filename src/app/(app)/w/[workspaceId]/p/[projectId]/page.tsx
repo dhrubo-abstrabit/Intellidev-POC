@@ -32,6 +32,11 @@ export default async function ProjectOverviewPage({
 
   return (
     <div className="space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold">Overview</h1>
+        <p className="text-sm text-muted-foreground">A snapshot of this project&apos;s activity and connections.</p>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
