@@ -207,33 +207,35 @@ export default async function TaskManagementPage({
         <ViewToggle view={filters.view} />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <ItemFilters filters={filters} assignees={assignees} />
-        {snoozedCount ? (
-          <Link href="?view=list&status=snoozed" className="text-xs text-brand-teal-600 underline-offset-2 hover:text-brand-teal-700 hover:underline">
-            Snoozed ({snoozedCount})
-          </Link>
-        ) : null}
-      </div>
-
-      {filters.view === "kanban" ? (
-        <BoardView
-          key={JSON.stringify({ q: filters.q, priority: filters.priority, kind: filters.kind, assignee: filters.assignee, sort: filters.sort })}
-          workspaceId={workspaceId}
-          projectId={projectId}
-          items={rows}
-        />
-      ) : (
-        <ListView workspaceId={workspaceId} projectId={projectId} items={rows} assignees={assignees} />
-      )}
-
       <TaskDetailSheet
         item={openItem}
         sourceEvents={sourceEvents}
         workspaceId={workspaceId}
         projectId={projectId}
         assignees={assignees}
-      />
+      >
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <ItemFilters filters={filters} assignees={assignees} />
+            {snoozedCount ? (
+              <Link href="?view=list&status=snoozed" className="text-xs text-brand-teal-600 underline-offset-2 hover:text-brand-teal-700 hover:underline">
+                Snoozed ({snoozedCount})
+              </Link>
+            ) : null}
+          </div>
+
+          {filters.view === "kanban" ? (
+            <BoardView
+              key={JSON.stringify({ q: filters.q, priority: filters.priority, kind: filters.kind, assignee: filters.assignee, sort: filters.sort })}
+              workspaceId={workspaceId}
+              projectId={projectId}
+              items={rows}
+            />
+          ) : (
+            <ListView workspaceId={workspaceId} projectId={projectId} items={rows} assignees={assignees} />
+          )}
+        </div>
+      </TaskDetailSheet>
     </div>
   );
 }
