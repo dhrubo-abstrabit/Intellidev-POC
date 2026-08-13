@@ -70,6 +70,7 @@ class ScriptedCommands implements CommandRunner {
 
 const noBuiltins: BuiltinActions = {
   createBranch: async () => ({ branch: 'feat/x', from: 'main' }),
+  commit: async () => ({ sha: 'abc1234', filesChanged: 1 }),
   openPullRequest: async () => ({ number: 1, url: 'https://example.test/pr/1' }),
 }
 
@@ -651,6 +652,7 @@ describe('the shipped default template', () => {
       'verify',
       'test',
       'review',
+      'commit',
       'pr',
     ])
     // Review really did run on a different harness than the one that wrote the code.

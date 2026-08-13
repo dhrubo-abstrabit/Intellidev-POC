@@ -253,6 +253,12 @@ export class StageEngine {
         this.deps.bus.emit({ type: 'git.branch_created', data: { branch, from } })
         return
       }
+      case 'git.commit': {
+        // Emitting nothing when there is nothing to commit is deliberate: a run whose agent
+        // changed no files should leave no `git.committed` in the log to explain away.
+        await this.deps.builtins.commit(ctx)
+        return
+      }
       case 'github.open_pr': {
         const pr = await this.deps.builtins.openPullRequest(ctx)
         this.deps.bus.emit({

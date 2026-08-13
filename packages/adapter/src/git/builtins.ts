@@ -41,23 +41,38 @@ export class GitBuiltins implements BuiltinActions {
     return { branch: this.opts.branch, from: this.opts.baseSha }
   }
 
-  async openPullRequest(_ctx: StageContext): Promise<{ number: number; url: string }> {
+  /**
+   * Commit the worktree as its own stage.
+   *
+   * Split out of `openPullRequest` because bundling the two meant a template with no `pr`
+   * stage never committed at all: the agent's edits lived in the worktree and died with the
+   * container. A commit is worth having whether or not a PR follows it.
+   *
+   * Safe to run twice — `commitAll` returns null when the tree is clean — so
+   * `openPullRequest` still calls it for templates that have no commit stage.
+   */
+  async commit(_ctx: StageContext): Promise<{ sha: string; filesChanged: number } | null> {
     const { repo, bus, task } = this.opts
-
     const commit = await repo.commitAll(buildCommitMessage(task))
-    if (commit) {
-      bus.emit({
-        type: 'git.committed',
-        data: {
-          sha: commit.sha,
-          message: buildPullRequestTitle(task),
-          filesChanged: commit.filesChanged,
-        },
-      })
-    }
+    if (!commit) return null
+    bus.emit({
+      type: 'git.committed',
+      data: {
+        sha: commit.sha,
+        message: buildPullRequestTitle(task),
+        filesChanged: commit.filesChanged,
+      },
+    })
+    return commit
+  }
+
+  async openPullRequest(ctx: StageContext): Promise<{ number: number; url: string }> {
+    const { repo, task } = this.opts
+
+    const commit = await this.commit(ctx)
 
     const diff = await repo.diffStat(this.opts.baseSha)
-    bus.emit({ type: 'diff.produced', data: diff })
+    this.opts.bus.emit({ type: 'diff.produced', data: diff })
 
     // A run that changed nothing should open no PR. Finding that out here costs a
     // second; a reviewer finding an empty PR costs their attention.
@@ -68,7 +83,7 @@ export class GitBuiltins implements BuiltinActions {
     const baseMoved = await repo.baseMoved(this.opts.baseBranch, this.opts.baseSha)
 
     await repo.push(this.opts.branch)
-    bus.emit({ type: 'git.pushed', data: { branch: this.opts.branch, remote: 'origin' } })
+    this.opts.bus.emit({ type: 'git.pushed', data: { branch: this.opts.branch, remote: 'origin' } })
 
     const { events, records } = this.opts.snapshot()
     const pr = await this.opts.github.openPullRequest({

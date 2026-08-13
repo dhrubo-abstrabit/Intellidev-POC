@@ -14,6 +14,8 @@ export interface CommandRunner {
  */
 export interface BuiltinActions {
   createBranch(ctx: StageContext): Promise<{ branch: string; from: string }>
+  /** Commits whatever the agent stages left in the worktree. Null when nothing changed. */
+  commit(ctx: StageContext): Promise<{ sha: string; filesChanged: number } | null>
   openPullRequest(ctx: StageContext): Promise<{ number: number; url: string }>
 }
 
