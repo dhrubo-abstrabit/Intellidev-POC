@@ -1,8 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { isoDaysAgo, projectDayKey, projectToday, utcWindowForDay } from "@/lib/date/project-day";
 import { isGoogleService, type ConnectorProvider, type GoogleService } from "@/components/items/provider-badge";
+import { formatItemDate } from "@/components/items/format";
 import { parseProjectDataSearchParams } from "./filters";
-import { DayRail } from "./day-rail";
+import { DayPicker } from "./day-picker";
 import { ConnectorStrip } from "./connector-strip";
 import { DayLinkage } from "./day-linkage";
 import type { AttachmentSummary } from "@/components/items/types";
@@ -238,36 +239,38 @@ export default async function ProjectDataPage({
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-        <div className="space-y-2">
-          <h2 className="text-xs font-medium text-muted-foreground uppercase">
-            Days {truncated ? `(last ${DAY_INDEX_LOOKBACK_DAYS}d, truncated)` : `(last ${DAY_INDEX_LOOKBACK_DAYS}d)`}
-          </h2>
-          <DayRail days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <DayPicker days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
+            <span className="text-sm font-medium text-foreground">{formatItemDate(selectedDay)}</span>
+          </div>
+          <span className="text-sm text-muted-foreground">
+            {dayEvents.length} message{dayEvents.length === 1 ? "" : "s"}
+            {truncated ? ` · last ${DAY_INDEX_LOOKBACK_DAYS}d truncated` : ""}
+          </span>
         </div>
 
-        <div className="space-y-4">
-          <ConnectorStrip
-            integrations={integrations}
-            countsByProvider={countsByProvider}
-            countsByGoogleService={countsByGoogleService}
-            totalCount={dayEvents.length}
-            selectedDay={selectedDay}
-            connector={filters.connector}
-            service={filters.service}
-            workspaceId={workspaceId}
-            projectId={projectId}
-          />
+        <ConnectorStrip
+          integrations={integrations}
+          countsByProvider={countsByProvider}
+          countsByGoogleService={countsByGoogleService}
+          totalCount={dayEvents.length}
+          selectedDay={selectedDay}
+          connector={filters.connector}
+          service={filters.service}
+          workspaceId={workspaceId}
+          projectId={projectId}
+        />
 
-          <DayLinkage
-            events={filteredEvents}
-            actionPoints={filteredActionPoints}
-            timezone={timezone}
-            workspaceId={workspaceId}
-            projectId={projectId}
-            selectedDay={selectedDay}
-          />
-        </div>
+        <DayLinkage
+          events={filteredEvents}
+          actionPoints={filteredActionPoints}
+          timezone={timezone}
+          workspaceId={workspaceId}
+          projectId={projectId}
+          selectedDay={selectedDay}
+        />
       </div>
     </div>
   );

@@ -4,7 +4,7 @@ import { GOOGLE_SERVICE_LABEL, PROVIDER_LABEL } from "@/components/items/provide
 import { projectDataHref, type ProjectDataFilters } from "./filters";
 import type { IntegrationSummary } from "./types";
 
-/** Server Component, same href-building approach as DayRail. Shows this
+/** Server Component, same href-building approach as DayPicker. Shows this
  * project's connected integrations only (not every connector_provider enum
  * value, most of which have no connector implementation yet) — a connected
  * connector with zero events on the selected day still gets a chip, just
