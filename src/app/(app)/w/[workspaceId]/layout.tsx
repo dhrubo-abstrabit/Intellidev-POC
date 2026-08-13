@@ -32,16 +32,16 @@ export default async function WorkspaceLayout({
         workspaceSwitcher={<WorkspaceSwitcher current={current} workspaces={allWorkspaces ?? []} />}
         nav={
           <>
-            <Link href={`/w/${workspaceId}`} className="hover:text-foreground">
+            <Link href={`/w/${workspaceId}`} className="hover:text-brand-teal-600">
               Overview
             </Link>
-            <Link href={`/w/${workspaceId}/team-members`} className="hover:text-foreground">
+            <Link href={`/w/${workspaceId}/team-members`} className="hover:text-brand-teal-600">
               Team Members
             </Link>
           </>
         }
       />
-      <div className="p-6">{children}</div>
+      <div className="min-h-[calc(100vh-3.25rem)] bg-brand-n-50 p-6">{children}</div>
     </div>
   );
 }

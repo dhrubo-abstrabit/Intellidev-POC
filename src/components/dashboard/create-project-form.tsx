@@ -14,15 +14,23 @@ export function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
   return (
     <form action={formAction} className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="project-name">Project name</Label>
+        <Label htmlFor="project-name" className="text-brand-n-700">
+          Project name
+        </Label>
         <Input id="project-name" name="name" placeholder="Internal Dashboard" required maxLength={160} />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="project-description">Description (optional)</Label>
+        <Label htmlFor="project-description" className="text-brand-n-700">
+          Description (optional)
+        </Label>
         <Textarea id="project-description" name="description" maxLength={2000} />
       </div>
       {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
-      <Button type="submit" disabled={isPending}>
+      <Button
+        type="submit"
+        disabled={isPending}
+        className="rounded-full bg-brand-teal-500 text-white hover:bg-brand-teal-600"
+      >
         {isPending ? "Creating..." : "Create project"}
       </Button>
     </form>

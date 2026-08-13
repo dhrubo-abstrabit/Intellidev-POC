@@ -31,7 +31,10 @@ export function WorkspaceSwitcher({ current, workspaces }: WorkspaceSwitcherProp
           via a `render={<element/>}` prop, not a boolean `asChild`. */}
       <DropdownMenuTrigger
         render={
-          <Button variant="outline" className="justify-between gap-2">
+          <Button
+            variant="outline"
+            className="justify-between gap-2 rounded-full border-brand-n-300 text-brand-n-800 hover:bg-brand-n-50"
+          >
             {current.name}
             <ChevronsUpDown className="h-4 w-4 opacity-50" />
           </Button>
