@@ -1,5 +1,5 @@
 import type { ConnectorProvider, GoogleService } from "@/components/items/provider-badge";
-import type { ActionItemKind, ActionItemPriority, ActionItemStatus } from "@/components/items/types";
+import type { ActionItemKind, ActionItemPriority, ActionItemStatus, AttachmentSummary } from "@/components/items/types";
 
 /** One entry in the left-hand day rail — a day (in the project's timezone)
  * that has at least one normalized_events row in the lookback window. */
@@ -38,6 +38,7 @@ export type DayEvent = {
   resourceUrl: string | null;
   /** processed_at !== null — an llm_run has already consumed this event. */
   processed: boolean;
+  attachments: AttachmentSummary[];
 };
 
 /** An action_items row extracted from (some of) the selected day's events,

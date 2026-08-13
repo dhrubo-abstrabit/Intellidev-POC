@@ -1,6 +1,12 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { BOARD_STATUSES, type ActionItemRow, type AssigneeOption, type SourceEvent } from "@/components/items/types";
+import {
+  BOARD_STATUSES,
+  type ActionItemRow,
+  type AssigneeOption,
+  type AttachmentSummary,
+  type SourceEvent,
+} from "@/components/items/types";
 import { decodeAssigneeValue, encodeAssigneeValue } from "@/components/items/assignee";
 import { parseTaskManagementSearchParams } from "./filters";
 import { ViewToggle } from "./view-toggle";
@@ -150,9 +156,34 @@ export default async function TaskManagementPage({
       .select("normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
       .eq("action_item_id", openItem.id);
 
-    sourceEvents = (sourceRows ?? [])
+    const eventRows = (sourceRows ?? [])
       .map((row) => row.normalized_events)
-      .filter((event): event is NonNullable<typeof event> => event !== null)
+      .filter((event): event is NonNullable<typeof event> => event !== null);
+    const eventIds = eventRows.map((event) => event.id);
+
+    // Same shape as the Project Data tab's per-day attachment fetch — a
+    // handful of source events per item, so one unchunked .in() is fine.
+    const attachmentsByEvent = new Map<string, AttachmentSummary[]>();
+    if (eventIds.length > 0) {
+      const { data: attachmentRows } = await supabase
+        .from("event_attachments")
+        .select("id, normalized_event_id, filename, mime_type, size_bytes, status, skip_reason")
+        .in("normalized_event_id", eventIds);
+      for (const row of attachmentRows ?? []) {
+        const list = attachmentsByEvent.get(row.normalized_event_id) ?? [];
+        list.push({
+          id: row.id,
+          filename: row.filename,
+          mimeType: row.mime_type,
+          sizeBytes: row.size_bytes,
+          status: row.status as AttachmentSummary["status"],
+          skipReason: row.skip_reason,
+        });
+        attachmentsByEvent.set(row.normalized_event_id, list);
+      }
+    }
+
+    sourceEvents = eventRows
       .map((event) => ({
         id: event.id,
         type: event.type,
@@ -161,6 +192,7 @@ export default async function TaskManagementPage({
         title: event.title,
         body: event.body,
         occurredAt: event.occurred_at,
+        attachments: attachmentsByEvent.get(event.id) ?? [],
       }))
       .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   }
