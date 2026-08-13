@@ -107,7 +107,7 @@ export default async function IntegrationsPage({
               const entry = isRetired ? undefined : getConfigSchema(integration.provider);
 
               return (
-              <Card key={integration.id}>
+              <Card key={integration.id} className="transition-colors hover:ring-brand-teal-400">
                 <Collapsible>
                   <CardHeader className="flex flex-row items-start justify-between gap-2">
                     <div>
@@ -134,7 +134,7 @@ export default async function IntegrationsPage({
 
                       {isRetired && isActive ? (
                         <p
-                          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-700 dark:text-amber-400"
+                          className="rounded-md border border-brand-warning/30 bg-brand-warning/10 px-3 py-2 text-brand-warning"
                           data-testid={`retired-${integration.provider}`}
                         >
                           This connector has moved. Gmail, Google Drive and Google Chat are now one “Google” connector —
@@ -222,7 +222,7 @@ export default async function IntegrationsPage({
           <h2 className="mb-4 text-base font-semibold">Available</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {availableConnectors.map((connector) => (
-              <Card key={connector.id}>
+              <Card key={connector.id} className="transition-colors hover:ring-brand-teal-400">
                 <CardHeader>
                   <CardTitle className="text-base">{connector.displayName}</CardTitle>
                 </CardHeader>
@@ -236,7 +236,6 @@ export default async function IntegrationsPage({
                       action={connectMock.bind(null, workspaceId, projectId)}
                       loadingMessage="Connecting…"
                       size="sm"
-                      variant="outline"
                       data-testid="connect-mock"
                     >
                       Connect

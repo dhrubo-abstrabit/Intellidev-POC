@@ -64,7 +64,10 @@ export default async function ProjectOverviewPage({
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             <p>{pendingCount ?? 0} pending.</p>
-            <Link href={`/w/${workspaceId}/p/${projectId}/task-management`} className="text-foreground underline">
+            <Link
+              href={`/w/${workspaceId}/p/${projectId}/task-management`}
+              className="text-brand-teal-600 underline hover:text-brand-teal-700"
+            >
               View all
             </Link>
           </CardContent>
@@ -78,7 +81,10 @@ export default async function ProjectOverviewPage({
             {!integrations || integrations.length === 0 ? (
               <p className="text-muted-foreground">
                 No integrations yet.{" "}
-                <Link href={`/w/${workspaceId}/p/${projectId}/integrations`} className="text-foreground underline">
+                <Link
+                  href={`/w/${workspaceId}/p/${projectId}/integrations`}
+                  className="text-brand-teal-600 underline hover:text-brand-teal-700"
+                >
                   Connect one
                 </Link>
                 .

@@ -41,7 +41,10 @@ export function ConnectorStrip({
     return (
       <p className="text-sm text-muted-foreground">
         No connectors connected yet.{" "}
-        <Link href={`/w/${workspaceId}/p/${projectId}/integrations`} className="underline underline-offset-2">
+        <Link
+          href={`/w/${workspaceId}/p/${projectId}/integrations`}
+          className="text-brand-teal-600 underline underline-offset-2 hover:text-brand-teal-700"
+        >
           Connect one
         </Link>
         .
