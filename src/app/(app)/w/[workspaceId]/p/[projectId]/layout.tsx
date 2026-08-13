@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { ProjectNav } from "./project-nav";
 
 export default async function ProjectLayout({
   children,
@@ -30,29 +30,7 @@ export default async function ProjectLayout({
     <div className="space-y-6">
       <div className="flex items-center gap-4">
         <h1 className="text-lg font-semibold">{project.name}</h1>
-        <nav className="flex gap-4 text-sm text-muted-foreground">
-          <Link href={`/w/${workspaceId}/p/${projectId}`} className="hover:text-brand-teal-600">
-            Overview
-          </Link>
-          {/* <Link href={`/w/${workspaceId}/p/${projectId}/items`} className="hover:text-brand-teal-600">
-            Action Items
-          </Link> */}
-          <Link href={`/w/${workspaceId}/p/${projectId}/data`} className="hover:text-brand-teal-600">
-            Project Data
-          </Link>
-          <Link href={`/w/${workspaceId}/p/${projectId}/project-context`} className="hover:text-brand-teal-600">
-            Project Context
-          </Link>
-          <Link href={`/w/${workspaceId}/p/${projectId}/task-management`} className="hover:text-brand-teal-600">
-            Task Tracking
-          </Link>
-          {/* <Link href={`/w/${workspaceId}/p/${projectId}/activity`} className="hover:text-brand-teal-600">
-            Activity
-          </Link> */}
-          <Link href={`/w/${workspaceId}/p/${projectId}/integrations`} className="hover:text-brand-teal-600">
-            Integrations
-          </Link>
-        </nav>
+        <ProjectNav workspaceId={workspaceId} projectId={projectId} />
       </div>
       {children}
     </div>
