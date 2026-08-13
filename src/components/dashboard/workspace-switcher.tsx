@@ -17,14 +17,33 @@ interface WorkspaceSummary {
   name: string;
 }
 
-interface WorkspaceSwitcherProps {
-  current: WorkspaceSummary;
-  workspaces: WorkspaceSummary[];
-}
-
-export function WorkspaceSwitcher({ current, workspaces }: WorkspaceSwitcherProps) {
+/** Shared between this component's own dropdown and the mobile hamburger
+ * menu (workspace-sidebar.tsx) so a future change to how a workspace row
+ * renders can't silently diverge between the two. */
+export function WorkspaceMenuItems({ workspaces }: { workspaces: WorkspaceSummary[] }) {
   const router = useRouter();
 
+  return (
+    <>
+      {workspaces.map((workspace) => (
+        <DropdownMenuItem key={workspace.id} onClick={() => router.push(`/w/${workspace.id}`)}>
+          {workspace.name}
+        </DropdownMenuItem>
+      ))}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem
+        render={
+          <Link href="/onboarding" className="flex items-center gap-2">
+            <Plus className="h-4 w-4" />
+            New workspace
+          </Link>
+        }
+      />
+    </>
+  );
+}
+
+export function WorkspaceSwitcher({ current, workspaces }: { current: WorkspaceSummary; workspaces: WorkspaceSummary[] }) {
   return (
     <DropdownMenu>
       {/* This component's underlying primitive (Base UI, not Radix) composes
@@ -33,28 +52,15 @@ export function WorkspaceSwitcher({ current, workspaces }: WorkspaceSwitcherProp
         render={
           <Button
             variant="outline"
-            className="justify-between gap-2 rounded-full border-brand-n-300 text-brand-n-800 hover:bg-brand-n-50"
+            className="w-full justify-between gap-2 rounded-md border-transparent px-2.5 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           >
-            {current.name}
-            <ChevronsUpDown className="h-4 w-4 opacity-50" />
+            <span className="truncate">{current.name}</span>
+            <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
           </Button>
         }
       />
-      <DropdownMenuContent align="start" className="w-56">
-        {workspaces.map((workspace) => (
-          <DropdownMenuItem key={workspace.id} onClick={() => router.push(`/w/${workspace.id}`)}>
-            {workspace.name}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          render={
-            <Link href="/onboarding" className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              New workspace
-            </Link>
-          }
-        />
+      <DropdownMenuContent align="start">
+        <WorkspaceMenuItems workspaces={workspaces} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
