@@ -101,3 +101,59 @@ written differs, which is the whole point of the projection layer.
 | Gate fails but the agent says it passed | run `run_check` yourself; the gate and `run_check` use the same command        |
 | Tool appears twice in the log           | should not happen — see `gateway/naming.ts`                                    |
 | `spec fetch failed` / Zod error         | the spec is parsed strictly on purpose; the error names the field              |
+
+## The control plane and the UI
+
+`pnpm ui` serves the task board and the API on `http://127.0.0.1:4000`. It runs a task
+end to end: create it, dispatch it, watch the event stream, get a branch and a commit.
+
+```bash
+# a throwaway origin, because a `file://` remote needs no GitHub
+mkdir -p .intellidev-local && git init --bare .intellidev-local/origin.git
+INTELLIDEV_WORK_ROOT=$PWD/.intellidev-local/work pnpm ui
+```
+
+| Variable                  | Default                 | What it does                                                |
+| ------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `INTELLIDEV_MODE`         | `inline`                | `inline` runs the adapter in-process; `docker` in the image |
+| `INTELLIDEV_WORK_ROOT`    | `.intellidev-work`      | where mirrors, worktrees and the run exchange live          |
+| `INTELLIDEV_MOUNT_REPO`   | —                       | a host path to bind-mount, for a `file://` origin           |
+| `INTELLIDEV_IMAGE`        | `intellidev/runner:dev` | the image `docker` mode launches                            |
+| `INTELLIDEV_GITHUB_TOKEN` | —                       | passed to the broker; only needed for a real remote         |
+
+The store is in memory. Restarting loses every task, which is deliberate — see the note at
+the top of `packages/control-plane/src/store.ts`.
+
+## Docker mode
+
+```bash
+pnpm --filter @intellidev/adapter build          # the image bakes the bundle in
+docker build -f infra/docker/Dockerfile -t intellidev/runner:dev .
+
+INTELLIDEV_MODE=docker \
+INTELLIDEV_WORK_ROOT=$PWD/.intellidev-local/work \
+INTELLIDEV_MOUNT_REPO=$PWD/.intellidev-local/origin.git \
+  pnpm ui
+```
+
+The container writes events as JSONL into a bind-mounted exchange directory and the control
+plane tails it. That is a local shortcut — the deployed path has the adapter dial out over a
+WebSocket — but the events are identical, so the UI cannot tell the two apart. **The image
+bakes in the adapter bundle, so a source change needs both a `build` and a `docker build`
+before it reaches a run.**
+
+### Two traps on macOS
+
+Both cost real debugging time, and neither fails in a way that points at the cause:
+
+- **Docker Desktop only shares some host paths.** Bind-mounting anything outside them
+  silently gets you an _empty, root-owned directory_ in the container rather than an error —
+  the mount appears to work and the files are simply not there. `/Users` is shared;
+  `os.tmpdir()` (`/var/folders/...`) is not, which is why the run exchange lives under
+  `INTELLIDEV_WORK_ROOT` and why that should sit under your home directory.
+- **A bind-mounted repo is owned by the host uid**, so git rejects it as _dubious
+  ownership_. `INTELLIDEV_GIT_SAFE_DIRECTORY` (set automatically in docker mode when a repo
+  is mounted) writes a `safe.directory` exception to a `GIT_CONFIG_GLOBAL` file under the
+  run's pinned HOME. It has to be a _file_: git honours `safe.directory` only from protected
+  configuration, and a `file://` clone does its reading in a child `upload-pack` where `-c`
+  values arrive unprotected and are ignored. Against a real remote none of this applies.

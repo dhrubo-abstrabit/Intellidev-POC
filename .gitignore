@@ -19,3 +19,6 @@ coverage/
 
 # personal harness settings; .claude/settings.json is shared
 .claude/settings.local.json
+
+# Local docker-mode fixtures (bind-mounted into the runner; /Users is what Docker Desktop shares)
+.intellidev-local/
