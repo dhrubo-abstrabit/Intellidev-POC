@@ -5,6 +5,33 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --color-brand-teal-50: var(--brand-teal-50);
+  --color-brand-teal-100: var(--brand-teal-100);
+  --color-brand-teal-200: var(--brand-teal-200);
+  --color-brand-teal-300: var(--brand-teal-300);
+  --color-brand-teal-400: var(--brand-teal-400);
+  --color-brand-teal-500: var(--brand-teal-500);
+  --color-brand-teal-600: var(--brand-teal-600);
+  --color-brand-teal-700: var(--brand-teal-700);
+  --color-brand-teal-800: var(--brand-teal-800);
+  --color-brand-teal-900: var(--brand-teal-900);
+  --color-brand-teal-950: var(--brand-teal-950);
+  --color-brand-n-0: var(--brand-n-0);
+  --color-brand-n-50: var(--brand-n-50);
+  --color-brand-n-100: var(--brand-n-100);
+  --color-brand-n-200: var(--brand-n-200);
+  --color-brand-n-300: var(--brand-n-300);
+  --color-brand-n-400: var(--brand-n-400);
+  --color-brand-n-500: var(--brand-n-500);
+  --color-brand-n-600: var(--brand-n-600);
+  --color-brand-n-700: var(--brand-n-700);
+  --color-brand-n-800: var(--brand-n-800);
+  --color-brand-n-900: var(--brand-n-900);
+  --color-brand-n-950: var(--brand-n-950);
+  --color-brand-success: var(--brand-success);
+  --color-brand-warning: var(--brand-warning);
+  --color-brand-danger: var(--brand-danger);
+  --color-brand-info: var(--brand-info);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
@@ -49,6 +76,42 @@
 }
 
 :root {
+  /* Brand system (see D:\Build_TM\brand-system.html) — additive tokens for
+   * the in-progress redesign, kept separate from the existing shadcn
+   * --primary/etc. tokens above so pages not yet redesigned are unaffected.
+   * Rolled into the semantic tokens directly once the whole app is reskinned. */
+  --brand-teal-50: #eafbf9;
+  --brand-teal-100: #cef6f1;
+  --brand-teal-200: #9deee3;
+  --brand-teal-300: #66e0d2;
+  --brand-teal-400: #35cbbc;
+  --brand-teal-500: #0eb8ae;
+  --brand-teal-600: #0b9c93;
+  --brand-teal-700: #0a7f78;
+  --brand-teal-800: #0c645f;
+  --brand-teal-900: #0e4f4b;
+  --brand-teal-950: #082e2c;
+  --brand-n-0: #ffffff;
+  --brand-n-50: #f8f9f9;
+  --brand-n-100: #eff0f0;
+  --brand-n-200: #dddfdf;
+  --brand-n-300: #bfc4c4;
+  --brand-n-400: #949e9d;
+  --brand-n-500: #6f7b7b;
+  --brand-n-600: #576161;
+  --brand-n-700: #414949;
+  --brand-n-800: #2b3130;
+  --brand-n-900: #1b1d1d;
+  --brand-n-950: #0f1010;
+  /* success intentionally NOT set to teal-500 (unlike the source brand doc)
+   * — this app uses color to carry status meaning (Kanban columns, priority
+   * badges), so brand accent and "done/good" need to stay visually distinct.
+   * Revisit when priority/status colors are actually redesigned. */
+  --brand-success: #2f9e6e;
+  --brand-warning: #d98e2b;
+  --brand-danger: #c4432f;
+  --brand-info: #2b7fd9;
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
