@@ -20,7 +20,7 @@ export function ViewToggle({ view }: { view: TaskManagementView }) {
       <Button
         render={<Link href={hrefFor("list")} data-testid="view-list" />}
         nativeButton={false}
-        variant={view === "list" ? "secondary" : "ghost"}
+        variant={view === "list" ? "default" : "ghost"}
         size="sm"
       >
         <ListIcon aria-hidden="true" />
@@ -29,7 +29,7 @@ export function ViewToggle({ view }: { view: TaskManagementView }) {
       <Button
         render={<Link href={hrefFor("kanban")} data-testid="view-kanban" />}
         nativeButton={false}
-        variant={view === "kanban" ? "secondary" : "ghost"}
+        variant={view === "kanban" ? "default" : "ghost"}
         size="sm"
       >
         <LayoutGridIcon aria-hidden="true" />

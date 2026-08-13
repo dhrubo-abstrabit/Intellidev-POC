@@ -59,7 +59,7 @@ export function ConnectorStrip({
           <Link href={projectDataHref({ date: selectedDay, connector: "all", service: "all" })} data-testid="connector-all" />
         }
         nativeButton={false}
-        variant={connector === "all" ? "secondary" : "ghost"}
+        variant={connector === "all" ? "default" : "ghost"}
         size="sm"
       >
         All ({totalCount})
@@ -71,6 +71,7 @@ export function ConnectorStrip({
         if (integration.provider === "google" && integration.googleServices.length > 0) {
           return integration.googleServices.map((googleService) => {
             const count = countsByGoogleService[googleService] ?? 0;
+            const isActive = connector === "google" && service === googleService;
             return (
               <Button
                 key={`${integration.id}-${googleService}`}
@@ -81,9 +82,9 @@ export function ConnectorStrip({
                   />
                 }
                 nativeButton={false}
-                variant={connector === "google" && service === googleService ? "secondary" : "ghost"}
+                variant={isActive ? "default" : "ghost"}
                 size="sm"
-                className={count === 0 ? "text-muted-foreground" : undefined}
+                className={count === 0 && !isActive ? "text-muted-foreground" : undefined}
               >
                 {GOOGLE_SERVICE_LABEL[googleService]} ({count})
               </Button>
@@ -92,6 +93,7 @@ export function ConnectorStrip({
         }
 
         const count = countsByProvider[integration.provider] ?? 0;
+        const isActive = connector === integration.provider;
         return [
           <Button
             key={integration.id}
@@ -102,9 +104,9 @@ export function ConnectorStrip({
               />
             }
             nativeButton={false}
-            variant={connector === integration.provider ? "secondary" : "ghost"}
+            variant={isActive ? "default" : "ghost"}
             size="sm"
-            className={count === 0 ? "text-muted-foreground" : undefined}
+            className={count === 0 && !isActive ? "text-muted-foreground" : undefined}
           >
             {PROVIDER_LABEL[integration.provider]} ({count})
           </Button>,
