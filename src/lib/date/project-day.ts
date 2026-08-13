@@ -64,14 +64,80 @@ export function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+/** Offset of `timeZone` from UTC, in minutes, at `instant` (positive east of
+ * UTC). Used to convert a project-local wall-clock instant to its UTC
+ * equivalent without a date library — Intl already knows every zone's
+ * offset/DST rules. */
+function tzOffsetMinutes(instant: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
+    .formatToParts(instant)
+    .reduce((acc: Record<string, string>, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+  const asIfUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return (asIfUtc - instant.getTime()) / 60_000;
+}
+
+/** The exact UTC instant of local midnight for `dayKey` in `timeZone` — e.g.
+ * "2026-08-01" in "Asia/Kolkata" (UTC+5:30) is "2026-07-31T18:30:00.000Z".
+ * Two-pass: the offset can differ right around a DST transition, so the
+ * first pass's offset (measured at the naive UTC-midnight guess) is used to
+ * refine the instant, then re-measured at that refined instant. */
+function zonedDayStartUtc(dayKey: string, timeZone: string): string {
+  const naiveUtc = new Date(`${dayKey}T00:00:00.000Z`);
+  const offset1 = tzOffsetMinutes(naiveUtc, timeZone);
+  const refined = new Date(naiveUtc.getTime() - offset1 * 60_000);
+  const offset2 = tzOffsetMinutes(refined, timeZone);
+  return offset2 === offset1 ? refined.toISOString() : new Date(naiveUtc.getTime() - offset2 * 60_000).toISOString();
+}
+
+/** "2026-08-02" given "2026-08-01" — plain calendar-day arithmetic, which
+ * needs no timezone: a Gregorian day boundary is the same the world over. */
+function nextDayKey(dayKey: string): string {
+  const d = new Date(`${dayKey}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
- * Half-open UTC bounds ([gte, lt)) guaranteed to contain every instant that
- * falls on `dayKey` in *some* timezone offset from UTC-12 to UTC+14 — i.e. a
- * full UTC day either side of the nominal date. Callers MUST still filter
- * the resulting rows with projectDayKey(row.occurred_at, timeZone) — this
- * only bounds the query, it doesn't do the bucketing.
+ * Half-open UTC bounds ([gte, lt)) for `dayKey`.
+ *
+ * Called without `timeZone`, this brackets every instant that falls on
+ * `dayKey` in *some* timezone offset from UTC-12 to UTC+14 — i.e. a full UTC
+ * day either side of the nominal date. Callers MUST still filter the
+ * resulting rows with projectDayKey(row.occurred_at, timeZone) — this only
+ * bounds the query, it doesn't do the bucketing. Use this shape when you
+ * need to over-fetch and bucket precisely afterward (e.g. paging through a
+ * single day's own events).
+ *
+ * Called with `timeZone`, the bounds are exact — dayKey's own local midnight
+ * and the next day's local midnight, both converted to UTC, with no buffer.
+ * Use this shape for a cutoff comparison (e.g. "strictly before dayKey's own
+ * local day") where a full extra day of slop would wrongly exclude events
+ * that are unambiguously already in the past for that project's actual
+ * timezone — no further bucketing needed, the bound is already precise.
  */
-export function utcWindowForDay(dayKey: string): { gte: string; lt: string } {
+export function utcWindowForDay(dayKey: string, timeZone?: string): { gte: string; lt: string } {
+  if (timeZone) {
+    return { gte: zonedDayStartUtc(dayKey, timeZone), lt: zonedDayStartUtc(nextDayKey(dayKey), timeZone) };
+  }
   const start = new Date(`${dayKey}T00:00:00.000Z`);
   const gte = new Date(start.getTime() - 24 * 60 * 60 * 1000);
   const lt = new Date(start.getTime() + 2 * 24 * 60 * 60 * 1000);

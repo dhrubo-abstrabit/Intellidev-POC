@@ -196,11 +196,17 @@ export async function triggerDailyExtraction(service: ServiceClient, projectId: 
   const { data: project } = await service.from("projects").select("timezone").eq("id", projectId).maybeSingle();
   const timezone = project?.timezone ?? "UTC";
 
-  // utcWindowForDay(date).gte is a full UTC day before date's local
-  // midnight at any timezone offset — anything older than that is
-  // unambiguously on an earlier project-local day than `date`, so this scan
-  // never mis-attributes one of `date`'s own events as "older backlog".
-  const { gte: beforeDate } = utcWindowForDay(date);
+  // Passing `timezone` gets the EXACT UTC instant of date's own local
+  // midnight, not the generic ±1-day buffer utcWindowForDay falls back to
+  // without it. That buffer exists so an over-fetch can be re-bucketed
+  // precisely afterward (see fetchUnprocessedEventsForDay), but used as a
+  // one-sided cutoff here it silently swallowed a full day of backlog: any
+  // event on the day immediately before `date` was neither `date` itself
+  // nor old enough to clear the buffer, so it was never swept until some
+  // later day's cron run finally aged it past the gap. The exact boundary
+  // has no such gap — anything before it is unambiguously an earlier
+  // project-local day than `date`.
+  const { gte: beforeDate } = utcWindowForDay(date, timezone);
   const { data: olderRows } = await service
     .from("normalized_events")
     .select("occurred_at")
