@@ -46,6 +46,7 @@ Don't consider a fix verified because "it should work now" — reproduce the ori
 
 - Commit in logically segregated chunks (by feature/phase/concern), not one giant diff — makes the history reviewable and bisectable.
 - Never commit `.env.local` or any file containing a real secret.
+- Never open a PR automatically. Committing and pushing a branch is fine on request, but `gh pr create` requires the user's explicit go-ahead first, every time — not implied by an earlier approval.
 
 ## Slack connector specifics
 
