@@ -362,6 +362,51 @@ turn; a message lets the agent read the failure and try something else. Refusals
 emitted as `tool.denied` rather than swallowed, because a silently missing tool is one of
 the hardest things to diagnose from a transcript.
 
+### Config projection: what is rendered, and what is deliberately not
+
+Renderers are pure functions returning a **Projection** — the files to write _and_ the
+symlinks to create. Nothing performs I/O, so a whole projection can be asserted without a
+filesystem, and the writer has no harness-specific branches left in it.
+
+Making links part of the projection rather than a side effect was a correction. Claude
+Code has no config key for skills; it reads a conventional directory. When that link was
+created behind the projection's back, a failed link would have made skills silently vanish
+with nothing in any config file to explain it.
+
+**Stage scoping is never projected.** Harness config is written **once at boot** and the
+stage moves during the run, so a permission file encoding "design may not write" would be
+stale the moment `code` started — and none of the three formats can express "it depends
+which stage is running" anyway. The gateway is therefore the authoritative filter, and
+harness permissions are defence-in-depth for **irreversible** actions only.
+
+The two must not disagree. If a harness denied something the gateway allows, the stage
+would fail in a way that reads as the model refusing to work — which is why the projected
+permissions are deliberately permissive about everything the gateway governs.
+
+| Concern       | Claude Code                           | Codex                                 | opencode                             |
+| ------------- | ------------------------------------- | ------------------------------------- | ------------------------------------ |
+| Gateway entry | `.mcp.json`                           | `[mcp_servers.intellidev]` in TOML    | `mcp.intellidev` with one argv array |
+| Context       | `CLAUDE.md`                           | `AGENTS.md`                           | `AGENTS.md` via `instructions[]`     |
+| Skills        | declared **link** to `.claude/skills` | **index in AGENTS.md** + `skill_load` | `skills.paths`                       |
+| Tool policy   | `permissions.allow/deny`              | `sandbox_mode` (coarse)               | per-tool `permission` rules          |
+| Approval      | n/a                                   | `approval_policy = "never"`           | permission rules                     |
+
+Two details worth keeping:
+
+- **The skill index is appended only for Codex.** Claude Code and opencode load skills
+  from a directory with progressive disclosure, so pasting the list into their context
+  file would spend tokens duplicating what they already do better. For Codex the index is
+  the only way a skill is discoverable at all.
+- **Output is deterministic.** Keys are sorted and every file ends with a newline, so
+  re-rendering an unchanged spec produces a byte-identical file. `materialiseConfig` then
+  writes nothing on a resume and reports it as unchanged — a config whose mtime churns on
+  every resume makes it impossible to tell whether anything actually changed.
+
+The TOML writer is hand-rolled for the small fixed subset Codex needs. Escaping is the
+part that matters: an unescaped backslash in a Windows-style path produces a file Codex
+refuses to parse, and the failure surfaces as _"no MCP servers configured"_ rather than as
+a syntax error.
+
 ### Named checks come from the gates
 
 `run_check` does not take a configured list of commands. It exposes exactly the command
