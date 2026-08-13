@@ -1,6 +1,5 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { ProjectNav } from "./project-nav";
 
 export default async function ProjectLayout({
   children,
@@ -28,10 +27,7 @@ export default async function ProjectLayout({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <h1 className="text-lg font-semibold">{project.name}</h1>
-        <ProjectNav workspaceId={workspaceId} projectId={projectId} />
-      </div>
+      <h1 className="text-lg font-semibold">{project.name}</h1>
       {children}
     </div>
   );
