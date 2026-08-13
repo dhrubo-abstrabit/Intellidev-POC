@@ -439,6 +439,46 @@ outlives a token keeps working.
 | Failed run         | Delete the run's branch, so failures don't litter the remote.                                                                                  |
 | Protected `main`   | Fine, and desirable — the PR is the boundary. Force-push and history rewrite are deny-listed in the adapter, not just discouraged in a prompt. |
 
+### Traps the git integration tests caught
+
+Both were found by running real git against temp repos rather than mocking it, and
+neither would have surfaced any other way:
+
+- **A bare mirror has no remote-tracking refs.** `origin/main` does not resolve in a
+  worktree cut from a bare clone, so the base-moved check reads `FETCH_HEAD` instead —
+  which `git fetch` writes regardless of ref layout.
+- **`spawn` fails with `ENOENT` when the _cwd_ does not exist**, not just when the binary
+  is missing. Probing for a mirror by running git inside a directory that has not been
+  created yet reads as "git is not installed" and sends you hunting the wrong problem.
+
+Four environment settings are also non-negotiable, each fixing something miserable to
+diagnose headlessly: `GIT_TERMINAL_PROMPT=0` and empty `GIT_ASKPASS`/`SSH_ASKPASS` (a
+failed auth would otherwise **hang forever** on a prompt nobody can answer),
+`GIT_CONFIG_NOSYSTEM=1` with a pinned `HOME` (so a developer's global config cannot
+change what a run does), and author/committer passed explicitly rather than inherited.
+
+### The PR body is assembled, not written
+
+A reviewer needs to know what actually happened. A model summarising its own work is
+exactly the wrong source for that, so the description is built from the event log:
+
+| Section        | Source                                                  |
+| -------------- | ------------------------------------------------------- |
+| What was asked | the task brief, including acceptance criteria           |
+| What changed   | `diff.produced` and deduplicated `file.changed` events  |
+| Checks         | `gate.evaluated` command gates, **with attempt counts** |
+| Review         | the review stage's validated structured output          |
+| How this ran   | harness, stage path with retries marked, tokens, cost   |
+
+Attempt counts matter: a suite that passed on the third try is a different signal from
+one that passed first time, and hiding that from a reviewer would be the whole system
+lying by omission. The body ends with a comment saying it was assembled from the log.
+
+Two related decisions. **Commit messages are deterministic** — derived from the task, so
+two runs of the same task produce the same message, and a message is not the place for
+creativity. And **a run that changed nothing opens no PR**: finding that out in the
+builtin stage costs a second, while a reviewer finding an empty PR costs their attention.
+
 ### Environment: the uncomfortable part
 
 A test suite reads `process.env`. There is no way to hand `pnpm test` a database URL

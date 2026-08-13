@@ -24,7 +24,7 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 
 ## Current status
 
-**T1–T5 complete, plus a third harness.** 245 tests, typecheck clean.
+**T1–T6 complete, plus a third harness.** 281 tests, typecheck clean.
 Verify with `pnpm install && pnpm check`.
 
 | Task | Ships                                                                                 |
@@ -39,7 +39,7 @@ Contract tests replay recorded CLI output from `packages/adapter/test/fixtures/`
 they need no subprocess and spend no quota. The
 [capability matrix](architecture.md) records where the three harnesses differ.
 
-**Next:** T6, the git workflow — worktree, branch, commit, push, open the PR.
+**Next:** T7, the MCP gateway — one merged, filtered endpoint every harness points at.
 
 ### Fixture provenance
 

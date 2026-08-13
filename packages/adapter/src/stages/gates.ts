@@ -59,7 +59,7 @@ export async function evaluateGate(args: {
       events: [
         {
           type: 'gate.evaluated',
-          data: { kind: 'command', passed, detail, exitCode: result.exitCode },
+          data: { kind: 'command', passed, label: gate.run, detail, exitCode: result.exitCode },
         },
       ],
     }
@@ -72,7 +72,12 @@ export async function evaluateGate(args: {
       return {
         passed: false,
         detail,
-        events: [{ type: 'gate.evaluated', data: { kind: 'predicate', passed: false, detail } }],
+        events: [
+          {
+            type: 'gate.evaluated',
+            data: { kind: 'predicate', passed: false, label: gate.expr, detail },
+          },
+        ],
       }
     }
 
@@ -84,7 +89,12 @@ export async function evaluateGate(args: {
       return {
         passed: false,
         detail,
-        events: [{ type: 'gate.evaluated', data: { kind: 'predicate', passed: false, detail } }],
+        events: [
+          {
+            type: 'gate.evaluated',
+            data: { kind: 'predicate', passed: false, label: gate.expr, detail },
+          },
+        ],
       }
     }
 
@@ -94,7 +104,9 @@ export async function evaluateGate(args: {
       return {
         passed,
         detail,
-        events: [{ type: 'gate.evaluated', data: { kind: 'predicate', passed, detail } }],
+        events: [
+          { type: 'gate.evaluated', data: { kind: 'predicate', passed, label: gate.expr, detail } },
+        ],
       }
     } catch (error) {
       // A broken expression is a configuration bug, not a failing stage. Say so
@@ -121,7 +133,10 @@ export async function evaluateGate(args: {
     passed: false,
     detail,
     events: [
-      { type: 'gate.evaluated', data: { kind: 'human', passed: false, detail } },
+      {
+        type: 'gate.evaluated',
+        data: { kind: 'human', passed: false, label: gate.action, detail },
+      },
       {
         type: 'approval.requested',
         data: { approvalId: `${stage}:${gate.action}`, action: gate.action, detail },

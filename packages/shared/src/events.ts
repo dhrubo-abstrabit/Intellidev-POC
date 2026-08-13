@@ -232,6 +232,14 @@ const gateEvaluated = z.object({
   data: z.object({
     kind: z.enum(['command', 'predicate', 'human']),
     passed: z.boolean(),
+    /**
+     * What was checked — the command line, or the predicate expression.
+     *
+     * Present so a PR body can name the check that ran. Without it the log records
+     * that *a* gate passed but not which, and a reviewer cannot tell whether the
+     * test suite ran at all.
+     */
+    label: Preview.optional(),
     detail: Preview.optional(),
     exitCode: z.number().int().optional(),
   }),
