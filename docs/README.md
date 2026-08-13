@@ -24,7 +24,7 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 
 ## Current status
 
-**T1–T6 complete, plus a third harness.** 281 tests, typecheck clean.
+**T1–T7 complete, plus a third harness.** 325 tests, typecheck clean.
 Verify with `pnpm install && pnpm check`.
 
 | Task | Ships                                                                                 |
@@ -39,7 +39,7 @@ Contract tests replay recorded CLI output from `packages/adapter/test/fixtures/`
 they need no subprocess and spend no quota. The
 [capability matrix](architecture.md) records where the three harnesses differ.
 
-**Next:** T7, the MCP gateway — one merged, filtered endpoint every harness points at.
+**Next:** T8, config projection — render each harness's own config from the manifest at boot.
 
 ### Fixture provenance
 

@@ -332,6 +332,50 @@ progressive disclosure, so they get real files and use the gateway only for MCP 
 Only Codex, which has no skill primitive, gets `skill_list` / `skill_load` as tools.
 Levelling all three down to the weakest would be the wrong consistency.
 
+### What the gateway can and cannot infer
+
+One honest limit, written down because guessing here would be worse than asking. A
+`read_only` stage policy **cannot** tell us whether a third-party MCP tool mutates
+anything — the protocol carries no such signal. So:
+
+- **Mode gates the built-ins we wrote**, whose behaviour we know.
+- **Upstream tools are scoped explicitly**, by attachment stages and deny patterns.
+
+Inferring read-only-ness from a tool's name would be a guess dressed as a control.
+
+Three implementation details that matter more than they look:
+
+- **Filtering applies to `tools/call`, not just `tools/list`.** A harness may hold a list
+  from an earlier stage, so a tool absent from the list is also refused when invoked.
+  Hiding without refusing makes the filter decoration. There is a protocol-level test
+  that lists during `code`, calls during `design`, and expects a refusal.
+- **Upstream names are namespaced `server__tool`**, and over-long names are truncated
+  with a stable digest rather than simply cut — two tools sharing their first 60
+  characters would otherwise collapse into one name and route to the wrong server.
+- **JSON Schema is forwarded unchanged.** The gateway uses the SDK's low-level `Server`
+  with raw request handlers rather than `registerTool`, which takes a Zod shape:
+  converting a proxied schema to Zod and back would lose fidelity in exactly the field
+  an agent relies on to call the tool correctly.
+
+A tool failure is returned as **content**, never as an MCP error. An error aborts the
+turn; a message lets the agent read the failure and try something else. Refusals are
+emitted as `tool.denied` rather than swallowed, because a silently missing tool is one of
+the hardest things to diagnose from a transcript.
+
+### Named checks come from the gates
+
+`run_check` does not take a configured list of commands. It exposes exactly the command
+gates in the stage template, so the agent runs _the same command its gate will run_. A
+separate list would drift, and an agent that passes its own check but fails the gate is
+the most confusing outcome available.
+
+### ask_user, honestly
+
+An unattended run has nobody to answer. `ask_user` records the question in the event log
+and tells the agent to proceed on its best judgement, stating the assumption so a
+reviewer can check it. Pretending an answer is coming would make the agent wait, and a
+waiting agent burns the run's wall-clock budget for nothing.
+
 ### Skills resolution
 
 Precedence, highest first: **repo-native** (`.claude/skills/` in the worktree) →
