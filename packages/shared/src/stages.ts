@@ -49,7 +49,7 @@ export const ToolPolicy = z.object({
 export type ToolPolicy = z.infer<typeof ToolPolicy>
 
 /** Builtin stages run no agent at all — they are ours, and deterministic. */
-export const BuiltinAction = z.enum(['git.create_branch', 'github.open_pr'])
+export const BuiltinAction = z.enum(['git.create_branch', 'git.commit', 'github.open_pr'])
 export type BuiltinAction = z.infer<typeof BuiltinAction>
 
 export const StageDefinition = z
@@ -209,6 +209,13 @@ export const DEFAULT_STAGE_TEMPLATE: z.input<typeof StageTemplate> = {
       },
       maxAttempts: 2,
       onFail: 'code',
+    },
+    {
+      // After the gates, before the PR: the gates run against the worktree and need no
+      // commit, and committing earlier would put work the review rejected into history.
+      id: 'commit',
+      kind: 'builtin',
+      action: 'git.commit',
     },
     {
       id: 'pr',

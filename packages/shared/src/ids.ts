@@ -10,6 +10,7 @@ export const StageId = z.enum([
   'design',
   'branch',
   'code',
+  'commit',
   'verify',
   'test',
   'review',

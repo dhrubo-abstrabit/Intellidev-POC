@@ -14,6 +14,7 @@ describe('stage templates', () => {
       'verify',
       'test',
       'review',
+      'commit',
       'pr',
     ])
   })
