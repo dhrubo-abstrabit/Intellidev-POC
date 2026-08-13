@@ -1,4 +1,5 @@
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { GitRunner } from './exec.js'
 
 export interface DiffStat {
@@ -89,6 +90,43 @@ export class RunRepo {
       this.paths.mirror,
     )
     return { branch, baseSha }
+  }
+
+  /**
+   * Hide paths from git without touching a file the repo owns.
+   *
+   * The adapter writes harness config into the worktree — `AGENTS.md`, `opencode.json`,
+   * `.mcp.json` — and `commitAll` stages everything, so without this those land in the
+   * user's commit as if the agent had written them. `.git/info/exclude` is the right home
+   * for it: local to the checkout, never committed, and it leaves the project's own
+   * `.gitignore` alone.
+   *
+   * Uses `--git-common-dir`, not `--git-dir`: in a worktree those differ, and `info/exclude`
+   * lives in the common one.
+   */
+  async excludeLocally(paths: readonly string[]): Promise<void> {
+    if (paths.length === 0) return
+
+    const commonDir = (
+      await this.git.run(
+        ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+        this.paths.worktree,
+      )
+    ).stdout.trim()
+    const excludePath = join(commonDir, 'info', 'exclude')
+
+    const existing = await readFile(excludePath, 'utf8').catch(() => '')
+    const already = new Set(existing.split('\n').map((line) => line.trim()))
+    const missing = paths.filter((path) => !already.has(path))
+    if (missing.length === 0) return
+
+    const header = '# Written by the intellidev adapter, not by the agent.'
+    const addition = (already.has(header) ? '' : `${header}\n`) + `${missing.join('\n')}\n`
+    await mkdir(dirname(excludePath), { recursive: true })
+    await writeFile(
+      excludePath,
+      existing.endsWith('\n') || !existing ? existing + addition : `${existing}\n${addition}`,
+    )
   }
 
   /** Files changed in the worktree, staged or not, including untracked. */

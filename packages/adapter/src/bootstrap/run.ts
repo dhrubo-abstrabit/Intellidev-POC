@@ -1,5 +1,5 @@
-import { mkdir, readFile } from 'node:fs/promises'
-import { join, resolve as resolvePath } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join, relative, resolve as resolvePath } from 'node:path'
 import {
   type AgentEvent,
   type HarnessId,
@@ -160,7 +160,10 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       home,
       identity: { name: spec.manifest.git.authorName, email: spec.manifest.git.authorEmail },
       credentialHelper: '!intellidev-cred git',
-      env: { INTELLIDEV_BROKER_SOCKET: brokerSocket },
+      env: {
+        INTELLIDEV_BROKER_SOCKET: brokerSocket,
+        ...(await safeDirectoryConfig(home)),
+      },
     })
     const repo = new RunRepo(git, {
       mirror: join(spec.git.mirrorPath, 'repo.git'),
@@ -211,7 +214,7 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       worktree: spec.git.worktreePath,
       declared: spec.toolset.skills,
     })
-    await materialiseConfig({
+    const projection = await materialiseConfig({
       harness: spec.harness,
       cwd: spec.git.worktreePath,
       home,
@@ -228,6 +231,14 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       policy: { mode: 'full', allow: [], deny: spec.manifest.policy.tools.deny },
       ...modelFor(spec),
     } satisfies ProjectionSpec)
+
+    // Config the adapter wrote is not the agent's work, so keep it out of the commit. Only
+    // paths inside the worktree matter — anything under HOME git never sees.
+    await repo.excludeLocally(
+      [...projection.written, ...projection.unchanged, ...projection.links.map((link) => link.link)]
+        .filter((path) => path.startsWith(`${spec.git.worktreePath}/`))
+        .map((path) => `/${relative(spec.git.worktreePath, path)}`),
+    )
 
     bus.emit({
       type: 'run.started',
@@ -382,6 +393,27 @@ async function prepareStageEnv(
     })
     return {}
   }
+}
+
+/**
+ * Opt-in `safe.directory` for a bind-mounted origin.
+ *
+ * Needed because a bind-mounted repo is owned by the host uid, not the container's, and git
+ * refuses it as "dubious ownership". It has to go through a config *file* rather than `-c`:
+ * git only honours `safe.directory` from protected configuration, and a `file://` clone does
+ * its work in a child `upload-pack` where `-c` values arrive unprotected and are ignored.
+ * `GIT_CONFIG_GLOBAL` points at a file we own, under the run's pinned HOME, so a developer's
+ * real `~/.gitconfig` is still not in play.
+ *
+ * Off unless explicitly asked for: against a real remote this check is worth keeping.
+ */
+async function safeDirectoryConfig(home: string): Promise<Record<string, string>> {
+  const value = process.env['INTELLIDEV_GIT_SAFE_DIRECTORY']
+  if (!value) return {}
+
+  const path = join(home, '.gitconfig-intellidev')
+  await writeFile(path, `[safe]\n\tdirectory = ${value}\n`)
+  return { GIT_CONFIG_GLOBAL: path }
 }
 
 async function readContext(bundleRoot: string, spec: RunSpec): Promise<string> {
