@@ -230,9 +230,7 @@ export function TaskDetailSheet({
             <div className="border-t border-border bg-muted/50 p-4">
               <div className="mx-auto flex w-full max-w-4xl flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                 <SnoozeButton workspaceId={workspaceId} projectId={projectId} itemId={item.id} />
-                <Button variant="outline" onClick={close}>
-                  Close
-                </Button>
+                <Button onClick={close}>Close</Button>
               </div>
             </div>
           </div>

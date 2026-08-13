@@ -141,7 +141,6 @@ export function DayLinkage({
               action={extractActionItemsForDay.bind(null, workspaceId, projectId, selectedDay)}
               loadingMessage={`Extracting for ${selectedDay}…`}
               size="sm"
-              variant="outline"
               data-testid="extract-day-action-points"
             >
               Extract for this day

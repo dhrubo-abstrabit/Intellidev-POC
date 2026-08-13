@@ -26,11 +26,7 @@ export function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
         <Textarea id="project-description" name="description" maxLength={2000} />
       </div>
       {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
-      <Button
-        type="submit"
-        disabled={isPending}
-        className="rounded-full bg-brand-teal-500 text-white hover:bg-brand-teal-600"
-      >
+      <Button type="submit" disabled={isPending} className="rounded-full">
         {isPending ? "Creating..." : "Create project"}
       </Button>
     </form>

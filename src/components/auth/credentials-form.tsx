@@ -47,11 +47,7 @@ export function CredentialsForm({ action, submitLabel, pendingLabel }: Credentia
         />
       </div>
       {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
-      <Button
-        type="submit"
-        className="w-full rounded-full bg-brand-teal-500 text-white hover:bg-brand-teal-600"
-        disabled={isPending}
-      >
+      <Button type="submit" className="w-full rounded-full" disabled={isPending}>
         {isPending ? pendingLabel : submitLabel}
       </Button>
     </form>

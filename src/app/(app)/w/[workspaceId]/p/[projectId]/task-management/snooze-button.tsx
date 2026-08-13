@@ -47,7 +47,7 @@ export function SnoozeButton({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="outline" size="sm" disabled={isPending} data-testid={`snooze-${itemId}`} />}>
+      <DialogTrigger render={<Button size="sm" disabled={isPending} data-testid={`snooze-${itemId}`} />}>
         {isPending ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
         Snooze…
       </DialogTrigger>

@@ -141,7 +141,6 @@ export function ContextForm({
         <div className="flex items-center justify-between gap-2">
           <Button
             type="button"
-            variant="outline"
             size="sm"
             onClick={() => fileInputRef.current?.click()}
             disabled={isBusy}

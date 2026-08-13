@@ -167,6 +167,7 @@ export default async function IntegrationsPage({
                           <ConfirmActionButton
                             action={disconnectIntegration.bind(null, workspaceId, projectId, integration.id)}
                             triggerLabel="Disconnect"
+                            triggerVariant="default"
                             confirmLabel="Disconnect"
                             loadingMessage="Disconnecting…"
                             title={`Disconnect ${integration.display_name ?? integration.provider}?`}
