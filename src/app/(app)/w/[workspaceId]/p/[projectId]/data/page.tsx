@@ -94,11 +94,12 @@ export default async function ProjectDataPage({
   const sortedDayKeys = Array.from(dayIndexMap.keys()).sort((a, b) => b.localeCompare(a));
   const dayIndex: DayIndexEntry[] = sortedDayKeys.map((dayKey) => ({ dayKey, ...dayIndexMap.get(dayKey)! }));
 
-  // An explicit ?date= only wins if that day actually has activity in the
-  // indexed window — otherwise fall back to the most recent active day, or
-  // today if the project has no activity at all. A stale/hand-edited date
-  // degrades gracefully rather than erroring.
-  const selectedDay = filters.date && dayIndexMap.has(filters.date) ? filters.date : sortedDayKeys[0] ?? projectToday(timezone);
+  // An explicit ?date= wins outright now that the day picker includes a
+  // calendar for jumping to any date, not just ones with indexed activity —
+  // a day with zero events already renders a clean empty state (see
+  // DayLinkage), so there's nothing to degrade. Falls back to the most
+  // recent active day, or today, only when no date was requested at all.
+  const selectedDay = filters.date ?? sortedDayKeys[0] ?? projectToday(timezone);
 
   const truncated = (dayIndexRows?.length ?? 0) >= DAY_INDEX_ROW_LIMIT;
 
