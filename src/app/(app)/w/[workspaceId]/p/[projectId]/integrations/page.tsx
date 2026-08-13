@@ -87,7 +87,7 @@ export default async function IntegrationsPage({
   const availableConnectors = listConnectors().filter((c) => !activeProviders.has(c.id));
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
+    <div className="space-y-8">
       {connectStatus && connectStatus !== "connected" ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {CONNECT_STATUS_MESSAGE[connectStatus] ?? `Connecting ${connectedProvider ?? "the connector"} failed (${connectStatus}).`}

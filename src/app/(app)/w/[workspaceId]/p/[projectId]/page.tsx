@@ -31,7 +31,7 @@ export default async function ProjectOverviewPage({
     .at(-1);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="space-y-6">
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">

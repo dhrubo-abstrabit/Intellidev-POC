@@ -19,7 +19,7 @@ export default async function WorkspaceHomePage({ params }: { params: Promise<{ 
     .order("created_at", { ascending: false });
 
   return (
-    <div className="mx-auto max-w-3xl space-y-10">
+    <div className="mx-auto max-w-4xl space-y-10">
       <section>
         <h1 className="mb-5 text-xl font-extrabold text-brand-n-900">
           Projects
