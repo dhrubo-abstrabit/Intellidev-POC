@@ -14,7 +14,8 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yaml,yml}\"",
     "check": "pnpm format:check && pnpm typecheck && pnpm test",
     "adapter": "tsx packages/adapter/src/cli/adapter.ts",
-    "cred": "tsx packages/adapter/src/cli/cred.ts"
+    "cred": "tsx packages/adapter/src/cli/cred.ts",
+    "ui": "tsx packages/control-plane/src/main.ts"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

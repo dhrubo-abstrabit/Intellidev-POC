@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Intellidev · dispatch</title>
+    <!--
+      Design tokens lifted from Intellidev.html, the existing UI build. Same names, same
+      values, both themes — so when the real UI takes over there is nothing to reconcile.
+      Fonts fall back to system faces: Manrope and JetBrains Mono are not vendored here.
+    -->
+    <style>
+      :root {
+        --app: #ffffff; --main: #ffffff; --panel: #fafbfa; --card: #ffffff;
+        --inset: #f5f7f5; --field: #f5f7f5; --input: #f2f5f2; --chip: #f2f5f2;
+        --hover: #f1f4f1; --active: #e9f1eb; --btn2: #f0f4f1; --btn2h: #e4ece7;
+        --bd-soft: #e9ede9; --bd-strong: #ccd5ce; --bd-hover: #a5b6aa; --bd-input: #d8dfd9;
+        --bd-danger: #f0c8c4; --bd-warn: #e9d9a6;
+        --fg: #10201a; --fg2: #31403a; --fg3: #56655d; --fg4: #697870;
+        --green: #12915a; --green2: #0f7a4b; --green-bd: #2f7d4f; --on-green: #ffffff;
+        --amber: #b06a08; --blue: #2563eb; --red: #d13b3b;
+        --sans: Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      :root[data-theme='dark'] {
+        --app: #0d100e; --main: #0c100e; --panel: #0e1210; --card: #121614;
+        --inset: #0f1311; --field: #161a18; --input: #141816; --chip: #171c19;
+        --hover: #191e1b; --active: #1a211d; --btn2: #1f2724; --btn2h: #28332e;
+        --bd-soft: #1d2320; --bd-strong: #2a302c; --bd-hover: #3a463f; --bd-input: #262d29;
+        --bd-danger: #3d2725; --bd-warn: #3a3524;
+        --fg: #e6ece8; --fg2: #c6d0ca; --fg3: #9aa8a1; --fg4: #7f8a84;
+        --green: #4ade80; --green2: #7dd3a0; --green-bd: #3d9a63; --on-green: #06210f;
+        --amber: #f59e0b; --blue: #4c8dff; --red: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--app); color: var(--fg);
+        font-family: var(--sans); font-size: 14px; line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 20px; border-bottom: 1px solid var(--bd-soft); background: var(--panel);
+        position: sticky; top: 0; z-index: 5;
+      }
+      header h1 { font-size: 15px; margin: 0; letter-spacing: -0.01em; }
+      header .spacer { flex: 1; }
+      .meta { font-family: var(--mono); font-size: 11px; color: var(--fg4); }
+      .layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: calc(100vh - 53px); }
+      @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+      .side { border-right: 1px solid var(--bd-soft); background: var(--panel); padding: 16px; }
+      .main { padding: 16px 20px; min-width: 0; }
+      h2 {
+        font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+        letter-spacing: 0.11em; color: var(--fg3); margin: 0 0 10px;
+      }
+      label { display: block; font-size: 12px; color: var(--fg3); margin: 10px 0 4px; }
+      input, textarea, select {
+        width: 100%; padding: 8px 10px; font: inherit; color: var(--fg);
+        background: var(--input); border: 1px solid var(--bd-input); border-radius: 6px;
+      }
+      textarea { min-height: 64px; resize: vertical; font-family: inherit; }
+      input:focus, textarea:focus, select:focus { outline: 2px solid var(--green-bd); outline-offset: 1px; }
+      button {
+        font: inherit; font-weight: 600; padding: 9px 14px; border-radius: 6px; cursor: pointer;
+        background: var(--green); color: var(--on-green); border: 1px solid var(--green-bd);
+      }
+      button:hover:not(:disabled) { background: var(--green2); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      button.secondary { background: var(--btn2); color: var(--fg); border-color: var(--bd-strong); }
+      button.secondary:hover:not(:disabled) { background: var(--btn2h); }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .card {
+        background: var(--card); border: 1px solid var(--bd-soft); border-radius: 8px;
+        padding: 12px; margin-bottom: 8px;
+      }
+      .task { cursor: pointer; }
+      .task:hover { border-color: var(--bd-hover); background: var(--hover); }
+      .task.selected { border-color: var(--green-bd); background: var(--active); }
+      .task h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+      .task p { margin: 0; font-size: 12px; color: var(--fg3); }
+      /* State is encoded in form as well as colour: a pill plus a dot, so it reads without
+         relying on hue alone. */
+      .pill {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+        letter-spacing: 0.07em; padding: 2px 7px; border-radius: 999px;
+        background: var(--chip); border: 1px solid var(--bd-strong); color: var(--fg3);
+      }
+      .pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .pill.running, .pill.dispatched, .pill.provisioning { color: var(--green); border-color: var(--green-bd); }
+      .pill.succeeded, .pill.in_review, .pill.done { color: var(--green); border-color: var(--green-bd); }
+      .pill.failed, .pill.blocked { color: var(--red); border-color: var(--bd-danger); }
+      .pill.waiting_capacity, .pill.parked { color: var(--amber); border-color: var(--bd-warn); }
+      .stages { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+      .stage {
+        font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 5px;
+        background: var(--inset); border: 1px solid var(--bd-soft); color: var(--fg4);
+      }
+      .stage.active { border-color: var(--green-bd); color: var(--green); background: var(--active); }
+      .stage.passed { color: var(--green); border-color: var(--green-bd); }
+      .stage.failed { color: var(--red); border-color: var(--bd-danger); }
+      #log {
+        font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+        background: var(--inset); border: 1px solid var(--bd-soft); border-radius: 8px;
+        padding: 10px 12px; height: calc(100vh - 320px); min-height: 240px;
+        overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+      }
+      #log .seq { color: var(--fg4); }
+      #log .st { color: var(--blue); }
+      #log .ok { color: var(--green); }
+      #log .bad { color: var(--red); }
+      #log .warn { color: var(--amber); }
+      .empty { color: var(--fg4); font-size: 13px; padding: 20px 0; }
+      a { color: var(--green); }
+      .hint { font-size: 11px; color: var(--fg4); margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Intellidev</h1>
+      <span class="pill" id="mode">…</span>
+      <div class="spacer"></div>
+      <span class="meta" id="cfg"></span>
+      <button class="secondary" id="theme" title="Toggle theme">◐</button>
+    </header>
+
+    <div class="layout">
+      <section class="side">
+        <h2>New task</h2>
+        <form id="form">
+          <label for="repoUrl">Repository</label>
+          <input id="repoUrl" required placeholder="/path/to/origin.git or https://github.com/me/repo" />
+          <label for="title">Title</label>
+          <input id="title" required placeholder="Add a hello function" />
+          <label for="description">Description</label>
+          <textarea id="description" required placeholder="What should change, and why."></textarea>
+          <label for="criteria">Acceptance criteria (one per line)</label>
+          <textarea id="criteria" placeholder="hello('world') returns a greeting"></textarea>
+          <label for="harness">Harness</label>
+          <select id="harness"></select>
+          <label for="baseBranch">Base branch</label>
+          <input id="baseBranch" value="main" />
+          <div class="row" style="margin-top: 14px">
+            <button type="submit" id="create">Create task</button>
+          </div>
+          <p class="hint" id="formHint"></p>
+        </form>
+
+        <h2 style="margin-top: 22px">Tasks</h2>
+        <div id="tasks"><p class="empty">No tasks yet.</p></div>
+      </section>
+
+      <section class="main">
+        <div id="detail"><p class="empty">Select a task, or create one.</p></div>
+      </section>
+    </div>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id)
+      const state = { tasks: [], selected: null, run: null, stream: null, lastSeq: -1 }
+
+      // --- theme ---------------------------------------------------------------
+      $('theme').onclick = () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
+        document.documentElement.dataset.theme = next
+        localStorage.setItem('theme', next)
+      }
+      document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'dark'
+
+      // --- boot ----------------------------------------------------------------
+      const config = await (await fetch('/api/config')).json()
+      $('mode').textContent = config.mode
+      $('mode').className = 'pill ' + (config.mode === 'docker' ? 'running' : '')
+      $('cfg').textContent =
+        `${config.image} · ${config.hasGithubToken ? 'github token set' : 'no github token'}`
+      $('harness').innerHTML = config.harnesses
+        .map((h) => `<option ${h === 'opencode' ? 'selected' : ''}>${h}</option>`)
+        .join('')
+
+      // --- tasks ---------------------------------------------------------------
+      async function loadTasks() {
+        state.tasks = (await (await fetch('/api/tasks')).json()).tasks
+        $('tasks').innerHTML =
+          state.tasks.length === 0
+            ? '<p class="empty">No tasks yet.</p>'
+            : state.tasks
+                .map(
+                  (t) => `
+          <div class="card task ${state.selected === t.id ? 'selected' : ''}" data-id="${t.id}">
+            <div class="row" style="justify-content: space-between">
+              <h3>${escape(t.title)}</h3>
+              <span class="pill ${t.status}">${t.status.replace(/_/g, ' ')}</span>
+            </div>
+            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}</p>
+          </div>`,
+                )
+                .join('')
+        for (const el of $('tasks').querySelectorAll('.task')) {
+          el.onclick = () => select(el.dataset.id)
+        }
+      }
+
+      $('form').onsubmit = async (event) => {
+        event.preventDefault()
+        $('create').disabled = true
+        $('formHint').textContent = ''
+        const body = {
+          repoUrl: $('repoUrl').value.trim(),
+          title: $('title').value.trim(),
+          description: $('description').value.trim(),
+          acceptanceCriteria: $('criteria')
+            .value.split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          harness: $('harness').value,
+          baseBranch: $('baseBranch').value.trim() || 'main',
+        }
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        $('create').disabled = false
+        if (!res.ok) {
+          const error = await res.json()
+          $('formHint').textContent = (error.issues ?? [])
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join('; ') || 'could not create task'
+          return
+        }
+        const { task } = await res.json()
+        $('title').value = ''
+        $('description').value = ''
+        $('criteria').value = ''
+        await loadTasks()
+        select(task.id)
+      }
+
+      // --- detail --------------------------------------------------------------
+      async function select(id) {
+        state.selected = id
+        state.run = null
+        closeStream()
+        await loadTasks()
+        const { task, runs } = await (await fetch(`/api/tasks/${id}`)).json()
+        renderDetail(task, runs)
+        if (runs[0]) follow(runs[0].id)
+      }
+
+      function renderDetail(task, runs) {
+        const run = runs[0]
+        $('detail').innerHTML = `
+          <div class="row" style="justify-content: space-between; align-items: flex-start">
+            <div>
+              <h2 style="margin-bottom: 6px">Task</h2>
+              <div style="font-size: 16px; font-weight: 600">${escape(task.title)}</div>
+              <p style="color: var(--fg3); margin: 6px 0 0; max-width: 60ch">${escape(task.description)}</p>
+            </div>
+            <div class="row">
+              <span class="pill ${task.status}">${task.status.replace(/_/g, ' ')}</span>
+              <button id="dispatch" ${task.status === 'not_started' || task.status === 'failed' ? '' : 'disabled'}>
+                Dispatch
+              </button>
+            </div>
+          </div>
+          <div class="stages" id="stages"></div>
+          ${run?.prUrl ? `<p><a href="${run.prUrl}" target="_blank" rel="noreferrer">${run.prUrl}</a></p>` : ''}
+          ${run?.failureReason ? `<p style="color: var(--red)">${escape(run.failureReason)}</p>` : ''}
+          <h2 style="margin-top: 14px">Live log ${run ? `<span class="meta">· ${run.id}</span>` : ''}</h2>
+          <div id="log">${run ? '' : 'Nothing dispatched yet.'}</div>
+        `
+        $('dispatch').onclick = async () => {
+          $('dispatch').disabled = true
+          $('log').textContent = ''
+          const res = await fetch(`/api/tasks/${task.id}/dispatch`, { method: 'POST' })
+          if (!res.ok) {
+            append('bad', `dispatch failed: ${(await res.json()).error}`)
+            return
+          }
+          const { runId } = await res.json()
+          await loadTasks()
+          follow(runId)
+        }
+      }
+
+      // --- live stream ---------------------------------------------------------
+      function follow(runId) {
+        closeStream()
+        state.run = runId
+        state.lastSeq = -1
+        // `since` is what makes a reconnect gapless rather than a guess.
+        const stream = new EventSource(`/api/runs/${runId}/stream?since=${state.lastSeq}`)
+        state.stream = stream
+        stream.onmessage = (message) => {
+          const event = JSON.parse(message.data)
+          state.lastSeq = event.seq
+          render(event)
+          if (event.type === 'run.finished') {
+            closeStream()
+            loadTasks()
+          }
+        }
+        stream.onerror = () => append('warn', 'stream interrupted — reconnecting…')
+      }
+
+      function closeStream() {
+        state.stream?.close()
+        state.stream = null
+      }
+
+      const stageEls = new Map()
+      function render(event) {
+        if (event.type === 'stage.entered') markStage(event.stage, 'active')
+        if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
+        const line = describe(event)
+        if (line) append(line.cls, `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`)
+      }
+
+      function markStage(stage, cls) {
+        if (!stage) return
+        let el = stageEls.get(stage)
+        if (!el) {
+          el = document.createElement('span')
+          el.className = 'stage'
+          el.textContent = stage
+          $('stages')?.appendChild(el)
+          stageEls.set(stage, el)
+        }
+        el.className = `stage ${cls}`
+      }
+
+      function describe(e) {
+        const d = e.data ?? {}
+        switch (e.type) {
+          case 'assistant.delta': return null
+          case 'command.output': return null
+          case 'run.provisioning': return { cls: '', text: 'provisioning' }
+          case 'cache.restored': return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
+          case 'worktree.ready': return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
+          case 'run.started': return { cls: 'ok', text: `started with ${d.harness}` }
+          case 'stage.entered': return { cls: 'st', text: `── attempt ${d.attempt}` }
+          case 'stage.exited': return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
+          case 'assistant.message': return { cls: '', text: `say: ${firstLine(d.text)}` }
+          case 'thinking.started': return { cls: '', text: 'thinking' }
+          case 'tool.call': return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
+          case 'tool.result': return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
+          case 'tool.denied': return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'file.changed': return { cls: '', text: `${d.change} ${d.path}` }
+          case 'diff.produced': return { cls: '', text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}` }
+          case 'gate.evaluated': return { cls: d.passed ? 'ok' : 'bad', text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}` }
+          case 'gate.blocked': return { cls: 'warn', text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}` }
+          case 'git.branch_created': return { cls: '', text: `branch ${d.branch}` }
+          case 'git.committed': return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
+          case 'git.pushed': return { cls: 'ok', text: `pushed ${d.branch}` }
+          case 'pr.opened': return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
+          // Labelled as an estimate, because for seat auth it is derived rather than billed.
+          case 'usage.updated': return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
+          case 'error': return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
+          case 'harness.crashed': return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
+          case 'run.finished': return { cls: d.outcome === 'succeeded' ? 'ok' : 'bad', text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}` }
+          default: return { cls: '', text: e.type }
+        }
+      }
+
+      function append(cls, text) {
+        const log = $('log')
+        if (!log) return
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+        const span = document.createElement('span')
+        span.className = cls
+        span.textContent = text + '\n'
+        log.appendChild(span)
+        // Only follow the tail if the reader was already there; yanking the scroll away
+        // from someone reading history is worse than not following.
+        if (atBottom) log.scrollTop = log.scrollHeight
+      }
+
+      const firstLine = (t = '', max = 110) => {
+        const line = String(t).split('\n')[0]
+        return line.length > max ? line.slice(0, max) + '…' : line
+      }
+      function escape(text) {
+        const el = document.createElement('span')
+        el.textContent = String(text ?? '')
+        return el.innerHTML
+      }
+
+      await loadTasks()
+    </script>
+  </body>
+</html>

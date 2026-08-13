@@ -1,0 +1,24 @@
+{
+  "name": "@intellidev/control-plane",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Minimal control plane: manual task form, dispatch, live event stream.",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "build": "echo \"served from source via tsx\"",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@intellidev/adapter": "workspace:*",
+    "@intellidev/shared": "workspace:*",
+    "fastify": "^5.2.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}
