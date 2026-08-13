@@ -6,9 +6,12 @@ import { ConnectorConfigError } from "@/connectors/errors";
 import { googleChatConfigSchema } from "./config";
 import { resolveSenderNames } from "./directory";
 import type {
+  AttachmentDraft,
   Connector,
   ConnectorCredentials,
+  DownloadedAttachment,
   FetchContext,
+  FetchDeadline,
   FetchResult,
   NormalizedEventDraft,
   RawPayload,
@@ -41,6 +44,18 @@ export interface GoogleChatCursor {
   spaceCursors: Record<string, string>; // spaceName ("spaces/<id>") -> RFC3339 createTime of the latest message seen
 }
 
+/** Chat's `Attachment` resource — either an upload Chat itself hosts
+ * (attachmentDataRef, downloaded via the Chat API's media endpoint) or a
+ * file the message links from the sender's Drive (driveDataRef, downloaded
+ * via Drive's own `alt=media`, same as connectors/google_drive does). */
+interface ChatAttachment {
+  name?: string;
+  contentName?: string;
+  contentType?: string;
+  attachmentDataRef?: { resourceName?: string };
+  driveDataRef?: { driveFileId?: string };
+}
+
 interface ChatMessage {
   name: string; // spaces/AAAA/messages/BBBB.BBBB — globally unique and stable
   sender?: { name?: string; displayName?: string; type?: string };
@@ -48,7 +63,33 @@ interface ChatMessage {
   text?: string;
   formattedText?: string;
   thread?: { name?: string };
-  attachment?: unknown[];
+  attachment?: ChatAttachment[];
+}
+
+function attachmentsToDrafts(attachments: ChatAttachment[] | undefined): AttachmentDraft[] | undefined {
+  if (!attachments || attachments.length === 0) return undefined;
+  const drafts = attachments
+    .map((a): AttachmentDraft | undefined => {
+      if (a.attachmentDataRef?.resourceName) {
+        return {
+          providerAttachmentId: a.attachmentDataRef.resourceName,
+          filename: a.contentName,
+          mimeType: a.contentType,
+          downloadRef: { kind: "chat_media", resourceName: a.attachmentDataRef.resourceName },
+        };
+      }
+      if (a.driveDataRef?.driveFileId) {
+        return {
+          providerAttachmentId: a.driveDataRef.driveFileId,
+          filename: a.contentName,
+          mimeType: a.contentType,
+          downloadRef: { kind: "drive", fileId: a.driveDataRef.driveFileId },
+        };
+      }
+      return undefined; // neither ref present — nothing to download
+    })
+    .filter((draft): draft is AttachmentDraft => draft !== undefined);
+  return drafts.length > 0 ? drafts : undefined;
 }
 
 interface ChatMessagesResponse {
@@ -252,6 +293,7 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
       formattedText?: string;
       thread?: { name?: string };
       space_name: string;
+      attachment?: ChatAttachment[];
       // Attached in fetchSince (I/O, allowed there) by directory.ts's
       // People API lookup — normalize() itself stays pure/no-I/O, so it can
       // only read what fetchSince already resolved. Absent when
@@ -262,7 +304,14 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
       sender_email?: string;
     };
 
-    if (!message.text && !message.formattedText) return [];
+    const attachments = attachmentsToDrafts(message.attachment);
+
+    // Previously `if (!message.text && !message.formattedText) return []`
+    // dropped every attachment-only message — but fetchSince's own filter
+    // (see the loop above) deliberately ADMITS a message with attachments
+    // and no text, so that raw_events row produced zero normalized_events
+    // rows. Mirror fetchSince's own condition here instead of a stricter one.
+    if (!message.text && !message.formattedText && !attachments) return [];
 
     return [
       {
@@ -272,12 +321,56 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
         actorEmail: message.sender_email,
         resource: `gchat-space:${message.space_name}`,
         resourceType: "space",
-        body: message.text ?? message.formattedText,
+        // A message whose only content is a file share has no text at all
+        // — body must not be null, or the LLM prompt sees a blank event with
+        // no clue anything was even shared.
+        body: message.text ?? message.formattedText ?? (attachments ? `[shared ${attachments.length} file(s)]` : undefined),
         occurredAt: raw.occurredAt ?? new Date(),
         metadata: { space_name: message.space_name, thread_name: message.thread?.name },
         dedupeKey: `message.posted:${message.name}`,
+        attachments,
       },
     ];
+  },
+
+  async downloadAttachment(
+    credentials: ConnectorCredentials,
+    downloadRef: Record<string, unknown>,
+    deadline: FetchDeadline,
+  ): Promise<DownloadedAttachment | null> {
+    const accessToken = credentials.tokens.access_token as string | undefined;
+    if (!accessToken || deadline.expired()) return null;
+
+    const kind = downloadRef.kind as string | undefined;
+    let url: string | undefined;
+    if (kind === "chat_media" && typeof downloadRef.resourceName === "string") {
+      url = `${CHAT_API_BASE}/media/${downloadRef.resourceName}?alt=media`;
+    } else if (kind === "drive" && typeof downloadRef.fileId === "string") {
+      // Same endpoint connectors/google_drive/text.ts's fetchFileText uses
+      // for a "download" plan — reused here rather than importing that
+      // module, to keep Chat's downloader dependency-free of Drive's.
+      url = `https://www.googleapis.com/drive/v3/files/${downloadRef.fileId}?alt=media&supportsAllDrives=true`;
+    }
+    if (!url) return null;
+
+    try {
+      // Bypasses googleFetch deliberately — that helper does res.text() ->
+      // JSON.parse (see connectors/google/client.ts) and cannot carry a
+      // binary body. Single attempt only, same rationale as
+      // google_drive/text.ts's fetchFileText: retrying a slow single
+      // attachment would eat the budget meant for OTHER attachments in the
+      // same job run.
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) {
+        console.warn(`[google_chat] attachment download failed: HTTP ${res.status}`);
+        return null;
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      return { bytes, mimeType: res.headers.get("content-type") ?? undefined };
+    } catch (err) {
+      console.warn("[google_chat] attachment download threw:", err);
+      return null;
+    }
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {

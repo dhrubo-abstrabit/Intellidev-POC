@@ -5,12 +5,15 @@ import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
 import { stripHtml } from "@/connectors/google_drive/text";
 import { gmailConfigSchema } from "./config";
-import { extractPlainText, header, stripQuotedReply } from "./mime";
+import { collectAttachments, extractPlainText, header, stripQuotedReply } from "./mime";
 import type { GmailMessagePart } from "./mime";
 import type {
+  AttachmentDraft,
   Connector,
   ConnectorCredentials,
+  DownloadedAttachment,
   FetchContext,
+  FetchDeadline,
   FetchResult,
   NormalizedEventDraft,
   RawPayload,
@@ -255,6 +258,16 @@ export const gmailConnector: Connector<GmailCursor> = {
     const { email, displayName } = parseFromHeader(header(message.payload?.headers, "From"));
     const internalDateMs = Number(message.internalDate);
 
+    const attachments = collectAttachments(message.payload).map(
+      (a): AttachmentDraft => ({
+        providerAttachmentId: a.attachmentId,
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+        downloadRef: { messageId: message.id, attachmentId: a.attachmentId },
+      }),
+    );
+
     return [
       {
         type,
@@ -275,8 +288,38 @@ export const gmailConnector: Connector<GmailCursor> = {
         // (unlike Drive files), so there's no autosave-style churn to
         // coalesce here.
         dedupeKey: `${type}:${message.id}`,
+        attachments: attachments.length > 0 ? attachments : undefined,
       },
     ];
+  },
+
+  async downloadAttachment(
+    credentials: ConnectorCredentials,
+    downloadRef: Record<string, unknown>,
+    deadline: FetchDeadline,
+  ): Promise<DownloadedAttachment | null> {
+    const accessToken = credentials.tokens.access_token as string | undefined;
+    const messageId = downloadRef.messageId as string | undefined;
+    const attachmentId = downloadRef.attachmentId as string | undefined;
+    if (!accessToken || !messageId || !attachmentId || deadline.expired()) return null;
+
+    try {
+      // messages.attachments.get returns JSON, so this DOES go through
+      // googleFetch (unlike Chat/Drive's binary download endpoints) — a
+      // single attempt is enough for the same reason fetchSince's own
+      // per-message fetch above accepts one failure without retrying.
+      const res = await googleFetch<{ size?: number; data?: string }>(
+        `${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`,
+        { accessToken, deadline, maxAttempts: 1 },
+      );
+      if (!res.data) return null;
+      // base64URL, not base64 — see mime.ts's decodeBase64Url comment for
+      // why plain "base64" corrupts any payload containing '-' or '_'.
+      return { bytes: Buffer.from(res.data, "base64url") };
+    } catch (err) {
+      console.warn(`[gmail] attachment download failed for message ${messageId}:`, err);
+      return null;
+    }
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {

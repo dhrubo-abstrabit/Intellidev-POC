@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractPlainText, header, stripQuotedReply } from "./mime";
+import { collectAttachments, extractPlainText, header, stripQuotedReply } from "./mime";
 import { stripHtml } from "@/connectors/google_drive/text";
 import type { GmailMessagePart } from "./mime";
 
@@ -115,5 +115,63 @@ describe("stripQuotedReply", () => {
 
   it("leaves a message with no quote marker untouched", () => {
     expect(stripQuotedReply("Just a plain reply, nothing quoted.")).toBe("Just a plain reply, nothing quoted.");
+  });
+});
+
+describe("collectAttachments", () => {
+  it("finds a single attachment nested inside multipart/mixed", () => {
+    const payload: GmailMessagePart = {
+      mimeType: "multipart/mixed",
+      parts: [
+        { mimeType: "text/plain", body: { data: b64url("see attached") } },
+        {
+          mimeType: "application/pdf",
+          filename: "spec.pdf",
+          body: { attachmentId: "att1", size: 4096 },
+        },
+      ],
+    };
+    expect(collectAttachments(payload)).toEqual([{ attachmentId: "att1", filename: "spec.pdf", mimeType: "application/pdf", sizeBytes: 4096 }]);
+  });
+
+  it("finds every attachment when a message carries more than one", () => {
+    const payload: GmailMessagePart = {
+      mimeType: "multipart/mixed",
+      parts: [
+        { mimeType: "text/plain", body: { data: b64url("two files attached") } },
+        { mimeType: "application/pdf", filename: "spec.pdf", body: { attachmentId: "att1", size: 100 } },
+        {
+          mimeType: "multipart/mixed",
+          parts: [
+            {
+              mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              filename: "notes.docx",
+              body: { attachmentId: "att2", size: 200 },
+            },
+          ],
+        },
+      ],
+    };
+    expect(collectAttachments(payload).map((a) => a.attachmentId)).toEqual(["att1", "att2"]);
+  });
+
+  it("excludes an inline cid:-referenced image with no filename — it's embedded content, not something a user attached", () => {
+    const payload: GmailMessagePart = {
+      mimeType: "multipart/related",
+      parts: [
+        { mimeType: "text/html", body: { data: b64url("<img src=\"cid:logo\">") } },
+        { mimeType: "image/png", body: { attachmentId: "att1", size: 5000 } }, // no filename
+      ],
+    };
+    expect(collectAttachments(payload)).toEqual([]);
+  });
+
+  it("returns an empty array for a message with no attachments", () => {
+    const payload: GmailMessagePart = { mimeType: "text/plain", body: { data: b64url("no attachments here") } };
+    expect(collectAttachments(payload)).toEqual([]);
+  });
+
+  it("returns an empty array for an undefined payload", () => {
+    expect(collectAttachments(undefined)).toEqual([]);
   });
 });

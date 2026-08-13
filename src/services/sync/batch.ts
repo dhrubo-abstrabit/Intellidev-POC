@@ -61,7 +61,24 @@ export async function seedBatchForProject(
   return batchId;
 }
 
-export type SettleBatchResult = { inBatch: false } | { inBatch: true; firedLlmJob: boolean };
+export type SettleBatchResult =
+  | { inBatch: false }
+  | {
+      inBatch: true;
+      firedLlmJob: boolean;
+      /** True when THIS call's own compare-and-swap found its member row
+       * already completed — i.e. this integration reported in once already
+       * today (normal completion, or an earlier settle from the same run),
+       * and is now reporting again with fresh work (e.g. a later manual
+       * "Sync Now", or attachment extraction finishing after the batch
+       * already fired). The batch-wide "every member done" trigger only
+       * ever fires ONCE per (project, batchDate) by design — a late arrival
+       * like this is exactly what callers should treat as "not covered by
+       * that one-shot trigger, fire your own" instead of assuming someone
+       * else already handled it. False for an ordinary in-progress member
+       * (remaining > 0) or the member that itself completed the batch. */
+      alreadySettled: boolean;
+    };
 
 /**
  * Reports one integration as done (terminal — no further chaining) for its
@@ -75,7 +92,9 @@ export type SettleBatchResult = { inBatch: false } | { inBatch: true; firedLlmJo
  * Returns `{inBatch: false}` when this integration isn't part of any active
  * batch for batchDate (batch never seeded, or this integration wasn't due
  * at cron time) — callers should fall back to their own immediate-trigger
- * behavior in that case.
+ * behavior in that case. See `alreadySettled` above for the other case
+ * callers need to handle explicitly: the batch's one-shot trigger already
+ * fired earlier today, and this call is new work arriving after that.
  */
 export async function settleBatchMembership(
   service: ServiceClient,
@@ -107,10 +126,16 @@ export async function settleBatchMembership(
     .is("completed_at", null)
     .select("id");
   if (!claimed || claimed.length === 0) {
-    // Already settled by an earlier delivery of this same terminal event
-    // (QStash is at-least-once) — the caller that won that race already
-    // did (or is doing) the remaining-count check below.
-    return { inBatch: true, firedLlmJob: false };
+    // Already settled — either an earlier delivery of this SAME terminal
+    // event (QStash is at-least-once, in which case the caller that won
+    // that race already did/is doing the remaining-count check below), OR
+    // this integration produced fresh work AGAIN after already completing
+    // its part of today's batch (a second manual "Sync Now", or attachment
+    // extraction finishing after the batch's one-shot trigger already
+    // fired). Only the caller can tell these apart (it knows whether THIS
+    // call actually has new work) — alreadySettled:true is the signal it
+    // needs to decide whether to fire its own catch-up trigger.
+    return { inBatch: true, firedLlmJob: false, alreadySettled: true };
   }
 
   const { count: remaining } = await service
@@ -119,7 +144,7 @@ export async function settleBatchMembership(
     .eq("batch_id", batch.id)
     .is("completed_at", null);
 
-  if ((remaining ?? 0) > 0) return { inBatch: true, firedLlmJob: false };
+  if ((remaining ?? 0) > 0) return { inBatch: true, firedLlmJob: false, alreadySettled: false };
 
   const { data: won } = await service
     .from("sync_batches")
@@ -128,7 +153,7 @@ export async function settleBatchMembership(
     .is("llm_triggered_at", null)
     .select("id");
 
-  return { inBatch: true, firedLlmJob: (won?.length ?? 0) === 1 };
+  return { inBatch: true, firedLlmJob: (won?.length ?? 0) === 1, alreadySettled: false };
 }
 
 /** Called by cron tick immediately when publishing an integration's own

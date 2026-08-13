@@ -110,6 +110,41 @@ describe("runSync (mock connector, real local DB)", () => {
     expect(syncJob).toMatchObject({ status: "succeeded", events_fetched: 5, events_written: 5, trigger: "manual" });
   });
 
+  it("persists a pending event_attachments row for the message the mock connector tags with an attachment", async () => {
+    // The first run's batch covers seq 0..4; mockConnector.fetchSince tags
+    // exactly seq % 5 === 2 with hasAttachment — see connectors/mock/index.ts.
+    const { data: normalizedEvent } = await service
+      .from("normalized_events")
+      .select("id")
+      .eq("integration_id", integrationId)
+      .eq("dedupe_key", "message.posted:mock-general:2")
+      .single();
+    expect(normalizedEvent).not.toBeNull();
+
+    const { data: attachments } = await service
+      .from("event_attachments")
+      .select("status, provider_attachment_id, filename, mime_type, size_bytes, download_ref, normalized_event_id")
+      .eq("normalized_event_id", normalizedEvent!.id);
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments?.[0]).toMatchObject({
+      status: "pending",
+      provider_attachment_id: "mock-att-2",
+      filename: "sample.txt",
+      mime_type: "text/plain",
+      size_bytes: 36,
+      download_ref: { seq: 2 },
+    });
+
+    // No attachment was tagged for seq 0, 1, 3, or 4 — normalize() must not
+    // have fabricated one for any of them.
+    const { count: totalAttachments } = await service
+      .from("event_attachments")
+      .select("id", { count: "exact", head: true })
+      .eq("integration_id", integrationId);
+    expect(totalAttachments).toBe(1);
+  });
+
   it("fetches the NEXT batch (not a repeat) on a second run, proving the cursor advanced for real", async () => {
     const result = await runSync(integrationId, "manual");
     expect(result.status).toBe("succeeded");

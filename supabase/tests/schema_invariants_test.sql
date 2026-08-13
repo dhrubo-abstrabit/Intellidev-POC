@@ -5,7 +5,7 @@
 -- after a fresh `supabase db reset`.
 
 begin;
-select plan(6);
+select plan(7);
 
 -- 1. Every table in `public` has row level security enabled. A table that
 --    exists for even one migration without RLS is the failure mode this
@@ -112,6 +112,18 @@ select is(
   ),
   '{}'::text[],
   'connector_provider contains every provider the registry can return'
+);
+
+-- 7. The 'attachments' Storage bucket exists and is private. Checks #1-#5
+--    above already generically cover event_attachments' own RLS/grants (#1
+--    checks every public table has RLS on; #5 checks every permissive
+--    SELECT policy for authenticated has a matching grant) — nothing
+--    event_attachments-specific was needed there. Storage buckets aren't a
+--    `public` table, so they need their own check.
+select is(
+  (select public from storage.buckets where id = 'attachments'),
+  false,
+  'the attachments Storage bucket exists and is private'
 );
 
 select * from finish();

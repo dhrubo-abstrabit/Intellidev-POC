@@ -2,8 +2,11 @@ import "server-only";
 import { slackEnv } from "@/lib/env";
 import { oauthRedirectUri } from "@/lib/oauth/redirect";
 import type {
+  AttachmentDraft,
   Connector,
   ConnectorCredentials,
+  DownloadedAttachment,
+  FetchDeadline,
   FetchResult,
   NormalizedEventDraft,
   RawPayload,
@@ -22,6 +25,13 @@ const BOT_SCOPES = [
   "groups:read",
   "users:read",
   "team:read",
+  // Needed to download a shared file's bytes via url_private_download — see
+  // downloadAttachment() below. Per CLAUDE.md's "scope changes don't
+  // retro-apply" rule, an already-connected workspace needs an explicit
+  // disconnect + reconnect before this actually lands on its token; editing
+  // this list alone does nothing for existing grants. Must also be added in
+  // the Slack app dashboard (OAuth & Permissions -> Bot Token Scopes).
+  "files:read",
 ];
 
 /** Every Slack Web API response shares `ok`/`error`; the rest is a union of
@@ -105,6 +115,67 @@ function resolveMentions(text: string, directory: Map<string, { displayName?: st
 interface SlackCursor {
   provider: "slack";
   channelCursors: Record<string, string>; // channelId -> oldest `ts` seen
+}
+
+/** Slack's files[] entry, as embedded verbatim in a `file_share` message
+ * (see fetchSince's `...message` spread). Only the fields normalize() and
+ * downloadAttachment() actually read. */
+interface SlackFile {
+  id: string;
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  size?: number;
+  // "hosted" is a normal upload with real bytes behind url_private_download.
+  // "external" (a linked Google Drive/Dropbox file, no Slack-hosted bytes)
+  // and "tombstone" (the uploader deleted it) both have nothing to download.
+  mode?: string;
+  url_private_download?: string;
+}
+
+// Bookkeeping subtypes carry no attachments and aren't "activity" for the
+// action-item pipeline — everything else (notably `file_share`, which has no
+// subtype-specific meaning beyond "this message has files[]", and
+// `thread_broadcast`) must pass through. Inverted from the old `if
+// (message.subtype) return []` blanket check, which silently dropped every
+// file upload along with its attachments — see CLAUDE.md/the plan for why
+// this was a real bug, not just a missed feature.
+const BOOKKEEPING_SUBTYPES = new Set([
+  "channel_join",
+  "channel_leave",
+  "channel_topic",
+  "channel_purpose",
+  "channel_name",
+  "channel_archive",
+  "channel_unarchive",
+  "channel_convert_to_private",
+  "channel_convert_to_public",
+  "group_join",
+  "group_leave",
+  "group_topic",
+  "group_purpose",
+  "group_name",
+  "group_archive",
+  "group_unarchive",
+  "pinned_item",
+  "unpinned_item",
+  "bot_add",
+  "bot_remove",
+  "reminder_add",
+]);
+
+function filesToAttachmentDrafts(files: SlackFile[] | undefined): AttachmentDraft[] | undefined {
+  if (!files || files.length === 0) return undefined;
+  const drafts = files
+    .filter((file) => file.mode !== "tombstone" && file.mode !== "external" && file.url_private_download)
+    .map((file): AttachmentDraft => ({
+      providerAttachmentId: file.id,
+      filename: file.title || file.name,
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      downloadRef: { url_private_download: file.url_private_download },
+    }));
+  return drafts.length > 0 ? drafts : undefined;
 }
 
 function redirectUri(): string {
@@ -267,6 +338,7 @@ export const slackConnector: Connector<SlackCursor> = {
       channel_id: string;
       channel_name?: string;
       subtype?: string;
+      files?: SlackFile[];
       // Both resolved in fetchSince (I/O, allowed there) from a one-time
       // users.list call — normalize() itself stays pure/no-I/O, so it can
       // only read what fetchSince already attached to the payload.
@@ -275,8 +347,13 @@ export const slackConnector: Connector<SlackCursor> = {
     };
 
     // Skip channel-join/leave and other bookkeeping subtypes — they're not
-    // meaningful "activity" for the action-item pipeline.
-    if (message.subtype) return [];
+    // meaningful "activity" for the action-item pipeline. `file_share` is
+    // deliberately NOT in this set: it's a normal message that happens to
+    // carry files[], and the old blanket `if (message.subtype) return []`
+    // here used to drop every file upload along with it.
+    if (message.subtype && BOOKKEEPING_SUBTYPES.has(message.subtype)) return [];
+
+    const attachments = filesToAttachmentDrafts(message.files);
 
     return [
       {
@@ -290,8 +367,41 @@ export const slackConnector: Connector<SlackCursor> = {
         occurredAt: raw.occurredAt ?? new Date(),
         metadata: { channel_id: message.channel_id, channel_name: message.channel_name },
         dedupeKey: `message.posted:${message.channel_id}:${message.ts}`,
+        attachments,
       },
     ];
+  },
+
+  async downloadAttachment(
+    credentials: ConnectorCredentials,
+    downloadRef: Record<string, unknown>,
+    deadline: FetchDeadline,
+  ): Promise<DownloadedAttachment | null> {
+    const accessToken = credentials.tokens.access_token as string | undefined;
+    const url = downloadRef.url_private_download as string | undefined;
+    if (!accessToken || !url || deadline.expired()) return null;
+
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) {
+        console.warn(`[slack] attachment download failed: HTTP ${res.status}`);
+        return null;
+      }
+      const contentType = res.headers.get("content-type") ?? undefined;
+      // Slack serves an HTML sign-in/error page with a 200 status (not a
+      // 4xx) when the token lacks files:read or the file has actually been
+      // deleted — without this check, that page would get stored and parsed
+      // as if it were the real document.
+      if (contentType?.includes("text/html")) {
+        console.warn("[slack] attachment download returned an HTML page, not the file — likely missing files:read scope");
+        return null;
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      return { bytes, mimeType: contentType };
+    } catch (err) {
+      console.warn("[slack] attachment download threw:", err);
+      return null;
+    }
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {

@@ -55,18 +55,51 @@ RECENT DAILY SUMMARIES:
 ${summaries}`;
 }
 
+// Caps how much attachment text ONE extraction call can carry, independent
+// of MAX_EVENTS_PER_CHUNK's 200-event cap (generate.ts) — attachments are
+// extracted at up to 8000 chars each (services/attachments/run-extraction.ts's
+// MAX_EXTRACTED_TEXT_CHARS), so a chunk with even a handful of PDFs could
+// otherwise blow well past a sane prompt size. Attachments beyond this
+// budget are dropped (lowest-priority: whichever renders last, i.e. latest
+// events first since newEvents is chronological) rather than silently
+// truncated — see the dropped-count note appended below.
+const MAX_ATTACHMENT_CHARS_PER_CHUNK = 40_000;
+
 function renderNewEvents(context: ActionItemContext): string {
   if (context.newEvents.length === 0) {
     return "NEW EVENTS: (none)";
   }
+  let attachmentCharsUsed = 0;
+  let droppedAttachments = 0;
   const rendered = context.newEvents
     .map((event) => {
       const who = event.actorDisplay ?? "unknown";
       const text = [event.title, event.body].filter(Boolean).join(" — ");
-      return `- id=${event.id} type=${event.type} actor=${who} occurred_at=${event.occurredAt}\n  ${text}`;
+      let block = `- id=${event.id} type=${event.type} actor=${who} occurred_at=${event.occurredAt}\n  ${text}`;
+
+      for (const attachment of event.attachments ?? []) {
+        if (attachmentCharsUsed + attachment.text.length > MAX_ATTACHMENT_CHARS_PER_CHUNK) {
+          droppedAttachments++;
+          continue;
+        }
+        attachmentCharsUsed += attachment.text.length;
+        const label = attachment.filename ?? attachment.mimeType ?? "attachment";
+        const truncatedNote = attachment.truncated ? " [truncated]" : "";
+        block += `\n  --- attachment: ${label}${truncatedNote} ---\n  ${attachment.text}`;
+      }
+      return block;
     })
     .join("\n");
-  return `NEW EVENTS (${context.newEvents.length}):\n${rendered}`;
+
+  if (droppedAttachments > 0) {
+    // Dropped, not silently truncated — logged rather than swallowed, per
+    // the "no silent caps" rule: this chunk's llm_run still ran, but with
+    // strictly less attachment content than existed for it.
+    console.warn(`[llm] dropped ${droppedAttachments} attachment(s) over the ${MAX_ATTACHMENT_CHARS_PER_CHUNK}-char prompt budget for this chunk`);
+  }
+  const droppedNote =
+    droppedAttachments > 0 ? `\n(${droppedAttachments} additional attachment(s) omitted — over this batch's attachment text budget)` : "";
+  return `NEW EVENTS (${context.newEvents.length}):\n${rendered}${droppedNote}`;
 }
 
 function buildSystemBlocks(context: ActionItemContext): Anthropic.Messages.TextBlockParam[] {

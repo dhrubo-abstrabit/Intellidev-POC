@@ -5,7 +5,13 @@ const DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMn
 
 describe("googleConfigSchema", () => {
   it("defaults every sub-service to disabled", () => {
-    expect(googleConfigSchema.parse({})).toEqual({ gmail: null, drive: null, chat: null });
+    expect(googleConfigSchema.parse({})).toEqual({
+      gmail: null,
+      drive: null,
+      chat: null,
+      processAttachments: true,
+      maxAttachmentsPerRun: 15,
+    });
   });
 
   it("accepts a partially-enabled config and fills in that service's own defaults", () => {

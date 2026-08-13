@@ -11,7 +11,9 @@ import { parseGoogleCursor, rotatePriority, GOOGLE_SERVICES, type GoogleCursor, 
 import type {
   Connector,
   ConnectorCredentials,
+  DownloadedAttachment,
   FetchContext,
+  FetchDeadline,
   FetchResult,
   NormalizedEventDraft,
   RawPayload,
@@ -172,6 +174,31 @@ export const googleConnector: Connector<GoogleCursor> = {
     // normalized_events row needs it, since `provider` is now 'google' for
     // all three.
     return drafts.map((draft) => ({ ...draft, metadata: { ...draft.metadata, service } }));
+  },
+
+  /**
+   * Dispatches to whichever sub-connector's download_ref shape matches, the
+   * same way normalize() dispatches on `_service` — except downloadRef has
+   * no `_service` tag (event_attachments.download_ref is written straight
+   * from AttachmentDraft, which normalize() produces before this connector
+   * ever sees it), so this reads the ref's own shape instead: Gmail's is
+   * `{messageId, attachmentId}`, Chat's is `{kind, ...}`. Drive currently
+   * never produces an AttachmentDraft (its own text-extraction pipeline in
+   * connectors/google_drive/text.ts already covers file bodies directly),
+   * so there's no third branch yet.
+   */
+  async downloadAttachment(
+    credentials: ConnectorCredentials,
+    downloadRef: Record<string, unknown>,
+    deadline: FetchDeadline,
+  ): Promise<DownloadedAttachment | null> {
+    if (typeof downloadRef.messageId === "string" && typeof downloadRef.attachmentId === "string") {
+      return (await gmailConnector.downloadAttachment?.(credentials, downloadRef, deadline)) ?? null;
+    }
+    if (typeof downloadRef.kind === "string") {
+      return (await googleChatConnector.downloadAttachment?.(credentials, downloadRef, deadline)) ?? null;
+    }
+    return null;
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {

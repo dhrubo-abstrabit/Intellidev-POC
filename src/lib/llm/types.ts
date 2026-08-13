@@ -7,6 +7,13 @@ export interface OpenActionItemSummary {
   priority: string;
 }
 
+export interface NewEventAttachmentSummary {
+  filename?: string | null;
+  mimeType?: string | null;
+  text: string;
+  truncated: boolean;
+}
+
 export interface NewEventSummary {
   id: string;
   type: string;
@@ -15,6 +22,11 @@ export interface NewEventSummary {
   body?: string | null;
   occurredAt: string;
   resourceType?: string | null;
+  /** Extracted text from this event's attachments (status='extracted' rows
+   * in event_attachments), joined in by services/action-items/generate.ts.
+   * Absent, not empty, when there are none — see anthropic.ts's
+   * renderNewEvents for how these are budgeted into the prompt. */
+  attachments?: NewEventAttachmentSummary[];
 }
 
 export interface ActionItemContext {
