@@ -21,7 +21,7 @@ export default async function WorkspaceHomePage({ params }: { params: Promise<{ 
   return (
     <div className="mx-auto max-w-3xl space-y-10">
       <section>
-        <h1 className="mb-5 font-[family-name:var(--font-inter-tight)] text-xl font-extrabold text-brand-n-900">
+        <h1 className="mb-5 text-xl font-extrabold text-brand-n-900">
           Projects
         </h1>
         {!projects || projects.length === 0 ? (
@@ -34,7 +34,7 @@ export default async function WorkspaceHomePage({ params }: { params: Promise<{ 
               <Link key={project.id} href={`/w/${workspaceId}/p/${project.id}`}>
                 <div className="h-full rounded-2xl border border-brand-n-200 bg-brand-n-0 p-5 shadow-sm transition-colors hover:border-brand-teal-400">
                   <div className="mb-2 flex items-start justify-between gap-2">
-                    <h2 className="font-[family-name:var(--font-inter-tight)] font-bold text-brand-n-900">
+                    <h2 className="font-bold text-brand-n-900">
                       {project.name}
                     </h2>
                     <span
@@ -53,7 +53,7 @@ export default async function WorkspaceHomePage({ params }: { params: Promise<{ 
 
       <section>
         <div className="rounded-2xl border border-brand-n-200 bg-brand-n-0 p-6 shadow-sm">
-          <h2 className="mb-4 font-[family-name:var(--font-inter-tight)] text-base font-bold text-brand-n-900">
+          <h2 className="mb-4 text-base font-bold text-brand-n-900">
             New project
           </h2>
           <CreateProjectForm workspaceId={workspaceId} />

@@ -12,7 +12,7 @@ export function AppHeader({ workspaceSwitcher, nav }: { workspaceSwitcher?: Reac
   return (
     <header className="flex items-center justify-between border-b border-brand-n-200 bg-brand-n-0 px-6 py-3">
       <div className="flex items-center gap-4">
-        <span className="font-[family-name:var(--font-inter-tight)] font-extrabold text-brand-n-900">
+        <span className="font-heading font-extrabold text-brand-n-900">
           Intelli<span className="text-brand-teal-600">Dev</span>
         </span>
         {workspaceSwitcher}

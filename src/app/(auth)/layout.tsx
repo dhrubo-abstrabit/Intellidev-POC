@@ -1,18 +1,9 @@
-import { Inter, Inter_Tight } from "next/font/google";
-
-// Scoped to the auth pages only (not the root layout's Geist) — the brand
-// system (D:\Build_TM\brand-system.html) specifies Inter/Inter Tight, and
-// this redesign is rolling out page by page rather than swapping the whole
-// app's typeface in one shot.
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const interTight = Inter_Tight({ subsets: ["latin"], weight: ["600", "700", "800"], variable: "--font-inter-tight" });
-
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
     // h-screen + overflow-hidden (not min-h-screen): a fixed-height row, so
     // neither column can stretch the page taller than the viewport. Content
     // on the right that doesn't fit gets its own internal scroll instead.
-    <div className={`${inter.variable} ${interTight.variable} flex h-screen overflow-hidden font-[family-name:var(--font-inter)]`}>
+    <div className="flex h-screen overflow-hidden">
       {/* Decorative brand panel — hidden below md. One soft diagonal shape
        * over a light gradient, kept within the same teal family (no dark
        * tones) per the reference's overall feel — hand-built, not traced
@@ -39,7 +30,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       </div>
 
       <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto px-6 py-12 md:w-1/2">
-        <div className="mb-10 text-xl font-[family-name:var(--font-inter-tight)] font-extrabold text-brand-n-900">
+        <div className="mb-10 font-heading text-xl font-extrabold text-brand-n-900">
           Intelli<span className="text-brand-teal-600">Dev</span>
         </div>
         <div className="w-full max-w-sm">{children}</div>

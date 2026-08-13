@@ -8,7 +8,7 @@ export default function LoginPage() {
   return (
     <div className="w-full space-y-4">
       <div className="rounded-2xl border border-brand-n-200 bg-brand-n-0 p-8 shadow-sm">
-        <h1 className="mb-6 text-center font-[family-name:var(--font-inter-tight)] text-2xl font-extrabold text-brand-n-900">
+        <h1 className="mb-6 text-center text-2xl font-extrabold text-brand-n-900">
           Log in
         </h1>
         <div className="space-y-4">
