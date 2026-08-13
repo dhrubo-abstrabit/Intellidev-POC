@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 import { Loader2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -108,54 +109,56 @@ export function ContextForm({
   }
 
   return (
-    <div className="max-w-2xl space-y-3">
-      <div
-        onDragOver={(event) => {
-          event.preventDefault();
-          setIsDragging(true);
-        }}
-        onDragLeave={() => setIsDragging(false)}
-        onDrop={handleDrop}
-        className={cn("rounded-lg transition-shadow", isDragging && "ring-2 ring-ring")}
-      >
-        <Textarea
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          placeholder="What should the AI know about this project? Goals, terminology, who's who, anything that helps it write better action items. Type here, or drag/browse a .txt, .md, .pdf, or .docx file in."
-          className="min-h-56"
-          disabled={isExtracting}
-          data-testid="project-context-textarea"
-        />
-      </div>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        onChange={handleBrowseChange}
-        className="hidden"
-      />
-
-      <div className="flex items-center justify-between gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isBusy}
-          data-testid="project-context-browse"
+    <Card>
+      <CardContent className="space-y-3">
+        <div
+          onDragOver={(event) => {
+            event.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+          className={cn("rounded-lg transition-shadow", isDragging && "ring-2 ring-ring")}
         >
-          {isExtracting ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : <UploadIcon aria-hidden="true" />}
-          {isExtracting ? "Reading…" : "Browse…"}
-        </Button>
-        <div className="flex items-center gap-2">
-          {isDirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
-          <Button onClick={handleSave} disabled={isBusy || !isDirty} data-testid="project-context-save">
-            {isSaving ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
-            Save
-          </Button>
+          <Textarea
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="What should the AI know about this project? Goals, terminology, who's who, anything that helps it write better action items. Type here, or drag/browse a .txt, .md, .pdf, or .docx file in."
+            className="min-h-[60vh]"
+            disabled={isExtracting}
+            data-testid="project-context-textarea"
+          />
         </div>
-      </div>
-    </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          onChange={handleBrowseChange}
+          className="hidden"
+        />
+
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isBusy}
+            data-testid="project-context-browse"
+          >
+            {isExtracting ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : <UploadIcon aria-hidden="true" />}
+            {isExtracting ? "Reading…" : "Browse…"}
+          </Button>
+          <div className="flex items-center gap-2">
+            {isDirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+            <Button onClick={handleSave} disabled={isBusy || !isDirty} data-testid="project-context-save">
+              {isSaving ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
+              Save
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
