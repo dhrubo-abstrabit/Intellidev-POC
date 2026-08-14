@@ -83,17 +83,19 @@ export default async function ProjectOverviewPage({
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Connected services</CardTitle>
-            <CardAction>
-              <Button
-                render={<Link href={`/w/${workspaceId}/p/${projectId}/integrations`} aria-label="Connect services" />}
-                nativeButton={false}
-                variant="ghost"
-                size="icon-sm"
-                className="text-brand-teal-600 hover:text-brand-teal-700"
-              >
-                <PlusIcon aria-hidden="true" />
-              </Button>
-            </CardAction>
+            {integrations && integrations.length > 0 ? (
+              <CardAction>
+                <Button
+                  render={<Link href={`/w/${workspaceId}/p/${projectId}/integrations`} aria-label="Connect services" />}
+                  nativeButton={false}
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-brand-teal-600 hover:text-brand-teal-700"
+                >
+                  <PlusIcon aria-hidden="true" />
+                </Button>
+              </CardAction>
+            ) : null}
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {!integrations || integrations.length === 0 ? (
