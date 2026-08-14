@@ -49,7 +49,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       </div>
 
       <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto px-6 py-12 md:w-1/2">
-        <div className="mb-10 font-heading text-xl font-extrabold text-brand-n-900">
+        <div className="mb-10 font-heading text-3xl font-extrabold text-brand-n-900">
           Intelli<span className="text-brand-teal-600">Dev</span>
         </div>
         <div className="w-full max-w-sm">{children}</div>
