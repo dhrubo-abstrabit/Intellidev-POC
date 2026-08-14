@@ -19,6 +19,11 @@ export default function LoginPage() {
             <Separator className="flex-1" />
           </div>
           <GoogleSignInButton />
+          <p className="text-center text-sm">
+            <Link href="/forgot-password" className="text-brand-teal-600 underline underline-offset-4 hover:text-brand-teal-700">
+              Forgot your password?
+            </Link>
+          </p>
         </div>
       </div>
 
