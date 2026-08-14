@@ -1,29 +1,42 @@
 "use client";
 
-import { useRef } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { format } from "date-fns";
 import { CalendarIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { formatItemDate } from "@/components/items/format";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { projectDataHref, type ProjectDataFilters } from "./filters";
 import type { DayIndexEntry } from "./types";
 
+/** "YYYY-MM-DD" (this app's day-key format, always project-local, never a
+ * UTC-shifted ISO string) <-> a plain Date for the Calendar to render/select
+ * against. Built from y/m/d parts rather than `new Date(dayKey)` — the
+ * latter parses as UTC midnight, which can land on the wrong local day. */
+function dayKeyToDate(dayKey: string): Date {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function dateToDayKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /**
- * Replaces the old always-visible day rail: a compact Prev/day-select/Next
- * control that reclaims the sidebar's width for Messages/Action Points,
- * trading "see all 60 days at a glance" for "browse one day at a time" plus
- * a jump-to-any-day dropdown. `days` is sorted most-recent-first (see
- * page.tsx), so a lower index is a more recent day — Prev moves to a higher
- * index (older), Next to a lower one (newer).
- *
- * The Select only lists days with indexed activity (last 60d) — the
- * calendar button beside it is the escape hatch for any other date (older
- * history, or just browsing a day that turned out to be empty). It's a
- * native <input type="date"> rather than a custom calendar widget: no new
- * dependency, and every browser already ships a perfectly good date picker.
+ * Replaces the old always-visible day rail: a compact Prev/calendar/Next
+ * control that reclaims the sidebar's width for Messages/Action Points.
+ * `days` is sorted most-recent-first (see page.tsx), so a lower index is a
+ * more recent day — Prev moves to a higher index (older), Next to a lower
+ * one (newer). The calendar (shadcn's Popover+Calendar, on react-day-picker)
+ * is the only way to jump to an arbitrary date now — it's not limited to
+ * `days` (the last-60-days activity index), since an empty day already
+ * renders a clean empty state in DayLinkage.
  */
 export function DayPicker({
   days,
@@ -37,15 +50,16 @@ export function DayPicker({
   service: ProjectDataFilters["service"];
 }) {
   const router = useRouter();
-  const dateInputRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
 
   const index = days.findIndex((day) => day.dayKey === selectedDay);
   const olderDay = index >= 0 && index < days.length - 1 ? days[index + 1] : null;
   const newerDay = index > 0 ? days[index - 1] : null;
 
-  function goToDate(value: string) {
-    if (!value) return;
-    router.push(projectDataHref({ date: value, connector, service }));
+  function goToDate(date: Date | undefined) {
+    if (!date) return;
+    setOpen(false);
+    router.push(projectDataHref({ date: dateToDayKey(date), connector, service }));
   }
 
   return (
@@ -68,47 +82,28 @@ export function DayPicker({
         <ChevronLeftIcon aria-hidden="true" />
       </Button>
 
-      <div className="relative">
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          aria-label="Pick a date"
-          data-testid="day-picker-calendar"
-          onClick={() => dateInputRef.current?.showPicker?.()}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={cn(
+                "w-[200px] justify-start text-left font-normal hover:border-brand-teal-400 hover:bg-background hover:text-foreground",
+                !selectedDay && "text-muted-foreground",
+              )}
+              data-testid="day-picker-calendar"
+            />
+          }
         >
           <CalendarIcon aria-hidden="true" />
-        </Button>
-        <input
-          ref={dateInputRef}
-          type="date"
-          value={selectedDay}
-          onChange={(event) => goToDate(event.target.value)}
-          aria-label="Jump to date"
-          className="sr-only"
-        />
-      </div>
-
-      {days.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No activity in the last 60 days.</p>
-      ) : (
-        <Select
-          items={days.map((day) => ({ label: `${formatItemDate(day.dayKey)} (${day.total})`, value: day.dayKey }))}
-          value={selectedDay}
-          onValueChange={(value) => goToDate(String(value))}
-        >
-          <SelectTrigger size="sm" className="w-48" data-testid="day-picker-select">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {days.map((day) => (
-              <SelectItem key={day.dayKey} value={day.dayKey}>
-                {formatItemDate(day.dayKey)} ({day.total})
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
+          {selectedDay ? format(dayKeyToDate(selectedDay), "PPP") : "Pick a date"}
+        </PopoverTrigger>
+        <PopoverContent className="w-auto p-0">
+          <Calendar mode="single" selected={dayKeyToDate(selectedDay)} onSelect={goToDate} />
+        </PopoverContent>
+      </Popover>
 
       <Button
         render={

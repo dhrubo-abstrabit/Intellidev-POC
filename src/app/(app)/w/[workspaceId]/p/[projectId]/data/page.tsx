@@ -1,7 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { isoDaysAgo, projectDayKey, projectToday, utcWindowForDay } from "@/lib/date/project-day";
 import { isGoogleService, type ConnectorProvider, type GoogleService } from "@/components/items/provider-badge";
-import { formatItemDate } from "@/components/items/format";
 import { parseProjectDataSearchParams } from "./filters";
 import { DayPicker } from "./day-picker";
 import { ConnectorStrip } from "./connector-strip";
@@ -242,10 +241,7 @@ export default async function ProjectDataPage({
 
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
-          <div className="flex items-center gap-3">
-            <DayPicker days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
-            <span className="text-sm font-medium text-foreground">{formatItemDate(selectedDay)}</span>
-          </div>
+          <DayPicker days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
           <span className="text-sm text-muted-foreground">
             {dayEvents.length} message{dayEvents.length === 1 ? "" : "s"}
             {truncated ? ` · last ${DAY_INDEX_LOOKBACK_DAYS}d truncated` : ""}
