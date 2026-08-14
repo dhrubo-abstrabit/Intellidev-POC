@@ -201,3 +201,28 @@
     @apply font-heading font-bold;
   }
 }
+
+/* Auth page's decorative panel: a one-time entrance for the wordmark/
+   tagline. Scoped to a custom class rather than the animate-in utility
+   plugin used elsewhere (dialog/select/dropdown) since those model
+   open/close transitions, not a plain on-mount reveal. */
+@keyframes auth-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-auth-fade-up {
+  animation: auth-fade-up 0.7s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-auth-fade-up {
+    animation: none;
+  }
+}
