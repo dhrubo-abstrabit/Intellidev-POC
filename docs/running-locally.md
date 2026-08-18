@@ -204,3 +204,48 @@ feature unusable.
   scoped endpoint — that is why the GitHub preset points at `/x/repos/readonly`.
 - **Streamable HTTP only.** `remote_sse` exists in the schema but nothing can select it, and
   `upstream.ts` would hand it the wrong transport if anything did.
+
+## Giving a run model credentials
+
+The harness inside the container has no login of its own. The drivers spawn it with
+`{ ...process.env, ...req.env }`, so anything the control plane forwards reaches it — and the
+control plane forwards an **allowlist**, not its whole environment, because a run should not
+inherit every secret the host happens to hold.
+
+| Harness                   | What to set                                                                   | How to get it                                                  |
+| ------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Claude Code               | `CLAUDE_CODE_OAUTH_TOKEN`                                                     | `claude setup-token` on the host (needs a Claude subscription) |
+| Claude Code (API billing) | `ANTHROPIC_API_KEY`                                                           | console.anthropic.com                                          |
+| Codex                     | `OPENAI_API_KEY`                                                              | platform.openai.com                                            |
+| opencode                  | any of the above, plus `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY` | provider console                                               |
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # or paste it in
+INTELLIDEV_MODE=docker INTELLIDEV_MODEL_CLAUDE_CODE=sonnet pnpm ui
+```
+
+The banner prints which keys were forwarded, so a missing one is visible before you dispatch
+rather than as `Not logged in · Please run /login` in a run log.
+
+Model overrides are **per harness** (`INTELLIDEV_MODEL_OPENCODE`,
+`INTELLIDEV_MODEL_CLAUDE_CODE`, `INTELLIDEV_MODEL_CODEX`), with `INTELLIDEV_MODEL` as a
+fallback. Per-harness because the ids are not interchangeable: opencode wants
+`provider/model`, Claude Code wants its own names.
+
+**opencode's default is a shared free service.** With no override it uses opencode's hosted
+models, which return `UnknownError: Unexpected server error` when that service is unwell — for
+every model at once, with no tools involved. If a run dies instantly in the first agent stage
+with that message, check the provider before looking at this code:
+
+```bash
+docker run --rm --entrypoint sh intellidev/runner:dev -c \
+  'opencode run --format json --model opencode/nemotron-3.5-lightning-free "Say OK"'
+```
+
+### The credential is in the container, not behind the broker
+
+A forwarded key lives in the harness's environment, which means model-authored code running in
+that stage can read it. The credential broker exists to avoid exactly this — a unix socket the
+harness cannot open — but seat credentials are not routed through it yet
+(`LocalCredentialProvider.seatCredential` returns nothing). Use a token you are willing to
+scope to this machine, and prefer a revocable one.

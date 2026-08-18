@@ -8,6 +8,7 @@ import {
   renderBranchName,
   slugify,
   type AgentEvent,
+  type HarnessId,
   type StageRecord,
   type TaskStatus,
 } from '@intellidev/shared'
@@ -55,14 +56,14 @@ export interface DispatchConfig {
   workRoot: string
   githubToken?: string
   /**
-   * Model override, `provider/model` as the harness spells it.
+   * Model overrides keyed by harness, each spelled the way that harness spells them.
    *
-   * Worth having because the default points at opencode's free hosted models, which are a
-   * shared service that can and does return server errors — at which point every run fails
-   * for a reason that has nothing to do with this code. Pointing at a provider you hold an
-   * API key for takes that dependency out of the loop.
+   * Worth having because the default pointed at opencode's free hosted models, a shared
+   * service that can and does return server errors — at which point every run fails for a
+   * reason unrelated to this code. Pointing at a provider you hold credentials for takes that
+   * dependency out of the loop.
    */
-  model?: string
+  models?: Partial<Record<HarnessId, string>>
   /** Provider credentials forwarded to the harness. Never logged, never projected. */
   harnessEnv?: Record<string, string>
   /** Passed through so a container can reach a bind-mounted origin. */
@@ -471,7 +472,9 @@ function buildRunSpec(args: {
         default: task.harness,
         allowed: [task.harness],
         seatPool: 'local',
-        models: config.model ? { [task.harness]: { model: config.model } } : {},
+        models: config.models?.[task.harness]
+          ? { [task.harness]: { model: config.models[task.harness] } }
+          : {},
       },
       contextFile: './context/repo.md',
       stageTemplate: template,

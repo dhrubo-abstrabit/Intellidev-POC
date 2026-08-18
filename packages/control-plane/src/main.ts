@@ -27,6 +27,9 @@ const bundleRoot = resolve(process.env['INTELLIDEV_BUNDLE'] ?? join(repoRoot, 'e
  * rather than discover.
  */
 const PROVIDER_KEYS = [
+  // A long-lived subscription token from `claude setup-token`. Verified against the pinned
+  // CLI binary, which reads this name.
+  'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'OPENROUTER_API_KEY',
@@ -42,6 +45,22 @@ const harnessEnv = Object.fromEntries(
   }),
 )
 
+/**
+ * Model overrides, per harness.
+ *
+ * Per-harness rather than one global value, because model ids are not interchangeable:
+ * opencode wants `provider/model` while Claude Code wants its own names. A single override
+ * applied to whichever harness a task happened to pick is a way to silently break the others.
+ * `INTELLIDEV_MODEL` stays as a fallback for the common case of using one harness.
+ */
+const models = Object.fromEntries(
+  (['opencode', 'claude-code', 'codex'] as const).flatMap((harness) => {
+    const specific = process.env[`INTELLIDEV_MODEL_${harness.toUpperCase().replace(/-/g, '_')}`]
+    const value = specific ?? process.env['INTELLIDEV_MODEL']
+    return value ? [[harness, value]] : []
+  }),
+)
+
 await mkdir(workRoot, { recursive: true })
 
 // Under the work root, not the repo: the file holds live OAuth refresh tokens.
@@ -53,7 +72,7 @@ const app = await buildServer({
     bundleRoot,
     image: process.env['INTELLIDEV_IMAGE'] ?? 'intellidev/runner:dev',
     workRoot,
-    ...(process.env['INTELLIDEV_MODEL'] ? { model: process.env['INTELLIDEV_MODEL'] } : {}),
+    ...(Object.keys(models).length > 0 ? { models } : {}),
     ...(Object.keys(harnessEnv).length > 0 ? { harnessEnv } : {}),
     ...(process.env['INTELLIDEV_GITHUB_TOKEN']
       ? { githubToken: process.env['INTELLIDEV_GITHUB_TOKEN'] }
@@ -87,7 +106,11 @@ process.stderr.write(
     `  bundle  ${bundleRoot}`,
     `  work    ${workRoot}`,
     `  mcp     ${mcp.list().length} connected server(s)`,
-    `  model   ${process.env['INTELLIDEV_MODEL'] ?? 'harness default'}`,
+    `  model   ${
+      Object.entries(models)
+        .map(([h, v]) => `${h}=${v}`)
+        .join(' ') || 'harness default'
+    }`,
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
     ``,
   ].join('\n'),
