@@ -209,10 +209,15 @@ export class McpOAuth {
       scope?: string
     },
   ): Promise<{ clientId: string; clientSecret?: string }> {
-    // A client is bound to its redirect URI, so a changed port means registering again.
+    // Reuse only when the existing registration covers BOTH this authorization server and
+    // this exact redirect. Checking the server alone was a real bug: opening the UI on
+    // `localhost` after registering from `127.0.0.1` reused the client, and the authorization
+    // server refused the redirect with a message that named neither cause nor cure.
+    const redirectUris = loopbackVariants(opts.redirectUri)
     if (
       server.oauth?.clientId &&
-      server.oauth.authorizationServerUrl === opts.authorizationServerUrl
+      server.oauth.authorizationServerUrl === opts.authorizationServerUrl &&
+      server.oauth.redirectUris?.includes(opts.redirectUri)
     ) {
       return {
         clientId: server.oauth.clientId,
@@ -226,7 +231,7 @@ export class McpOAuth {
         ...(opts.metadata ? { metadata: opts.metadata } : {}),
         clientMetadata: {
           client_name: 'Intellidev (local)',
-          redirect_uris: [opts.redirectUri],
+          redirect_uris: redirectUris,
           grant_types: ['authorization_code', 'refresh_token'],
           response_types: ['code'],
           token_endpoint_auth_method: 'none',
@@ -247,6 +252,7 @@ export class McpOAuth {
         authorizationServerUrl: opts.authorizationServerUrl,
         clientId: registered.client_id,
         ...(registered.client_secret ? { clientSecret: registered.client_secret } : {}),
+        redirectUris: registered.redirect_uris ?? redirectUris,
         ...(opts.scope ? { scope: opts.scope } : {}),
       },
     })
@@ -263,4 +269,23 @@ export class McpOAuth {
       if (flow.startedAt < cutoff) this.pending.delete(state)
     }
   }
+}
+
+/**
+ * Both spellings of a loopback callback, registered together.
+ *
+ * `127.0.0.1` and `localhost` reach the same server but are not the same redirect URI, and
+ * which one is in play depends on what the human typed in the address bar. Registering both
+ * makes switching between them free, rather than producing a refusal from the authorization
+ * server that points at neither the cause nor the cure.
+ */
+function loopbackVariants(redirectUri: string): string[] {
+  const url = new URL(redirectUri)
+  const partner =
+    url.hostname === '127.0.0.1' ? 'localhost' : url.hostname === 'localhost' ? '127.0.0.1' : null
+  if (!partner) return [redirectUri]
+
+  const other = new URL(redirectUri)
+  other.hostname = partner
+  return [redirectUri, other.toString()]
 }

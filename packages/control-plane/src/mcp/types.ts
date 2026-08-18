@@ -16,6 +16,14 @@ export interface McpOAuthState {
   authorizationServerUrl: string
   clientId: string
   /**
+   * The redirect URIs the client was registered with.
+   *
+   * Stored because a client is bound to them: reusing a client id while sending a redirect it
+   * was not registered for gets a flat `redirect_uri not allowed` from the authorization
+   * server, which reads like a config error rather than the stale-registration it is.
+   */
+  redirectUris?: string[]
+  /**
    * Present when the authorization server issues one even for a public client — Supabase
    * does, despite `token_endpoint_auth_method: none` being requested.
    */
