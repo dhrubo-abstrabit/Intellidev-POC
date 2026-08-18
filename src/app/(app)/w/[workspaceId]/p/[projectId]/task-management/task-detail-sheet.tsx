@@ -23,9 +23,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-/** Controlled entirely by the ?item= URL param (set via OpenTaskLink) — no
- * local open/closed state, so a shared link opens straight to a task and
- * back/forward navigates in and out of it like any other page state. */
+/** Controlled entirely by the ?item= URL param (set via OpenTaskLink/
+ * BoardCard) — no local open/closed state, so a shared link opens straight
+ * to a task and back/forward navigates in and out of it like any other page
+ * state. Back to a centered Dialog (was a full-coverage slide-in panel
+ * earlier this session) — Dialog already handles centering, the backdrop,
+ * focus trap, and its own open/close animation, so there's no custom
+ * positioning/scroll-lock logic to maintain here. */
 export function TaskDetailSheet({
   item,
   sourceEvents,
@@ -52,7 +56,7 @@ export function TaskDetailSheet({
 
   return (
     <Dialog open={item !== null} onOpenChange={(open) => !open && close()}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
         {item ? (
           <>
             <DialogHeader>
@@ -63,7 +67,7 @@ export function TaskDetailSheet({
               <DialogTitle className="text-lg leading-snug">{item.title}</DialogTitle>
             </DialogHeader>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <Field label="Status">
                 <StatusPicker workspaceId={workspaceId} projectId={projectId} itemId={item.id} status={item.status} />
               </Field>
@@ -119,7 +123,7 @@ export function TaskDetailSheet({
 
             {sourceEvents.length > 0 ? (
               <Field label={`Source (${sourceEvents.length})`}>
-                <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border p-2">
+                <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border p-2 transition-colors hover:border-brand-teal-400">
                   {sourceEvents.map((event) => (
                     <div key={event.id} className="rounded-md bg-muted/50 p-2 text-sm">
                       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -140,7 +144,7 @@ export function TaskDetailSheet({
 
             <DialogFooter className="sm:justify-between">
               <SnoozeButton workspaceId={workspaceId} projectId={projectId} itemId={item.id} />
-              <DialogClose render={<Button variant="outline" />}>Close</DialogClose>
+              <DialogClose render={<Button />}>Close</DialogClose>
             </DialogFooter>
           </>
         ) : null}

@@ -141,7 +141,6 @@ export function DayLinkage({
               action={extractActionItemsForDay.bind(null, workspaceId, projectId, selectedDay)}
               loadingMessage={`Extracting for ${selectedDay}…`}
               size="sm"
-              variant="outline"
               data-testid="extract-day-action-points"
             >
               Extract for this day
@@ -180,7 +179,7 @@ export function DayLinkage({
                 </button>
                 <Link
                   href={`/w/${workspaceId}/p/${projectId}/task-management?item=${item.id}`}
-                  className="mt-1.5 inline-block text-xs underline underline-offset-2 hover:text-foreground"
+                  className="mt-1.5 inline-block text-xs text-brand-teal-600 underline underline-offset-2 hover:text-brand-teal-700"
                   onClick={(e) => e.stopPropagation()}
                   data-testid={`open-task-${item.id}`}
                 >

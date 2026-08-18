@@ -8,11 +8,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // this call is what actually enforces the boundary for this whole subtree.
   await requireUser();
 
-  // No header here: it's rendered by each child route instead (see
-  // components/dashboard/app-header.tsx) since only they know whether a
-  // workspace switcher belongs beside it.
+  // No header here: /onboarding renders its own bare AppHeader (no workspace
+  // exists yet), and /w/[workspaceId] renders WorkspaceSidebar instead,
+  // which needs workspace/project data this layout doesn't have.
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-muted">
       <main>{children}</main>
       <Toaster />
     </div>

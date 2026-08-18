@@ -48,8 +48,8 @@ export function BoardCard({ item }: { item: ActionItemRow }) {
       style={transform ? { transform: CSS.Translate.toString(transform) } : undefined}
       onClick={openDetails}
       className={cn(
-        "cursor-pointer space-y-2 rounded-xl bg-card p-3 text-sm text-card-foreground ring-1 ring-foreground/10",
-        isDragging && "z-10 opacity-40",
+        "cursor-pointer space-y-2 rounded-xl bg-card p-3 text-sm text-card-foreground ring-1 ring-foreground/10 transition-all",
+        isDragging ? "z-10 opacity-40" : "hover:scale-[1.02] hover:shadow-md hover:ring-brand-teal-400",
       )}
       data-testid={`board-card-${item.id}`}
       {...attributes}

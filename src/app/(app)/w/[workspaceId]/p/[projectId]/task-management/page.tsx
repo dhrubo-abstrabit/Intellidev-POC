@@ -210,7 +210,7 @@ export default async function TaskManagementPage({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <ItemFilters filters={filters} assignees={assignees} />
         {snoozedCount ? (
-          <Link href="?view=list&status=snoozed" className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+          <Link href="?view=list&status=snoozed" className="text-xs text-brand-teal-600 underline-offset-2 hover:text-brand-teal-700 hover:underline">
             Snoozed ({snoozedCount})
           </Link>
         ) : null}

@@ -46,7 +46,11 @@ export function ListView({
           {items.map((item) => (
             <TableRow key={item.id} data-testid={`task-row-${item.id}`}>
               <TableCell className="max-w-xs whitespace-normal">
-                <OpenTaskLink itemId={item.id} className="font-medium hover:underline" data-testid={`open-task-${item.id}`}>
+                <OpenTaskLink
+                  itemId={item.id}
+                  className="font-medium text-brand-teal-600 hover:text-brand-teal-700 hover:underline"
+                  data-testid={`open-task-${item.id}`}
+                >
                   {item.title}
                 </OpenTaskLink>
                 {item.description ? (

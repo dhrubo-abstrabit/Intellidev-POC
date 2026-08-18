@@ -87,7 +87,12 @@ export default async function IntegrationsPage({
   const availableConnectors = listConnectors().filter((c) => !activeProviders.has(c.id));
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-lg font-semibold">Integrations</h1>
+        <p className="text-sm text-muted-foreground">Connect and manage the sources this project pulls activity from.</p>
+      </div>
+
       {connectStatus && connectStatus !== "connected" ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {CONNECT_STATUS_MESSAGE[connectStatus] ?? `Connecting ${connectedProvider ?? "the connector"} failed (${connectStatus}).`}
@@ -134,7 +139,7 @@ export default async function IntegrationsPage({
 
                       {isRetired && isActive ? (
                         <p
-                          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-700 dark:text-amber-400"
+                          className="rounded-md border border-brand-warning/30 bg-brand-warning/10 px-3 py-2 text-brand-warning"
                           data-testid={`retired-${integration.provider}`}
                         >
                           This connector has moved. Gmail, Google Drive and Google Chat are now one “Google” connector —
@@ -167,6 +172,7 @@ export default async function IntegrationsPage({
                           <ConfirmActionButton
                             action={disconnectIntegration.bind(null, workspaceId, projectId, integration.id)}
                             triggerLabel="Disconnect"
+                            triggerVariant="default"
                             confirmLabel="Disconnect"
                             loadingMessage="Disconnecting…"
                             title={`Disconnect ${integration.display_name ?? integration.provider}?`}
@@ -236,7 +242,6 @@ export default async function IntegrationsPage({
                       action={connectMock.bind(null, workspaceId, projectId)}
                       loadingMessage="Connecting…"
                       size="sm"
-                      variant="outline"
                       data-testid="connect-mock"
                     >
                       Connect

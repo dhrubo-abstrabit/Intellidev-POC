@@ -86,3 +86,67 @@ export async function signOut(): Promise<void> {
   await supabase.auth.signOut();
   redirect("/login");
 }
+
+const emailOnlySchema = z.object({
+  email: z.string().trim().email("Enter a valid email address"),
+});
+
+export interface ForgotPasswordResult {
+  error?: string;
+  success?: boolean;
+}
+
+export async function requestPasswordReset(
+  _prev: ForgotPasswordResult,
+  formData: FormData,
+): Promise<ForgotPasswordResult> {
+  const parsed = emailOnlySchema.safeParse({ email: formData.get("email") });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+
+  const supabase = await createClient();
+  // Supabase returns success here regardless of whether the email has an
+  // account (documented anti-enumeration behavior) — the UI must never say
+  // "no account with that email," only this one generic message.
+  const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
+    redirectTo: `${appUrl()}/api/auth/callback?next=/reset-password`,
+  });
+
+  if (error) {
+    return { error: "Something went wrong. Please try again." };
+  }
+
+  return { success: true };
+}
+
+const newPasswordSchema = z
+  .object({
+    password: z.string().min(6, "Password must be at least 6 characters"),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords don't match",
+    path: ["confirmPassword"],
+  });
+
+export async function updatePassword(_prev: AuthActionResult, formData: FormData): Promise<AuthActionResult> {
+  const parsed = newPasswordSchema.safeParse({
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+
+  const supabase = await createClient();
+  // Requires the recovery session created by the reset-link's callback
+  // exchange (see api/auth/callback/route.ts) — a missing/expired one
+  // surfaces here as an error rather than needing a separate page guard.
+  const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
+  if (error) {
+    return { error: "Your reset link may have expired. Request a new one." };
+  }
+
+  redirect("/");
+}

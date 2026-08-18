@@ -22,7 +22,7 @@ interface ConfirmActionButtonProps {
   loadingMessage: string;
   title: string;
   description: string;
-  triggerVariant?: "outline" | "ghost";
+  triggerVariant?: "default" | "outline" | "ghost";
   size?: "xs" | "sm" | "default";
   "data-testid"?: string;
 }

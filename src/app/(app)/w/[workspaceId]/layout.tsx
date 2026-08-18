@@ -1,8 +1,6 @@
 import { notFound } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { WorkspaceSwitcher } from "@/components/dashboard/workspace-switcher";
-import { AppHeader } from "@/components/dashboard/app-header";
+import { WorkspaceSidebar } from "@/components/dashboard/workspace-sidebar";
 
 export default async function WorkspaceLayout({
   children,
@@ -17,9 +15,10 @@ export default async function WorkspaceLayout({
   // RLS scopes this to workspaces the current user is a member of, so a
   // workspaceId belonging to another tenant (or a typo'd UUID) legitimately
   // comes back empty rather than needing a separate ownership check here.
-  const [{ data: allWorkspaces }, { data: current }] = await Promise.all([
+  const [{ data: allWorkspaces }, { data: current }, { data: projects }] = await Promise.all([
     supabase.from("workspaces").select("id, name").order("created_at", { ascending: true }),
     supabase.from("workspaces").select("id, name").eq("id", workspaceId).maybeSingle(),
+    supabase.from("projects").select("id, name").eq("workspace_id", workspaceId).order("created_at", { ascending: false }),
   ]);
 
   if (!current) {
@@ -27,21 +26,9 @@ export default async function WorkspaceLayout({
   }
 
   return (
-    <div>
-      <AppHeader
-        workspaceSwitcher={<WorkspaceSwitcher current={current} workspaces={allWorkspaces ?? []} />}
-        nav={
-          <>
-            <Link href={`/w/${workspaceId}`} className="hover:text-foreground">
-              Overview
-            </Link>
-            <Link href={`/w/${workspaceId}/team-members`} className="hover:text-foreground">
-              Team Members
-            </Link>
-          </>
-        }
-      />
-      <div className="p-6">{children}</div>
+    <div className="flex min-h-screen flex-col md:flex-row">
+      <WorkspaceSidebar workspaceId={workspaceId} current={current} workspaces={allWorkspaces ?? []} projects={projects ?? []} />
+      <div className="min-h-screen flex-1 bg-muted p-6">{children}</div>
     </div>
   );
 }

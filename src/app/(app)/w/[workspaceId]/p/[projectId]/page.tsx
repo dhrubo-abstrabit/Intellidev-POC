@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { PlusIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function ProjectOverviewPage({
@@ -31,7 +33,12 @@ export default async function ProjectOverviewPage({
     .at(-1);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold">Overview</h1>
+        <p className="text-sm text-muted-foreground">A snapshot of this project&apos;s activity and connections.</p>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -64,7 +71,10 @@ export default async function ProjectOverviewPage({
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             <p>{pendingCount ?? 0} pending.</p>
-            <Link href={`/w/${workspaceId}/p/${projectId}/task-management`} className="text-foreground underline">
+            <Link
+              href={`/w/${workspaceId}/p/${projectId}/task-management`}
+              className="text-brand-teal-600 underline hover:text-brand-teal-700"
+            >
               View all
             </Link>
           </CardContent>
@@ -73,12 +83,28 @@ export default async function ProjectOverviewPage({
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Connected services</CardTitle>
+            {integrations && integrations.length > 0 ? (
+              <CardAction>
+                <Button
+                  render={<Link href={`/w/${workspaceId}/p/${projectId}/integrations`} aria-label="Connect services" />}
+                  nativeButton={false}
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-brand-teal-600 hover:text-brand-teal-700"
+                >
+                  <PlusIcon aria-hidden="true" />
+                </Button>
+              </CardAction>
+            ) : null}
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {!integrations || integrations.length === 0 ? (
               <p className="text-muted-foreground">
                 No integrations yet.{" "}
-                <Link href={`/w/${workspaceId}/p/${projectId}/integrations`} className="text-foreground underline">
+                <Link
+                  href={`/w/${workspaceId}/p/${projectId}/integrations`}
+                  className="text-brand-teal-600 underline hover:text-brand-teal-700"
+                >
                   Connect one
                 </Link>
                 .

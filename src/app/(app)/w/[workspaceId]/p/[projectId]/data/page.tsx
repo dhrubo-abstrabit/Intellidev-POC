@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { isoDaysAgo, projectDayKey, projectToday, utcWindowForDay } from "@/lib/date/project-day";
 import { isGoogleService, type ConnectorProvider, type GoogleService } from "@/components/items/provider-badge";
 import { parseProjectDataSearchParams } from "./filters";
-import { DayRail } from "./day-rail";
+import { DayPicker } from "./day-picker";
 import { ConnectorStrip } from "./connector-strip";
 import { DayLinkage } from "./day-linkage";
 import type { AttachmentSummary } from "@/components/items/types";
@@ -93,11 +93,12 @@ export default async function ProjectDataPage({
   const sortedDayKeys = Array.from(dayIndexMap.keys()).sort((a, b) => b.localeCompare(a));
   const dayIndex: DayIndexEntry[] = sortedDayKeys.map((dayKey) => ({ dayKey, ...dayIndexMap.get(dayKey)! }));
 
-  // An explicit ?date= only wins if that day actually has activity in the
-  // indexed window — otherwise fall back to the most recent active day, or
-  // today if the project has no activity at all. A stale/hand-edited date
-  // degrades gracefully rather than erroring.
-  const selectedDay = filters.date && dayIndexMap.has(filters.date) ? filters.date : sortedDayKeys[0] ?? projectToday(timezone);
+  // An explicit ?date= wins outright now that the day picker includes a
+  // calendar for jumping to any date, not just ones with indexed activity —
+  // a day with zero events already renders a clean empty state (see
+  // DayLinkage), so there's nothing to degrade. Falls back to the most
+  // recent active day, or today, only when no date was requested at all.
+  const selectedDay = filters.date ?? sortedDayKeys[0] ?? projectToday(timezone);
 
   const truncated = (dayIndexRows?.length ?? 0) >= DAY_INDEX_ROW_LIMIT;
 
@@ -238,36 +239,35 @@ export default async function ProjectDataPage({
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-        <div className="space-y-2">
-          <h2 className="text-xs font-medium text-muted-foreground uppercase">
-            Days {truncated ? `(last ${DAY_INDEX_LOOKBACK_DAYS}d, truncated)` : `(last ${DAY_INDEX_LOOKBACK_DAYS}d)`}
-          </h2>
-          <DayRail days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
+          <DayPicker days={dayIndex} selectedDay={selectedDay} connector={filters.connector} service={filters.service} />
+          <span className="text-sm text-muted-foreground">
+            {dayEvents.length} message{dayEvents.length === 1 ? "" : "s"}
+            {truncated ? ` · last ${DAY_INDEX_LOOKBACK_DAYS}d truncated` : ""}
+          </span>
         </div>
 
-        <div className="space-y-4">
-          <ConnectorStrip
-            integrations={integrations}
-            countsByProvider={countsByProvider}
-            countsByGoogleService={countsByGoogleService}
-            totalCount={dayEvents.length}
-            selectedDay={selectedDay}
-            connector={filters.connector}
-            service={filters.service}
-            workspaceId={workspaceId}
-            projectId={projectId}
-          />
+        <ConnectorStrip
+          integrations={integrations}
+          countsByProvider={countsByProvider}
+          countsByGoogleService={countsByGoogleService}
+          totalCount={dayEvents.length}
+          selectedDay={selectedDay}
+          connector={filters.connector}
+          service={filters.service}
+          workspaceId={workspaceId}
+          projectId={projectId}
+        />
 
-          <DayLinkage
-            events={filteredEvents}
-            actionPoints={filteredActionPoints}
-            timezone={timezone}
-            workspaceId={workspaceId}
-            projectId={projectId}
-            selectedDay={selectedDay}
-          />
-        </div>
+        <DayLinkage
+          events={filteredEvents}
+          actionPoints={filteredActionPoints}
+          timezone={timezone}
+          workspaceId={workspaceId}
+          projectId={projectId}
+          selectedDay={selectedDay}
+        />
       </div>
     </div>
   );
