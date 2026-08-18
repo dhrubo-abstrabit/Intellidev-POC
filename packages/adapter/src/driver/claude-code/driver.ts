@@ -165,10 +165,23 @@ class ClaudeCodeSession implements Session {
         this.turn = body.data.turn
         this.atBoundary = true
         this.flushSteers()
+        // FOUND BY RUNNING IT. Streaming stdin is what makes steering possible, but it also
+        // means the CLI waits for another message after finishing a turn instead of exiting —
+        // so the process never closed, the event queue never closed with it, and the stage hung
+        // until its timeout with a completed plan already in the log.
+        //
+        // `flushSteers` clears `atBoundary` when it writes, so this only fires when the turn
+        // ended with nothing queued: the stage is one turn, and that turn is over.
+        if (this.atBoundary) this.endInput()
       } else {
         this.atBoundary = false
       }
     }
+  }
+
+  /** Close stdin so the CLI exits. Safe to call twice; a late steer simply finds it shut. */
+  private endInput(): void {
+    if (this.child.stdin.writable) this.child.stdin.end()
   }
 
   /**
