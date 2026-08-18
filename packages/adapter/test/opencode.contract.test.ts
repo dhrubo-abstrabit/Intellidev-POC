@@ -261,3 +261,40 @@ describe('opencode capabilities', () => {
     })
   })
 })
+
+describe('opencode fatal session errors', () => {
+  /**
+   * REGRESSION, from a real run. A denied tool call makes `opencode run` exit 1 with an EMPTY
+   * stderr and report the reason as a top-level envelope on stdout. That envelope carries no
+   * `part`, so it was treated as "carries nothing" and dropped — leaving a `harness.crashed`
+   * event whose `stderrPreview` was empty and a run nobody could diagnose.
+   */
+  it('maps a top-level error envelope instead of dropping it', () => {
+    const mapper = new OpencodeMapper()
+    const events = mapper.push({
+      type: 'error',
+      timestamp: 1787048916953,
+      sessionID: 'ses_feb958b31ffe1VqaH87mn3l0X3',
+      error: {
+        name: 'UnknownError',
+        data: { message: 'Unexpected server error. Check server logs for details.' },
+      },
+    })
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'error',
+      data: { code: 'harness_error', retryable: false },
+    })
+    const [event] = events
+    if (event?.type !== 'error') throw new Error('expected an error event')
+    expect(event.data.message).toContain('UnknownError')
+    expect(event.data.message).toContain('Unexpected server error')
+  })
+
+  it('does not report it as an unmapped envelope', () => {
+    const mapper = new OpencodeMapper()
+    mapper.push({ type: 'error', error: { name: 'UnknownError' } })
+    expect(mapper.unmapped).not.toContain('envelope:error')
+  })
+})

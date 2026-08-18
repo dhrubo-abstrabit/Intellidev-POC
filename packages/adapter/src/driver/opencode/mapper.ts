@@ -76,6 +76,28 @@ export class OpencodeMapper implements RawMapper {
     const { sessionID, part } = parsed.data
     if (sessionID) this.sessionId = sessionID
 
+    // FOUND BY RUNNING IT. opencode reports a fatal session error as a top-level envelope
+    // with no `part`, so it fell into the "carries nothing" branch below and was dropped —
+    // leaving a run that recorded `harness.crashed` with an EMPTY stderr preview while the
+    // actual reason sat in stdout. A denied tool call is the common trigger.
+    if (parsed.data.type === 'error') {
+      const error = (raw as { error?: Record<string, unknown> }).error ?? {}
+      const detail = (error['data'] as Record<string, unknown> | undefined)?.['message']
+      const name = typeof error['name'] === 'string' ? error['name'] : 'error'
+      return [
+        {
+          type: 'error',
+          data: {
+            code: 'harness_error',
+            message: preview(`${name}: ${detail ?? JSON.stringify(error)}`).text,
+            // opencode exits after one of these, so there is nothing left to retry within
+            // the session; the stage fails and the run's own retry policy decides.
+            retryable: false,
+          },
+        },
+      ]
+    }
+
     if (!part) {
       // An envelope with no part carries nothing, but a new envelope-only event type
       // is worth surfacing.
