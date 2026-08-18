@@ -300,9 +300,9 @@
                   <p class="meta">${escape(detail)}</p>
                 </div>
                 ${
-                  r.kind === 'file'
-                    ? `<button class="secondary" data-import="${escape(r.harness)}">${account ? 'Re-import' : 'Import'}</button>`
-                    : `<button class="secondary" data-paste="${escape(r.harness)}">${account ? 'Replace' : 'Add token'}</button>`
+                  r.canSignIn
+                    ? `<button class="secondary" data-signin="${escape(r.harness)}">${account ? 'Sign in again' : 'Sign in'}</button>`
+                    : `<button class="secondary" data-import="${escape(r.harness)}">${account ? 'Re-import' : 'Import'}</button>`
                 }
                 ${account ? `<button class="secondary" data-forget="${escape(r.harness)}" title="Forget">×</button>` : ''}
               </div>`
@@ -320,16 +320,8 @@
             b.disabled = false
           }
         })
-        $('seats').querySelectorAll('[data-paste]').forEach((b) => {
-          b.onclick = async () => {
-            const harness = b.dataset.paste
-            const recipe = state.recipes.find((r) => r.harness === harness)
-            const token = prompt(`Run \`${recipe.command}\` and paste the token:`)
-            if (!token) return
-            b.disabled = true
-            await connectHarness({ harness, token: token.trim() })
-            b.disabled = false
-          }
+        $('seats').querySelectorAll('[data-signin]').forEach((b) => {
+          b.onclick = () => void signIn(b.dataset.signin, b)
         })
         $('seats').querySelectorAll('[data-forget]').forEach((b) => {
           b.onclick = async () => {
@@ -337,6 +329,75 @@
             await loadSeats()
           }
         })
+      }
+
+      /**
+       * Drive the harness's own login: open the vendor's page, relay the code back.
+       *
+       * The window is opened from the click handler's own turn, because a popup opened after an
+       * await is treated as unrequested and blocked.
+       */
+      async function signIn(harness, button) {
+        const label = button.textContent
+        button.disabled = true
+        button.textContent = 'starting…'
+        const win = window.open('', 'intellidev-harness-login', 'width=560,height=760')
+
+        try {
+          const res = await fetch(`/api/harness/login/${harness}/start`, { method: 'POST' })
+          const body = await res.json()
+          if (!res.ok) {
+            win?.close()
+            alert(body.error ?? 'could not start sign-in')
+            return
+          }
+
+          const login = body.login
+          if (!login.authorizationUrl) {
+            win?.close()
+            alert(login.error ?? 'the CLI printed no sign-in link')
+            return
+          }
+          if (win) win.location = login.authorizationUrl
+          else window.open(login.authorizationUrl, '_blank')
+
+          if (login.needsCode) {
+            // Claude Code's flow ends on a page showing a code, which its CLI reads from stdin.
+            const code = prompt('Sign in, then paste the code shown on that page:')
+            if (!code) {
+              await fetch('/api/harness/login/cancel', { method: 'POST' })
+              return
+            }
+            await fetch('/api/harness/login/code', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ code }),
+            })
+          } else if (login.userCode) {
+            alert(`Enter this code on the page that just opened:\n\n${login.userCode}`)
+          }
+
+          button.textContent = 'waiting…'
+          const settled = await waitForLogin()
+          if (settled?.status !== 'connected') {
+            alert(settled?.error ?? 'sign-in did not complete')
+          }
+        } finally {
+          win?.close()
+          button.disabled = false
+          button.textContent = label
+          await loadSeats()
+        }
+      }
+
+      /** Poll until the CLI exits one way or the other. */
+      async function waitForLogin() {
+        for (let i = 0; i < 150; i++) {
+          const { login } = await (await fetch('/api/harness/login/status')).json()
+          if (!login || login.status === 'connected' || login.status === 'failed') return login
+          await new Promise((r) => setTimeout(r, 2000))
+        }
+        return null
       }
 
       async function connectHarness(body) {

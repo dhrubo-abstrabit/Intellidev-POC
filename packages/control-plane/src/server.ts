@@ -11,6 +11,7 @@ import {
   toPublic as accountToPublic,
   type HarnessAccounts,
 } from './harness/accounts.js'
+import { HarnessLogin, loginSupported } from './harness/login.js'
 import { McpOAuth } from './mcp/oauth.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -81,6 +82,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   const store = opts.store ?? new Store()
   const app = Fastify({ logger: false })
   const oauth = new McpOAuth(opts.mcp)
+  const login = new HarnessLogin(opts.accounts, opts.dispatch.image, opts.dispatch.workRoot)
   const publicDir =
     opts.publicDir ?? join(dirname(new URL(import.meta.url).pathname), '..', 'public')
 
@@ -110,7 +112,54 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // --- harness accounts ----------------------------------------------------
 
-  app.get('/api/harness/recipes', async () => ({ recipes: HARNESS_AUTH }))
+  app.get('/api/harness/recipes', async () => ({
+    recipes: HARNESS_AUTH.map((recipe) => ({
+      ...recipe,
+      // Whether "Sign in" can drive this harness's own login, or whether the file it writes
+      // has to be imported instead.
+      canSignIn: loginSupported(recipe.harness),
+    })),
+  }))
+
+  /**
+   * Start a sign-in by running the harness's own login inside the image.
+   *
+   * Returns as soon as the CLI prints its link, so the UI can open a window promptly. The rest
+   * of the flow is watched through the status route: a login is a human at a browser, and how
+   * long that takes is not ours to predict.
+   */
+  app.post<{ Params: { harness: string } }>(
+    '/api/harness/login/:harness/start',
+    async (request, reply) => {
+      const harness = HarnessId.safeParse(request.params.harness)
+      if (!harness.success) return reply.code(400).send({ error: 'not a harness' })
+      try {
+        return { login: await login.start(harness.data) }
+      } catch (error) {
+        return reply
+          .code(400)
+          .send({ error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  )
+
+  app.post('/api/harness/login/code', async (request, reply) => {
+    const parsed = z.object({ code: z.string().min(1) }).safeParse(request.body)
+    if (!parsed.success) return reply.code(400).send({ error: 'a code is required' })
+    try {
+      login.submitCode(parsed.data.code)
+      return { login: login.current() }
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.get('/api/harness/login/status', async () => ({ login: login.current() ?? null }))
+
+  app.post('/api/harness/login/cancel', async () => {
+    login.cancel()
+    return { ok: true }
+  })
 
   app.get('/api/harness/accounts', async () => ({
     accounts: opts.accounts.list().map(accountToPublic),

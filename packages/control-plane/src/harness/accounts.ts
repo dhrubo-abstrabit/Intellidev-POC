@@ -1,5 +1,6 @@
+import { execFile } from 'node:child_process'
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
 
@@ -63,6 +64,16 @@ export interface HarnessAuthRecipe {
   /** For `file`: where it lands on the host, and where it must go in the run's HOME. */
   hostPath?: string
   homePath?: string
+  /**
+   * macOS Keychain service holding the login, when there is no file to import.
+   *
+   * Claude Code keeps its credentials in the Keychain on macOS, which is why pasting a token
+   * used to be the only option here — there was no file to point at. Reading the Keychain
+   * removes that step on the machine where the login already happened.
+   */
+  keychainService?: string
+  /** Where the Keychain material has to be written for the harness to find it. */
+  keychainHomePath?: string
   command: string
   hint: string
 }
@@ -72,8 +83,10 @@ export const HARNESS_AUTH: readonly HarnessAuthRecipe[] = [
     harness: 'claude-code',
     kind: 'env',
     envVar: 'CLAUDE_CODE_OAUTH_TOKEN',
+    keychainService: 'Claude Code-credentials',
+    keychainHomePath: '.claude/.credentials.json',
     command: 'claude setup-token',
-    hint: 'Long-lived subscription token. Preferred over copying credentials: it is revocable on its own, and on macOS the real login lives in the Keychain rather than in a file that could be imported.',
+    hint: 'Import reads the login already in your macOS Keychain. A token from `claude setup-token` is the safer option: it is independently revocable and carries no refresh token for a container to rotate.',
   },
   {
     harness: 'codex',
@@ -178,3 +191,56 @@ export async function readCredentialFile(path: string): Promise<string> {
   }
   return contents
 }
+
+/**
+ * Read a harness login out of the macOS Keychain.
+ *
+ * Only the fields the harness needs are kept. Claude Code stores its own MCP OAuth tokens in the
+ * same Keychain entry, and copying those into a container would hand a run credentials for every
+ * server the human ever connected in their own editor — nothing to do with this task.
+ */
+export async function readKeychainCredential(
+  service: string,
+  keep: readonly string[],
+): Promise<string> {
+  if (platform() !== 'darwin') {
+    throw new Error('reading the Keychain is only supported on macOS')
+  }
+
+  const raw = await new Promise<string>((resolve, reject) => {
+    execFile(
+      'security',
+      ['find-generic-password', '-s', service, '-w'],
+      { maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          reject(
+            new Error(
+              `no Keychain item "${service}" — log in to the harness on this machine first`,
+            ),
+          )
+          return
+        }
+        resolve(stdout.trim())
+      },
+    )
+  })
+
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    throw new Error(`Keychain item "${service}" is not JSON`)
+  }
+
+  const filtered = Object.fromEntries(
+    keep.flatMap((key) => (key in parsed ? [[key, parsed[key]]] : [])),
+  )
+  if (Object.keys(filtered).length === 0) {
+    throw new Error(`Keychain item "${service}" has none of: ${keep.join(', ')}`)
+  }
+  return JSON.stringify(filtered)
+}
+
+/** The only Keychain fields a run needs: the subscription login itself. */
+export const KEYCHAIN_KEEP = ['claudeAiOauth'] as const
