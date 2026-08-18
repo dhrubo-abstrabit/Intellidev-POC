@@ -50,6 +50,22 @@ export class McpOAuth {
    */
   private readonly pending = new Map<string, PendingAuthorization>()
 
+  /**
+   * In-flight refreshes, keyed by server id, so only one runs at a time per server.
+   *
+   * Without this, two runs dispatched together both notice the same stale token and both POST
+   * the same refresh token. Providers that rotate refresh tokens — Atlassian and Asana are
+   * documented cases — treat the second POST as replay under RFC 6819 §5.2.2.3 and revoke the
+   * whole token family, which means a permanent disconnect needing manual re-authorisation
+   * rather than a retryable error.
+   *
+   * Concurrent dispatch is a normal thing here, not an edge case, so this is reachable. The
+   * upstream SDK has the same gap open as issue #1760; it cannot be borrowed from there, and
+   * this code calls `refreshAuthorization` directly rather than the `auth()` orchestrator, so
+   * the guard has to live here.
+   */
+  private readonly refreshing = new Map<string, Promise<string | undefined>>()
+
   constructor(private readonly registry: McpRegistry) {}
 
   /**
@@ -166,6 +182,18 @@ export class McpOAuth {
     // A minute of slack, so a token does not expire between here and the upstream call.
     const stale = !expiresAt || expiresAt - Date.now() < 60_000
     if (!stale || !server.oauth.refreshToken) return server.oauth.accessToken
+
+    // Join a refresh already in flight rather than starting a second one.
+    const existing = this.refreshing.get(server.id)
+    if (existing) return existing
+
+    const attempt = this.refresh(server).finally(() => this.refreshing.delete(server.id))
+    this.refreshing.set(server.id, attempt)
+    return attempt
+  }
+
+  private async refresh(server: McpServerRecord): Promise<string | undefined> {
+    if (!server.oauth?.refreshToken) return server.oauth?.accessToken
 
     try {
       const info = await discoverOAuthServerInfo(server.url)
