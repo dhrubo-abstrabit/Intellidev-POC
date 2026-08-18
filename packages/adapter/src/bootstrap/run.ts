@@ -14,6 +14,7 @@ import { materialiseConfig } from '../config/materialise.js'
 import type { ProjectionSpec } from '../config/spec.js'
 import { CredentialBroker } from '../credentials/broker.js'
 import { BrokerClient } from '../credentials/client.js'
+import { materialiseSeat } from '../credentials/seat.js'
 import { materialiseStageEnv, writeDotenv } from '../credentials/stage-env.js'
 import type { CredentialProvider } from '../credentials/types.js'
 import { ClaudeCodeDriver } from '../driver/claude-code/driver.js'
@@ -75,6 +76,13 @@ export interface RunResultSummary {
   questions: string[]
   /** Credential requests made, granted or refused. */
   credentialRequests: number
+  /**
+   * What was asked of the broker, by kind.
+   *
+   * The bare count stopped being expressive once every run started asking for a seat
+   * credential: a test that wants "git needed nothing" has to be able to say so.
+   */
+  credentialKinds: readonly string[]
   gatewayUrl: string
 }
 
@@ -218,6 +226,42 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       })
     }
 
+    // 3b. Seat credential: the harness's own subscription login.
+    //
+    // Fetched from the broker rather than read out of the spec, so the material is pulled at
+    // run time and a rotated credential is picked up without rewriting a spec. Failing soft is
+    // deliberate: plenty of local runs have no seat at all, and a harness that turns out to be
+    // unauthenticated says so far more clearly than a bootstrap error would.
+    let seatEnv: Record<string, string> = {}
+    try {
+      const written: string[] = []
+      const seat = await brokerClient.seatCredential(spec.harness)
+      seatEnv = await materialiseSeat({
+        credential: seat,
+        home,
+        onFile: (path) => written.push(path),
+      })
+      if (written.length > 0 || Object.keys(seatEnv).length > 0) {
+        bus.emit({
+          type: 'seat.authenticated',
+          data: { harness: spec.harness, envVars: Object.keys(seatEnv), files: written },
+        })
+      }
+    } catch (error) {
+      // Not fatal: a local run often has no seat, and the harness saying "Not logged in" is a
+      // clearer signal than a bootstrap failure. Dispatch is where a missing account is caught.
+      bus.emit({
+        type: 'error',
+        data: {
+          code: 'seat_unavailable',
+          message: `no seat credential for ${spec.harness}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          retryable: false,
+        },
+      })
+    }
+
     // 4. Gateway, before any config references its URL.
     const gatewayUrl = await gatewayHttp.start()
 
@@ -266,6 +310,7 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
         events,
         questions,
         credentialRequests: broker.log.length,
+        credentialKinds: broker.log.map((entry) => entry.kind),
         gatewayUrl,
       }
     }
@@ -304,7 +349,22 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
         attempt = nextAttempt
         stageEnv = await prepareStageEnv(spec, next, brokerClient, bus)
       },
-      env: () => ({ ...stageEnv, [GATEWAY_TOKEN_ENV]: gatewayHttp.token }),
+      // Seat env first, so a project's own vars win a collision: the seat is infrastructure
+      // and the project's configuration is intent. HOME and the gateway token come last
+      // because neither is negotiable.
+      //
+      // FOUND BY RUNNING IT. HOME was never set, so the harness inherited the image's
+      // `/home/adapter` while the projection wrote `<home>/.claude/settings.json` and
+      // `<home>/.codex/config.toml` somewhere else entirely — those files have been written and
+      // silently ignored. `HOME` is already in RESERVED_ENV, so the platform was always meant
+      // to own it. It also decides where a seat credential file has to go for the harness to
+      // find it.
+      env: () => ({
+        ...seatEnv,
+        ...stageEnv,
+        HOME: home,
+        [GATEWAY_TOKEN_ENV]: gatewayHttp.token,
+      }),
       ...(opts.now ? { now: opts.now } : {}),
     })
 
@@ -318,6 +378,7 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       events,
       questions,
       credentialRequests: broker.log.length,
+      credentialKinds: broker.log.map((entry) => entry.kind),
       gatewayUrl,
       ...(pr?.type === 'pr.opened' ? { prUrl: pr.data.url } : {}),
     }

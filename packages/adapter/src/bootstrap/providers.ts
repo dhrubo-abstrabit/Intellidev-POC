@@ -77,6 +77,14 @@ export class LocalCredentialProvider implements CredentialProvider {
        * a token to one run.
        */
       mcpTokens?: Record<string, string>
+      /**
+       * Harness subscription material, keyed by harness id.
+       *
+       * Read from `INTELLIDEV_SEAT_MATERIAL` when not passed, which is how it crosses into a
+       * container: the material is a credential, so it travels in the environment rather than
+       * in the run spec, which is written to a shared directory.
+       */
+      seatMaterial?: Record<string, Record<string, unknown>>
       /** Deliberately short, so the cache's refresh path is exercised locally. */
       ttlSec?: number
     } = {},
@@ -99,8 +107,10 @@ export class LocalCredentialProvider implements CredentialProvider {
   }
 
   async seatCredential(harness: string): Promise<SeatCredential> {
-    // Locally the harness CLIs use their own logins, so there is nothing to inject.
-    return { harness, material: {}, expiresAt: this.expiry() }
+    const material = this.opts.seatMaterial?.[harness] ?? seatMaterialFromEnv()[harness]
+    // Empty material is a valid answer, not an error: opencode's free tier needs no login, and
+    // a harness that does need one reports it far more clearly than a bootstrap failure would.
+    return { harness, material: material ?? {}, expiresAt: this.expiry() }
   }
 
   async mcpToken(serverId: string): Promise<{ token: string; expiresAt: string }> {
@@ -115,5 +125,22 @@ export class LocalCredentialProvider implements CredentialProvider {
   async secrets(_stage: StageId): Promise<ResolvedSecrets> {
     // Scoping by stage is the broker's job; this only resolves values.
     return { values: { ...this.opts.secrets }, unresolved: [] }
+  }
+}
+
+/**
+ * Seat material handed in through the environment.
+ *
+ * Parsed lazily and tolerantly: a malformed value should leave the harness unauthenticated with a
+ * clear complaint from the harness itself, not stop the run from booting.
+ */
+function seatMaterialFromEnv(): Record<string, Record<string, unknown>> {
+  const raw = process.env['INTELLIDEV_SEAT_MATERIAL']
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>
+    return typeof parsed === 'object' && parsed !== null ? parsed : {}
+  } catch {
+    return {}
   }
 }

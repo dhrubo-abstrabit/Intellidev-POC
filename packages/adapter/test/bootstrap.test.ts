@@ -296,6 +296,27 @@ describe('runAdapter end to end', () => {
     expect(design?.env?.['NODE_ENV']).toBe('test')
   })
 
+  /**
+   * REGRESSION. HOME was never passed to the harness, so it inherited the image's
+   * `/home/adapter` while the projection wrote `<home>/.claude/settings.json` and
+   * `<home>/.codex/config.toml` under a different directory entirely — written, then silently
+   * ignored. It also decides where a seat credential has to land to be found.
+   */
+  it('points the harness at the HOME the projection wrote to', async () => {
+    const harness = new FakeHarness('opencode')
+    const runPaths = paths()
+    await runAdapter({
+      spec: spec(),
+      credentials: new LocalCredentialProvider({ githubToken: 'ghp_local' }),
+      sink: () => {},
+      paths: runPaths,
+      drivers: { opencode: harness },
+    })
+    for (const request of harness.requests) {
+      expect(request.env?.['HOME'], `stage ${request.stage}`).toBe(runPaths.home)
+    }
+  })
+
   it('puts the task in every stage prompt, so an agent is never working blind', async () => {
     const harness = new FakeHarness('opencode')
     await runAdapter({
@@ -312,10 +333,12 @@ describe('runAdapter end to end', () => {
     }
   })
 
-  it('asks for no credentials when the remote is a local path', async () => {
+  it('asks for no git credentials when the remote is a local path', async () => {
     // Worth stating rather than assuming: git only consults a credential helper for
     // authenticated remotes, so a file:// origin legitimately needs none. The credential
     // path itself is covered against a real socket in credentials.test.ts.
+    //
+    // A seat request IS expected: the harness needs its own login whatever the git remote is.
     const result = await runAdapter({
       spec: spec(),
       credentials: new LocalCredentialProvider({ githubToken: 'ghp_local' }),
@@ -323,7 +346,8 @@ describe('runAdapter end to end', () => {
       paths: paths(),
       drivers: { opencode: new FakeHarness('opencode') },
     })
-    expect(result.credentialRequests).toBe(0)
+    expect(result.credentialKinds).not.toContain('git')
+    expect(result.credentialKinds).toContain('seat')
   })
 
   it('leaves nothing listening after the run', async () => {
