@@ -299,7 +299,10 @@ export class StageEngine {
     // here belongs to whatever comes next.
     state.pendingSteers = []
 
-    for await (const event of session.events) this.deps.bus.emit(event)
+    for await (const event of session.events) {
+      if (this.outsideWorktree(event)) continue
+      this.deps.bus.emit(event)
+    }
     const exit = await session.done()
 
     // FOUND BY RUNNING IT. This return value used to be discarded, so a harness that died
@@ -324,6 +327,24 @@ export class StageEngine {
     // A harness with no mid-run steering hands back whatever arrived too late.
     const undelivered = session.pendingSteers()
     if (undelivered.length > 0) state.pendingSteers.push(...undelivered)
+  }
+
+  /**
+   * Drop a file change that is not part of the change under review.
+   *
+   * FOUND BY RUNNING IT. Claude Code's plan mode writes its plan to `~/.claude/plans/`, and the
+   * mapper reported that as `file.changed` because a mapper only sees the path a tool touched — it
+   * has no idea where the worktree is. The result read as a read-only stage editing files, and the
+   * PR body would have listed a plan file in HOME among the repo's changes.
+   *
+   * Dropped rather than relabelled: the diff is the record of what changed, and a harness writing
+   * its own bookkeeping is not a change to the project.
+   */
+  private outsideWorktree(event: EventBodyInput): boolean {
+    if (event.type !== 'file.changed') return false
+    const path = event.data.path
+    if (!path.startsWith('/')) return false
+    return !path.startsWith(this.deps.cwd.endsWith('/') ? this.deps.cwd : `${this.deps.cwd}/`)
   }
 
   /**

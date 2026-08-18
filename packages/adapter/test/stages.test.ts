@@ -710,3 +710,29 @@ describe('the shipped default template', () => {
     expect(writer.requests.map((r) => r.stage)).not.toContain('review')
   })
 })
+
+describe('file changes outside the worktree', () => {
+  /**
+   * REGRESSION. Claude Code's plan mode writes to `~/.claude/plans/`, and the mapper reported it as
+   * `file.changed` because a mapper only sees the path a tool touched. A read-only stage therefore
+   * looked like it had edited files, and a PR body would have listed a plan file in HOME among the
+   * repo's changes.
+   */
+  it('reports only changes inside the worktree', async () => {
+    const driver = new FakeDriver('claude-code', undefined, [
+      { type: 'file.changed', data: { path: '/work/run_1/src/a.ts', change: 'modified' } },
+      { type: 'file.changed', data: { path: '/tmp/home/.claude/plans/p.md', change: 'modified' } },
+      // A relative path is the harness's own shorthand for something in the worktree.
+      { type: 'file.changed', data: { path: 'README.md', change: 'modified' } },
+      { type: 'assistant.message', data: { text: 'done' } },
+    ])
+    const { engine, events } = harness({
+      template: { name: 't', stages: [{ id: 'code', kind: 'agent', promptFile: 'p.md' }] },
+      drivers: { 'claude-code': driver },
+    })
+    await engine.run()
+
+    const paths = events.flatMap((e) => (e.type === 'file.changed' ? [e.data.path] : []))
+    expect(paths).toEqual(['/work/run_1/src/a.ts', 'README.md'])
+  })
+})
