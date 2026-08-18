@@ -12,7 +12,7 @@ import {
   type TaskStatus,
 } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
-import type { Store, TaskRow } from './store.js'
+import type { Store, TaskMcpServer, TaskRow } from './store.js'
 
 /**
  * Turn a task into a run.
@@ -102,6 +102,7 @@ async function execute(args: {
       spec,
       credentials: new LocalCredentialProvider({
         ...(config.githubToken ? { githubToken: config.githubToken } : {}),
+        mcpTokens: mcpTokens(store.getTask(taskId)?.mcp),
       }),
       sink,
       paths: {
@@ -177,6 +178,7 @@ async function executeInDocker(args: {
         // than baked into the image: a real run clones over HTTPS, where the check is a
         // genuine protection and should keep firing.
         ...(config.extraMounts?.length ? { INTELLIDEV_GIT_SAFE_DIRECTORY: '*' } : {}),
+        ...mcpTokenEnv(store.getTask(taskId)?.mcp),
       },
       mounts: [
         { source: exchange, target: '/run/exchange' },
@@ -292,6 +294,33 @@ function recordStage(store: Store, runId: string, event: AgentEvent): void {
   store.updateRun(runId, { records })
 }
 
+/**
+ * The broker reads a per-server token from the environment, so this is the one place that
+ * has to agree with `LocalCredentialProvider.mcpToken` on the variable name.
+ */
+function mcpTokenEnv(mcp: TaskMcpServer | undefined): Record<string, string> {
+  if (!mcp?.token) return {}
+  return { [`INTELLIDEV_MCP_TOKEN_${mcp.id.toUpperCase()}`]: mcp.token }
+}
+
+/** The same token, for the in-process path, keyed the way the provider expects. */
+function mcpTokens(mcp: TaskMcpServer | undefined): Record<string, string> {
+  return mcp?.token ? { [mcp.id]: mcp.token } : {}
+}
+
+/**
+ * Rewrite a loopback URL so a container can actually reach it.
+ *
+ * `127.0.0.1` inside a container is the container, so a fixture server on the host would
+ * look simply dead. Rewriting it here beats making everyone remember, and the failure it
+ * prevents — an optional server that silently fails to connect — is one where the agent
+ * carries on and invents an answer.
+ */
+function containerReachableUrl(url: string, mode: DispatchMode): string {
+  if (mode !== 'docker') return url
+  return url.replace(/^(https?:\/\/)(127\.0\.0\.1|localhost)(?=[:/]|$)/, '$1host.docker.internal')
+}
+
 function settle(
   store: Store,
   runId: string,
@@ -397,7 +426,34 @@ function buildRunSpec(args: {
     },
     harness: task.harness,
     stageTemplate: template,
-    toolset: { servers: [], skills: [] },
+    toolset: {
+      servers: task.mcp
+        ? [
+            {
+              server: {
+                id: task.mcp.id,
+                name: task.mcp.name,
+                kind: 'remote_http',
+                // Bearer whenever a token was given. The adapter then pulls it from the
+                // broker at connect time, so the token never enters the harness config.
+                auth: task.mcp.token ? 'bearer' : 'none',
+                url: containerReachableUrl(task.mcp.url, config.mode),
+                args: [],
+              },
+              attachment: {
+                serverId: task.mcp.id,
+                config: {},
+                required: true,
+                // Empty means every tool, in every stage.
+                enabledTools: [],
+                stages: [],
+                health: 'ok',
+              },
+            },
+          ]
+        : [],
+      skills: [],
+    },
     git: {
       repoUrl: task.repoUrl,
       baseBranch: task.baseBranch,

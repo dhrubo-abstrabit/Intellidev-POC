@@ -141,6 +141,24 @@
           <select id="harness"></select>
           <label for="baseBranch">Base branch</label>
           <input id="baseBranch" value="main" />
+
+          <details style="margin-top: 14px">
+            <summary class="hint" style="cursor: pointer">Attach an MCP server (optional)</summary>
+            <label for="mcpId">Server id</label>
+            <input id="mcpId" placeholder="facts" />
+            <label for="mcpName">Display name</label>
+            <input id="mcpName" placeholder="Project facts" />
+            <label for="mcpUrl">URL</label>
+            <input id="mcpUrl" placeholder="http://127.0.0.1:4100/mcp" />
+            <label for="mcpToken">Bearer token</label>
+            <input id="mcpToken" type="password" placeholder="left blank means no auth" />
+            <p class="hint">
+              The token is held by the adapter's gateway and never reaches the agent or the
+              harness config. In docker mode a loopback URL is rewritten to
+              <code>host.docker.internal</code> so the container can reach it.
+            </p>
+          </details>
+
           <div class="row" style="margin-top: 14px">
             <button type="submit" id="create">Create task</button>
           </div>
@@ -192,7 +210,7 @@
               <h3>${escape(t.title)}</h3>
               <span class="pill ${t.status}">${t.status.replace(/_/g, ' ')}</span>
             </div>
-            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}</p>
+            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}${t.mcp ? ` · mcp:${escape(t.mcp.id)}` : ''}</p>
           </div>`,
                 )
                 .join('')
@@ -215,6 +233,18 @@
             .filter(Boolean),
           harness: $('harness').value,
           baseBranch: $('baseBranch').value.trim() || 'main',
+        }
+        // Sent only when an id and url are both present, so a half-filled optional section
+        // fails the form rather than dispatching a run with a server that cannot connect.
+        const mcpId = $('mcpId').value.trim()
+        const mcpUrl = $('mcpUrl').value.trim()
+        if (mcpId || mcpUrl) {
+          body.mcp = {
+            id: mcpId,
+            name: $('mcpName').value.trim() || mcpId,
+            url: mcpUrl,
+            ...($('mcpToken').value ? { token: $('mcpToken').value } : {}),
+          }
         }
         const res = await fetch('/api/tasks', {
           method: 'POST',
@@ -346,6 +376,7 @@
           case 'tool.call': return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
           case 'tool.result': return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
           case 'tool.denied': return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'tool.server_connected': return { cls: 'ok', text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}` }
           case 'file.changed': return { cls: '', text: `${d.change} ${d.path}` }
           case 'diff.produced': return { cls: '', text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}` }
           case 'gate.evaluated': return { cls: d.passed ? 'ok' : 'bad', text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}` }

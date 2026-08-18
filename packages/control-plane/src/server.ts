@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { HarnessId } from '@intellidev/shared'
 import { z } from 'zod'
 import { dispatchTask, type DispatchConfig } from './dispatch.js'
-import { Store } from './store.js'
+import { Store, type TaskRow } from './store.js'
 
 /**
  * The control plane, cut to what a UI needs to be useful: create a task, dispatch it, watch
@@ -21,6 +21,18 @@ export interface ServerOptions {
   publicDir?: string
 }
 
+const McpServerInput = z.object({
+  id: z
+    .string()
+    .min(1)
+    // Becomes part of a tool name the model sees and of an env var name, so it is
+    // constrained here rather than sanitised in three places later.
+    .regex(/^[a-z0-9_]+$/, 'id must be lower-case letters, digits or underscores'),
+  name: z.string().min(1),
+  url: z.string().url(),
+  token: z.string().optional(),
+})
+
 const CreateTask = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
@@ -29,6 +41,7 @@ const CreateTask = z.object({
   harness: HarnessId.default('opencode'),
   repoUrl: z.string().min(1),
   baseBranch: z.string().default('main'),
+  mcp: McpServerInput.optional(),
 })
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
@@ -51,7 +64,11 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // --- tasks ---------------------------------------------------------------
 
-  app.get('/api/tasks', async () => ({ tasks: store.listTasks() }))
+  /** Tokens are stripped on the way out: the UI never needs one, so it never gets one. */
+  const publicTask = (task: TaskRow): TaskRow =>
+    task.mcp ? { ...task, mcp: { ...task.mcp, token: undefined } } : task
+
+  app.get('/api/tasks', async () => ({ tasks: store.listTasks().map(publicTask) }))
 
   app.post('/api/tasks', async (request, reply) => {
     const parsed = CreateTask.safeParse(request.body)
@@ -60,13 +77,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       // than showing a generic failure.
       return reply.code(400).send({ error: 'invalid task', issues: parsed.error.issues })
     }
-    return reply.code(201).send({ task: store.createTask(parsed.data) })
+    return reply.code(201).send({ task: publicTask(store.createTask(parsed.data)) })
   })
 
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
     const task = store.getTask(request.params.id)
     if (!task) return reply.code(404).send({ error: 'no such task' })
-    return { task, runs: store.listRuns(task.id) }
+    return { task: publicTask(task), runs: store.listRuns(task.id) }
   })
 
   app.post<{ Params: { id: string } }>('/api/tasks/:id/dispatch', async (request, reply) => {
