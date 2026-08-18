@@ -249,3 +249,44 @@ that stage can read it. The credential broker exists to avoid exactly this — a
 harness cannot open — but seat credentials are not routed through it yet
 (`LocalCredentialProvider.seatCredential` returns nothing). Use a token you are willing to
 scope to this machine, and prefer a revocable one.
+
+## Connecting a harness subscription
+
+Harness logins are connected once in the **Harness accounts** panel, next to the MCP servers,
+and every run reuses them. Each harness is listed whether or not it is connected — a missing
+credential is the thing worth seeing, since without it a run gets all the way to the model
+layer before reporting `Not logged in`.
+
+**Imported, not impersonated.** A subscription login belongs to the vendor's own OAuth client
+id, so driving that flow ourselves would mean impersonating their client — fragile, and not
+ours to do. The sanctioned command runs on a machine with a browser and what it produces is
+imported:
+
+| Harness     | Command to run first  | What gets imported                        |
+| ----------- | --------------------- | ----------------------------------------- |
+| Claude Code | `claude setup-token`  | the token, into `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex       | `codex login`         | `~/.codex/auth.json`                      |
+| opencode    | `opencode auth login` | `~/.local/share/opencode/auth.json`       |
+
+Everything in that table was checked against the pinned CLIs, not assumed.
+
+Inside a run, material is written into the run's HOME (`0600` for files) and merged into the
+harness environment, and the log shows `seat <harness> authenticated via …`. The material
+travels in the container environment rather than the run spec, because the spec is written to
+a bind-mounted directory.
+
+### Three things to know before using a real credential
+
+- **It is in the container, not behind the broker.** The material ends up in the harness's own
+  environment and HOME, so model-authored code in that stage can read it. The credential broker
+  exists to prevent exactly this, but seat credentials are fetched through it and then written
+  out, which is where the protection currently stops. Prefer a revocable token —
+  `claude setup-token` over copying a login — and revoke it when you are done.
+- **Refresh-token files must not be used by overlapping runs.** `~/.codex/auth.json` holds a
+  refresh token. Two containers refreshing the same one is the token-family replay hazard that
+  RFC 6819 §5.2.2.3 describes, and providers respond by revoking everything. The seat abstraction
+  exists to serialise this, but admission control is not built yet — so with a `file` account,
+  dispatch one run at a time.
+- **A refresh inside a run does not come back.** If the harness refreshes its token in the
+  container, the new token dies with the container and the imported copy goes stale. Re-import
+  after that happens.
