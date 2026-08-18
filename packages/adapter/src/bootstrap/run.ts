@@ -202,7 +202,20 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
         })
         continue
       }
-      registry.registerUpstream(entry.server.id, connected.tools, entry.attachment)
+      const registered = registry.registerUpstream(
+        entry.server.id,
+        connected.tools,
+        entry.attachment,
+      )
+      bus.emit({
+        type: 'tool.server_connected',
+        data: {
+          serverId: entry.server.id,
+          name: entry.server.name,
+          tools: registered.map((tool) => tool.name),
+          authenticated: entry.server.auth !== 'none',
+        },
+      })
     }
 
     // 4. Gateway, before any config references its URL.

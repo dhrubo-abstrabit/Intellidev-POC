@@ -149,6 +149,26 @@ const toolResult = z.object({
   }),
 })
 
+/**
+ * An attached MCP server finished connecting.
+ *
+ * Added because nothing in the stream said whether the gateway reached an upstream server at
+ * all: a failed *optional* server surfaced only as an `error`, and a working one surfaced
+ * only indirectly, when a tool call happened to succeed. That left "are my tools connected?"
+ * — the question the UI exists to answer — unanswerable until something went wrong.
+ */
+const toolServerConnected = z.object({
+  type: z.literal('tool.server_connected'),
+  data: z.object({
+    serverId: z.string(),
+    name: z.string(),
+    /** Names as the agent sees them, already namespaced by the gateway. */
+    tools: z.array(z.string()),
+    /** Whether the connection needed a credential, not the credential itself. */
+    authenticated: z.boolean().default(false),
+  }),
+})
+
 const toolDenied = z.object({
   type: z.literal('tool.denied'),
   data: z.object({
@@ -391,6 +411,7 @@ export const EventBody = z.discriminatedUnion('type', [
   toolCall,
   toolResult,
   toolDenied,
+  toolServerConnected,
   fileChanged,
   diffProduced,
   commandOutput,
@@ -437,6 +458,7 @@ export const EventType = z.enum([
   'tool.call',
   'tool.result',
   'tool.denied',
+  'tool.server_connected',
   'file.changed',
   'diff.produced',
   'command.output',
@@ -491,7 +513,7 @@ export const EVENT_GROUPS = {
     'run.finished',
   ],
   model: ['thinking.started', 'assistant.delta', 'assistant.message', 'turn.boundary'],
-  tools: ['tool.call', 'tool.result', 'tool.denied'],
+  tools: ['tool.call', 'tool.result', 'tool.denied', 'tool.server_connected'],
   workspace: ['file.changed', 'diff.produced', 'command.output'],
   git: ['git.branch_created', 'git.committed', 'git.pushed', 'pr.opened'],
   control: [
