@@ -54,6 +54,17 @@ export interface DispatchConfig {
   /** Where mirrors and worktrees live on the host. */
   workRoot: string
   githubToken?: string
+  /**
+   * Model override, `provider/model` as the harness spells it.
+   *
+   * Worth having because the default points at opencode's free hosted models, which are a
+   * shared service that can and does return server errors — at which point every run fails
+   * for a reason that has nothing to do with this code. Pointing at a provider you hold an
+   * API key for takes that dependency out of the loop.
+   */
+  model?: string
+  /** Provider credentials forwarded to the harness. Never logged, never projected. */
+  harnessEnv?: Record<string, string>
   /** Passed through so a container can reach a bind-mounted origin. */
   extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>
 }
@@ -207,6 +218,10 @@ async function executeInDocker(args: {
         // genuine protection and should keep firing.
         ...(config.extraMounts?.length ? { INTELLIDEV_GIT_SAFE_DIRECTORY: '*' } : {}),
         ...mcpTokenEnv(servers),
+        // The drivers spawn a harness with `{ ...process.env, ...req.env }`, so anything set
+        // on the container reaches it. That is how a provider key gets in without the adapter
+        // needing to know which providers exist.
+        ...(config.harnessEnv ?? {}),
       },
       mounts: [
         { source: exchange, target: '/run/exchange' },
@@ -456,10 +471,7 @@ function buildRunSpec(args: {
         default: task.harness,
         allowed: [task.harness],
         seatPool: 'local',
-        models:
-          task.harness === 'opencode'
-            ? { opencode: { model: 'opencode/nemotron-3.5-lightning-free' } }
-            : {},
+        models: config.model ? { [task.harness]: { model: config.model } } : {},
       },
       contextFile: './context/repo.md',
       stageTemplate: template,

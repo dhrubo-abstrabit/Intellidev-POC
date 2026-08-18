@@ -19,6 +19,29 @@ const repoRoot = resolve(import.meta.dirname, '..', '..', '..')
 const workRoot = resolve(process.env['INTELLIDEV_WORK_ROOT'] ?? join(repoRoot, '.intellidev-work'))
 const bundleRoot = resolve(process.env['INTELLIDEV_BUNDLE'] ?? join(repoRoot, 'examples/bundle'))
 
+/**
+ * Provider credentials to forward into a run.
+ *
+ * An allowlist rather than the whole environment: a run should not inherit every secret the
+ * control plane happens to hold. Named here so which providers work is a fact you can read
+ * rather than discover.
+ */
+const PROVIDER_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'GROQ_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_GENERATIVE_AI_API_KEY',
+] as const
+
+const harnessEnv = Object.fromEntries(
+  PROVIDER_KEYS.flatMap((key) => {
+    const value = process.env[key]
+    return value ? [[key, value]] : []
+  }),
+)
+
 await mkdir(workRoot, { recursive: true })
 
 // Under the work root, not the repo: the file holds live OAuth refresh tokens.
@@ -30,6 +53,8 @@ const app = await buildServer({
     bundleRoot,
     image: process.env['INTELLIDEV_IMAGE'] ?? 'intellidev/runner:dev',
     workRoot,
+    ...(process.env['INTELLIDEV_MODEL'] ? { model: process.env['INTELLIDEV_MODEL'] } : {}),
+    ...(Object.keys(harnessEnv).length > 0 ? { harnessEnv } : {}),
     ...(process.env['INTELLIDEV_GITHUB_TOKEN']
       ? { githubToken: process.env['INTELLIDEV_GITHUB_TOKEN'] }
       : {}),
@@ -62,6 +87,8 @@ process.stderr.write(
     `  bundle  ${bundleRoot}`,
     `  work    ${workRoot}`,
     `  mcp     ${mcp.list().length} connected server(s)`,
+    `  model   ${process.env['INTELLIDEV_MODEL'] ?? 'harness default'}`,
+    `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
     ``,
   ].join('\n'),
 )
