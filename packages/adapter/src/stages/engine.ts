@@ -288,6 +288,7 @@ export class StageEngine {
       prompt: this.withPendingSteers(prompt, ctx.pendingSteers),
       cwd: ctx.cwd,
       timeoutSec: this.perStageTimeoutSec,
+      toolsMode: stage.tools.mode,
       ...(stage.model ? { model: stage.model } : {}),
       ...(ctx.resume ? { resume: ctx.resume } : {}),
       ...(this.deps.env ? { env: this.deps.env() } : {}),

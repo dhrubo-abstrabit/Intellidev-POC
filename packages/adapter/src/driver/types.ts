@@ -22,6 +22,14 @@ export interface StageRequest {
   /** Hard stop for the stage, enforced by the driver as well as the engine. */
   timeoutSec?: number
   maxTurns?: number
+  /**
+   * The stage's tool policy, in the canonical vocabulary.
+   *
+   * Passed per stage because a permission mode is not a property of the run: `design` plans and
+   * `code` edits, and the config files are written once at bootstrap so they cannot express the
+   * difference. Each driver maps this to whatever its harness calls the same idea.
+   */
+  toolsMode?: 'none' | 'read_only' | 'full'
   env?: Record<string, string>
 }
 

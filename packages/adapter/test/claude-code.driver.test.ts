@@ -2,7 +2,8 @@ import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ClaudeCodeDriver } from '../src/driver/claude-code/driver.js'
+import { buildClaudeArgs, ClaudeCodeDriver } from '../src/driver/claude-code/driver.js'
+import { codexSandboxFor } from '../src/driver/codex/driver.js'
 
 /**
  * A stand-in for the CLI that reproduces the behaviour that mattered: it emits a turn's worth of
@@ -66,4 +67,41 @@ describe('claude-code driver lifecycle', () => {
     await session.done()
     expect(session.resumeToken).toBe('s1')
   }, 20_000)
+})
+
+describe('the stage policy reaches the harness', () => {
+  /**
+   * REGRESSION. Nothing passed a permission mode, so the CLI used its `default` mode: every write
+   * needed a human to approve it, and a headless run has none. The `code` stage spent twenty
+   * thousand output tokens proving the directory was writable while the permission prompt was the
+   * thing refusing it.
+   */
+  it('asks for acceptEdits when the stage may edit', () => {
+    const args = buildClaudeArgs({
+      stage: 'code',
+      prompt: 'do it',
+      cwd: '/work/x',
+      toolsMode: 'full',
+    })
+    expect(args).toContain('--permission-mode')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+  })
+
+  it('uses plan mode for a read-only stage, so a plan cannot edit', () => {
+    for (const mode of ['read_only', 'none', undefined] as const) {
+      const args = buildClaudeArgs({
+        stage: 'design',
+        prompt: 'plan it',
+        cwd: '/work/x',
+        ...(mode ? { toolsMode: mode } : {}),
+      })
+      expect(args[args.indexOf('--permission-mode') + 1], `mode ${mode}`).toBe('plan')
+    }
+  })
+
+  it('maps the same policy onto codex sandboxing', () => {
+    expect(codexSandboxFor('full')).toBe('workspace-write')
+    expect(codexSandboxFor('read_only')).toBe('read-only')
+    expect(codexSandboxFor(undefined)).toBe('read-only')
+  })
 })

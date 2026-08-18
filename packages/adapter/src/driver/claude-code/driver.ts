@@ -39,6 +39,21 @@ export interface ClaudeCodeDriverOptions {
   includePartialMessages?: boolean
 }
 
+/**
+ * The stage's policy, as Claude Code spells it.
+ *
+ * FOUND BY RUNNING IT. Without this the CLI ran in its `default` mode, which asks a human before
+ * a write — and a headless run has nobody to ask, so every `Write` and every `Bash` redirection
+ * was refused while reads sailed through. The agent spent a whole stage proving the directory was
+ * writable, which it was; the permission prompt was the thing in the way.
+ *
+ * `acceptEdits` rather than `bypassPermissions`: edits inside the worktree are the job, and the
+ * deny-list for irreversible commands should keep applying.
+ */
+export function claudePermissionMode(mode: StageRequest['toolsMode']): string {
+  return mode === 'full' ? 'acceptEdits' : 'plan'
+}
+
 export function buildClaudeArgs(req: StageRequest, opts: ClaudeCodeDriverOptions = {}): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose']
 
@@ -50,6 +65,7 @@ export function buildClaudeArgs(req: StageRequest, opts: ClaudeCodeDriverOptions
   if (req.mcpConfigPath) args.push('--mcp-config', req.mcpConfigPath)
   if (req.systemAppend) args.push('--append-system-prompt', req.systemAppend)
   if (req.model) args.push('--model', req.model)
+  args.push('--permission-mode', claudePermissionMode(req.toolsMode))
   if (req.maxTurns !== undefined) args.push('--max-turns', String(req.maxTurns))
   if (req.resume) args.push('--resume', req.resume)
 

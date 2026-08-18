@@ -54,6 +54,11 @@ export interface CodexDriverOptions {
   ephemeral?: boolean
 }
 
+/** The stage's policy, as Codex spells it. */
+export function codexSandboxFor(mode: StageRequest['toolsMode']): string {
+  return mode === 'full' ? 'workspace-write' : 'read-only'
+}
+
 export function buildCodexArgs(req: StageRequest, opts: CodexDriverOptions = {}): string[] {
   const args = ['exec', '--json']
 
@@ -62,7 +67,9 @@ export function buildCodexArgs(req: StageRequest, opts: CodexDriverOptions = {})
   if (req.resume) args.splice(1, 0, 'resume', req.resume)
 
   args.push('-C', req.cwd)
-  args.push('-s', opts.sandbox ?? 'workspace-write')
+  // Per stage, not per driver: a read-only stage that can write is not read-only. An explicit
+  // driver option still wins, since a caller setting it means to.
+  args.push('-s', opts.sandbox ?? codexSandboxFor(req.toolsMode))
   if (opts.skipGitRepoCheck !== false) args.push('--skip-git-repo-check')
   if (opts.ephemeral) args.push('--ephemeral')
   if (req.model) args.push('-m', req.model)
