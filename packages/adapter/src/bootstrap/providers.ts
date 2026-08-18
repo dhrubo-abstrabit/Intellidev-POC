@@ -69,6 +69,14 @@ export class LocalCredentialProvider implements CredentialProvider {
       githubToken?: string
       /** Values for the project's declared secrets. */
       secrets?: Record<string, string>
+      /**
+       * Per-server MCP tokens, keyed by server id.
+       *
+       * Passed in rather than only read from the environment, because inline mode runs in
+       * the control plane's own process and should not have to mutate `process.env` to hand
+       * a token to one run.
+       */
+      mcpTokens?: Record<string, string>
       /** Deliberately short, so the cache's refresh path is exercised locally. */
       ttlSec?: number
     } = {},
@@ -96,7 +104,10 @@ export class LocalCredentialProvider implements CredentialProvider {
   }
 
   async mcpToken(serverId: string): Promise<{ token: string; expiresAt: string }> {
-    const token = process.env[`INTELLIDEV_MCP_TOKEN_${serverId.toUpperCase()}`] ?? ''
+    const token =
+      this.opts.mcpTokens?.[serverId] ??
+      process.env[`INTELLIDEV_MCP_TOKEN_${serverId.toUpperCase()}`] ??
+      ''
     if (!token) throw new Error(`no local token for MCP server "${serverId}"`)
     return { token, expiresAt: this.expiry() }
   }
