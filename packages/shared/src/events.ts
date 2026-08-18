@@ -169,6 +169,24 @@ const toolServerConnected = z.object({
   }),
 })
 
+/**
+ * The harness's own subscription credential was loaded.
+ *
+ * Its absence is the thing worth seeing: a run with no seat reaches the model layer and reports
+ * `Not logged in`, which looks like a platform fault rather than a missing credential. Names
+ * and paths only — never a value, which is also why redaction cannot help here.
+ */
+const seatAuthenticated = z.object({
+  type: z.literal('seat.authenticated'),
+  data: z.object({
+    harness: HarnessId,
+    /** Variable NAMES contributed to the harness environment. */
+    envVars: z.array(z.string()).default([]),
+    /** Credential files written under the run's HOME. */
+    files: z.array(z.string()).default([]),
+  }),
+})
+
 const toolDenied = z.object({
   type: z.literal('tool.denied'),
   data: z.object({
@@ -412,6 +430,7 @@ export const EventBody = z.discriminatedUnion('type', [
   toolResult,
   toolDenied,
   toolServerConnected,
+  seatAuthenticated,
   fileChanged,
   diffProduced,
   commandOutput,
@@ -459,6 +478,7 @@ export const EventType = z.enum([
   'tool.result',
   'tool.denied',
   'tool.server_connected',
+  'seat.authenticated',
   'file.changed',
   'diff.produced',
   'command.output',
@@ -514,6 +534,7 @@ export const EVENT_GROUPS = {
   ],
   model: ['thinking.started', 'assistant.delta', 'assistant.message', 'turn.boundary'],
   tools: ['tool.call', 'tool.result', 'tool.denied', 'tool.server_connected'],
+  seat: ['seat.authenticated'],
   workspace: ['file.changed', 'diff.produced', 'command.output'],
   git: ['git.branch_created', 'git.committed', 'git.pushed', 'pr.opened'],
   control: [
