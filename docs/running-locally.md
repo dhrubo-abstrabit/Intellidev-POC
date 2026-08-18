@@ -157,3 +157,50 @@ Both cost real debugging time, and neither fails in a way that points at the cau
   run's pinned HOME. It has to be a _file_: git honours `safe.directory` only from protected
   configuration, and a `file://` clone does its reading in a child `upload-pack` where `-c`
   values arrive unprotected and are ignored. Against a real remote none of this applies.
+
+## Connecting MCP servers
+
+Servers are connected **once**, in the UI, and then reused by every task — which is what the
+gateway exists to make possible. The panel is in the left column under **MCP servers**; three
+presets are offered because each exercises a different path:
+
+| Preset        | Auth                  | What it proves                                        |
+| ------------- | --------------------- | ----------------------------------------------------- |
+| Supabase      | OAuth 2.1             | discovery, dynamic client registration, PKCE, refresh |
+| GitHub        | static bearer (a PAT) | the simple credential path against a real provider    |
+| Local fixture | static bearer         | the whole chain with no third party involved          |
+
+**OAuth runs entirely in the control plane.** The container is headless — there is nobody to
+click _Allow_ — so consent happens here, and a run receives the resulting access token as a
+plain bearer credential through the credential broker. That means the container's contract is
+identical whether a server uses a PAT or OAuth, and no OAuth code exists inside the runner.
+
+The flow, all of it from the MCP SDK rather than hand-rolled:
+
+```
+POST /api/mcp/servers/:id/connect
+  → RFC 9728 discovery      /.well-known/oauth-protected-resource
+  → RFC 8414 AS metadata    /.well-known/oauth-authorization-server
+  → RFC 7591 registration   (dynamic, so there is no app to pre-create)
+  → PKCE S256 auth URL      opened in a popup
+GET /oauth/callback?code&state
+  → token exchange → stored → tools/list to prove it works
+```
+
+Tokens live in `<work-root>/mcp-servers.json`, written `0600`. **That file holds live refresh
+tokens.** It is a local development shim, not the end state: real deployments want these in a
+secrets manager, per project, with rotation. It is also the one thing here that survives a
+restart — losing tasks is a shrug, but making someone re-authorise every server would make the
+feature unusable.
+
+### What this path does not do yet
+
+- **A run does not refresh mid-flight.** The access token is minted at dispatch and handed to
+  the container; a run outliving the token starts failing upstream calls. Refresh happens only
+  between runs.
+- **Dynamic client registration is required.** A server without RFC 7591 needs a
+  pre-registered client id and secret, which there is nowhere to enter.
+- **`enabledTools` is not exposed.** A server's whole tool list is registered, so prefer a
+  scoped endpoint — that is why the GitHub preset points at `/x/repos/readonly`.
+- **Streamable HTTP only.** `remote_sse` exists in the schema but nothing can select it, and
+  `upstream.ts` would hand it the wrong transport if anything did.
