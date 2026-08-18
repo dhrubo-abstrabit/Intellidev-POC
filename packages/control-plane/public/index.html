@@ -168,6 +168,9 @@
           <p class="hint" id="formHint"></p>
         </form>
 
+        <h2 style="margin-top: 22px">Harness accounts</h2>
+        <div id="seats"><p class="empty">No harness connected.</p></div>
+
         <h2 style="margin-top: 22px">
           MCP servers
           <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">Add</button>
@@ -218,7 +221,7 @@
       const $ = (id) => document.getElementById(id)
       const state = {
         tasks: [], selected: null, run: null, stream: null, lastSeq: -1,
-        servers: [], presets: [],
+        servers: [], presets: [], accounts: [], recipes: [], config: null,
       }
 
       // --- theme ---------------------------------------------------------------
@@ -260,6 +263,90 @@
         for (const el of $('tasks').querySelectorAll('.task')) {
           el.onclick = () => select(el.dataset.id)
         }
+      }
+
+      // --- harness accounts ----------------------------------------------------
+
+      async function loadSeats() {
+        const [accounts, recipes, config] = await Promise.all([
+          fetch('/api/harness/accounts').then((r) => r.json()),
+          state.recipes.length ? { recipes: state.recipes } : fetch('/api/harness/recipes').then((r) => r.json()),
+          fetch('/api/config').then((r) => r.json()),
+        ])
+        state.accounts = accounts.accounts
+        state.recipes = recipes.recipes
+        state.config = config
+        renderSeats()
+      }
+
+      function renderSeats() {
+        // Every harness is listed, connected or not: a missing credential is the thing worth
+        // seeing, since without it a run reaches the model layer and reports "Not logged in".
+        $('seats').innerHTML = state.recipes
+          .map((r) => {
+            const account = state.accounts.find((a) => a.harness === r.harness)
+            const viaEnv = !account && state.config?.harnessAuth?.[r.harness]
+            const ok = Boolean(account) || viaEnv
+            const detail = account
+              ? (account.envVars.length ? account.envVars.join(', ') : account.files.join(', '))
+              : viaEnv
+                ? 'from the control plane environment'
+                : `run: ${r.command}`
+            return `
+              <div class="srv">
+                <span class="dot ${ok ? 'ok' : 'unknown'}"></span>
+                <div class="grow">
+                  <div class="name">${escape(r.harness)}</div>
+                  <p class="meta">${escape(detail)}</p>
+                </div>
+                ${
+                  r.kind === 'file'
+                    ? `<button class="secondary" data-import="${escape(r.harness)}">${account ? 'Re-import' : 'Import'}</button>`
+                    : `<button class="secondary" data-paste="${escape(r.harness)}">${account ? 'Replace' : 'Add token'}</button>`
+                }
+                ${account ? `<button class="secondary" data-forget="${escape(r.harness)}" title="Forget">×</button>` : ''}
+              </div>`
+          })
+          .join('')
+
+        $('seats').querySelectorAll('[data-import]').forEach((b) => {
+          b.onclick = async () => {
+            const harness = b.dataset.import
+            const recipe = state.recipes.find((r) => r.harness === harness)
+            const path = prompt(`Import ${harness} credentials from:`, recipe.hostPath)
+            if (!path) return
+            b.disabled = true
+            await connectHarness({ harness, path })
+            b.disabled = false
+          }
+        })
+        $('seats').querySelectorAll('[data-paste]').forEach((b) => {
+          b.onclick = async () => {
+            const harness = b.dataset.paste
+            const recipe = state.recipes.find((r) => r.harness === harness)
+            const token = prompt(`Run \`${recipe.command}\` and paste the token:`)
+            if (!token) return
+            b.disabled = true
+            await connectHarness({ harness, token: token.trim() })
+            b.disabled = false
+          }
+        })
+        $('seats').querySelectorAll('[data-forget]').forEach((b) => {
+          b.onclick = async () => {
+            await fetch(`/api/harness/accounts/${b.dataset.forget}`, { method: 'DELETE' })
+            await loadSeats()
+          }
+        })
+      }
+
+      async function connectHarness(body) {
+        const res = await fetch('/api/harness/accounts', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) alert((await res.json()).error ?? 'could not connect')
+        await loadSeats()
       }
 
       // --- mcp servers ---------------------------------------------------------
@@ -589,6 +676,7 @@
           case 'tool.call': return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
           case 'tool.result': return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
           case 'tool.denied': return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'seat.authenticated': return { cls: 'ok', text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}` }
           case 'tool.server_connected': return { cls: 'ok', text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}` }
           case 'file.changed': return { cls: '', text: `${d.change} ${d.path}` }
           case 'diff.produced': return { cls: '', text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}` }
@@ -630,6 +718,7 @@
         return el.innerHTML
       }
 
+      await loadSeats()
       await loadServers()
       await loadTasks()
     </script>

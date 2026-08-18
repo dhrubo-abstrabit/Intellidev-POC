@@ -4,6 +4,13 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { HarnessId } from '@intellidev/shared'
 import { z } from 'zod'
 import { dispatchTask, type DispatchConfig } from './dispatch.js'
+import {
+  HARNESS_AUTH,
+  readCredentialFile,
+  recipeFor,
+  toPublic as accountToPublic,
+  type HarnessAccounts,
+} from './harness/accounts.js'
 import { McpOAuth } from './mcp/oauth.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -24,6 +31,8 @@ export interface ServerOptions {
   dispatch: DispatchConfig
   /** The connected-server catalogue. Persisted, unlike tasks. */
   mcp: McpRegistry
+  /** Harness subscription logins. Also persisted, for the same reason. */
+  accounts: HarnessAccounts
   /** Absolute path to the directory holding `index.html`. */
   publicDir?: string
 }
@@ -45,6 +54,15 @@ const UpsertMcpServer = z.object({
   /** Only ever sent for `bearer`; omitted on edit means "keep the token you have". */
   token: z.string().optional(),
   scope: z.string().optional(),
+})
+
+const ConnectHarness = z.object({
+  harness: HarnessId,
+  label: z.string().min(1).optional(),
+  /** For env-based harnesses. Never returned by any route. */
+  token: z.string().min(1).optional(),
+  /** For file-based harnesses; defaults to where that CLI writes its credential. */
+  path: z.string().min(1).optional(),
 })
 
 const CreateTask = z.object({
@@ -76,7 +94,81 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     image: opts.dispatch.image,
     harnesses: HarnessId.options,
     hasGithubToken: Boolean(opts.dispatch.githubToken),
+    /**
+     * Which harnesses have a credential, so the UI can say so before a run is spent.
+     * `env` counts a key forwarded from the control plane's own environment, since that
+     * authenticates a run just as well as a connected account.
+     */
+    harnessAuth: Object.fromEntries(
+      HarnessId.options.map((harness) => {
+        const recipe = recipeFor(harness)
+        const viaEnv = Boolean(recipe?.envVar && opts.dispatch.harnessEnv?.[recipe.envVar])
+        return [harness, Boolean(opts.accounts.get(harness)) || viaEnv]
+      }),
+    ),
   }))
+
+  // --- harness accounts ----------------------------------------------------
+
+  app.get('/api/harness/recipes', async () => ({ recipes: HARNESS_AUTH }))
+
+  app.get('/api/harness/accounts', async () => ({
+    accounts: opts.accounts.list().map(accountToPublic),
+  }))
+
+  /**
+   * Connect a harness by importing what its own login produced.
+   *
+   * `token` for the env-based harnesses, `path` for the file-based ones — defaulting to where
+   * that CLI writes it, so the common case is a button rather than a filesystem hunt.
+   */
+  app.post('/api/harness/accounts', async (request, reply) => {
+    const parsed = ConnectHarness.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid account', issues: parsed.error.issues })
+    }
+    const { harness, token, path } = parsed.data
+    const recipe = recipeFor(harness)
+    if (!recipe) return reply.code(400).send({ error: `no auth recipe for ${harness}` })
+
+    try {
+      if (recipe.kind === 'env') {
+        if (!token) return reply.code(400).send({ error: `${harness} needs a token` })
+        const account = await opts.accounts.connect({
+          harness,
+          label: parsed.data.label ?? harness,
+          env: { [recipe.envVar!]: token },
+          connectedAt: new Date().toISOString(),
+          importedFrom: recipe.command,
+        })
+        return reply.code(201).send({ account: accountToPublic(account) })
+      }
+
+      const from = path ?? recipe.hostPath!
+      const contents = await readCredentialFile(from)
+      const account = await opts.accounts.connect({
+        harness,
+        label: parsed.data.label ?? harness,
+        files: [{ path: recipe.homePath!, contents }],
+        connectedAt: new Date().toISOString(),
+        importedFrom: from,
+      })
+      return reply.code(201).send({ account: accountToPublic(account) })
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.delete<{ Params: { harness: string } }>(
+    '/api/harness/accounts/:harness',
+    async (request, reply) => {
+      const harness = HarnessId.safeParse(request.params.harness)
+      if (!harness.success) return reply.code(400).send({ error: 'not a harness' })
+      const removed = await opts.accounts.remove(harness.data)
+      if (!removed) return reply.code(404).send({ error: 'not connected' })
+      return { ok: true }
+    },
+  )
 
   // --- tasks ---------------------------------------------------------------
 
@@ -115,6 +207,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       task,
       config: opts.dispatch,
       mcp: { registry: opts.mcp, oauth },
+      accounts: opts.accounts,
     })
     // 202: the run has started, not finished. The UI follows the event stream from here.
     return reply.code(202).send({ runId })

@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
+import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
 
@@ -65,6 +66,7 @@ await mkdir(workRoot, { recursive: true })
 
 // Under the work root, not the repo: the file holds live OAuth refresh tokens.
 const mcp = await McpRegistry.open(join(workRoot, 'mcp-servers.json'))
+const accounts = await HarnessAccounts.open(join(workRoot, 'harness-accounts.json'))
 
 const app = await buildServer({
   dispatch: {
@@ -91,6 +93,7 @@ const app = await buildServer({
       : {}),
   },
   mcp,
+  accounts,
   publicDir: resolve(import.meta.dirname, '..', 'public'),
 })
 
@@ -112,6 +115,12 @@ process.stderr.write(
         .join(' ') || 'harness default'
     }`,
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
+    `  seats   ${
+      accounts
+        .list()
+        .map((a) => a.harness)
+        .join(', ') || 'no harness connected'
+    }`,
     ``,
   ].join('\n'),
 )

@@ -13,6 +13,7 @@ import {
   type TaskStatus,
 } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
+import type { HarnessAccounts } from './harness/accounts.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
 import type { Store, TaskRow } from './store.js'
@@ -75,8 +76,9 @@ export async function dispatchTask(args: {
   task: TaskRow
   config: DispatchConfig
   mcp: McpAccess
+  accounts: HarnessAccounts
 }): Promise<{ runId: string }> {
-  const { store, task, config, mcp } = args
+  const { store, task, config, mcp, accounts } = args
 
   const branch = renderBranchName('feat/{{task.slug}}-{{task.id}}', {
     taskId: task.id.replace(/^task_/, ''),
@@ -86,12 +88,15 @@ export async function dispatchTask(args: {
   store.setTaskStatus(task.id, 'dispatched')
 
   const servers = await resolveMcpServers(task, mcp)
+  // Material travels in the environment, not the spec: the spec is written to a bind-mounted
+  // directory and this is a credential.
+  const seat = accounts.materialFor(task.harness)
   const spec = buildRunSpec({ task, run: run.id, branch, config, servers })
 
   // Deliberately not awaited: dispatch returns 202 and the UI follows the event stream.
   // A dispatch that blocked until the run finished would make the request time out long
   // before a real task completes.
-  void execute({ store, runId: run.id, taskId: task.id, spec, config, servers }).catch(
+  void execute({ store, runId: run.id, taskId: task.id, spec, config, servers, seat }).catch(
     (error: unknown) => {
       store.updateRun(run.id, {
         status: 'failed',
@@ -112,8 +117,9 @@ async function execute(args: {
   spec: RunSpec
   config: DispatchConfig
   servers: readonly ResolvedMcpServer[]
+  seat: Record<string, unknown> | undefined
 }): Promise<void> {
-  const { store, runId, taskId, spec, config, servers } = args
+  const { store, runId, taskId, spec, config, servers, seat } = args
   store.updateRun(runId, { status: 'provisioning' })
 
   const sink = (event: AgentEvent) => {
@@ -142,6 +148,7 @@ async function execute(args: {
         mcpTokens: Object.fromEntries(
           servers.flatMap((server) => (server.token ? [[server.id, server.token]] : [])),
         ),
+        ...(seat ? { seatMaterial: { [spec.harness]: seat } } : {}),
       }),
       sink,
       paths: {
@@ -155,7 +162,7 @@ async function execute(args: {
     return
   }
 
-  await executeInDocker({ store, runId, taskId, spec, config, sink, servers })
+  await executeInDocker({ store, runId, taskId, spec, config, sink, servers, seat })
 }
 
 /**
@@ -174,8 +181,9 @@ async function executeInDocker(args: {
   config: DispatchConfig
   sink: (event: AgentEvent) => void
   servers: readonly ResolvedMcpServer[]
+  seat: Record<string, unknown> | undefined
 }): Promise<void> {
-  const { store, runId, taskId, spec, config, sink, servers } = args
+  const { store, runId, taskId, spec, config, sink, servers, seat } = args
 
   // Under the work root, not `os.tmpdir()`. On macOS the temp dir is `/var/folders/...`,
   // which Docker Desktop does not share with the VM, so a bind mount of it fails with
@@ -223,6 +231,7 @@ async function executeInDocker(args: {
         // on the container reaches it. That is how a provider key gets in without the adapter
         // needing to know which providers exist.
         ...(config.harnessEnv ?? {}),
+        ...(seat ? { INTELLIDEV_SEAT_MATERIAL: JSON.stringify({ [spec.harness]: seat }) } : {}),
       },
       mounts: [
         { source: exchange, target: '/run/exchange' },
