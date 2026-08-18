@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Inter_Tight } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
 
 // Brand system typeface (D:\Build_TM\brand-system.html). Loaded once at the
@@ -31,8 +32,13 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${inter.variable} ${interTight.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          {children}
+        </ThemeProvider>
+      </body>
     </html>
   );
 }
