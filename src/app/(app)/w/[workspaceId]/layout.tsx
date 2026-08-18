@@ -28,7 +28,7 @@ export default async function WorkspaceLayout({
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <WorkspaceSidebar workspaceId={workspaceId} current={current} workspaces={allWorkspaces ?? []} projects={projects ?? []} />
-      <div className="min-h-screen flex-1 bg-brand-n-50 p-6">{children}</div>
+      <div className="min-h-screen flex-1 bg-muted p-6">{children}</div>
     </div>
   );
 }

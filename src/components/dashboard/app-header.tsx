@@ -8,10 +8,10 @@ import { BrandMark } from "@/components/dashboard/brand-mark";
  * have. */
 export function AppHeader() {
   return (
-    <header className="flex items-center justify-between border-b border-brand-n-200 bg-brand-n-0 px-6 py-3">
+    <header className="flex items-center justify-between border-b border-border bg-card px-6 py-3">
       <BrandMark />
       <form action={signOut}>
-        <Button type="submit" variant="ghost" size="sm" className="text-brand-n-600 hover:text-brand-n-900">
+        <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground">
           Sign out
         </Button>
       </form>

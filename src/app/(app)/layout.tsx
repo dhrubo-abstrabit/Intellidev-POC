@@ -12,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // exists yet), and /w/[workspaceId] renders WorkspaceSidebar instead,
   // which needs workspace/project data this layout doesn't have.
   return (
-    <div className="min-h-screen bg-brand-n-50">
+    <div className="min-h-screen bg-muted">
       <main>{children}</main>
       <Toaster />
     </div>
