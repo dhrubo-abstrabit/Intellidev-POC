@@ -12,7 +12,27 @@ import {
   type TaskStatus,
 } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
-import type { Store, TaskMcpServer, TaskRow } from './store.js'
+import type { McpOAuth } from './mcp/oauth.js'
+import type { McpRegistry } from './mcp/registry.js'
+import type { Store, TaskRow } from './store.js'
+
+/** Everything dispatch needs to turn a task's server ids into usable credentials. */
+export interface McpAccess {
+  registry: McpRegistry
+  oauth: McpOAuth
+}
+
+/**
+ * A server resolved for one run: the spec entry, plus the bearer token the broker will hand
+ * out. Resolved here, in the control plane, because this is the only place that can refresh
+ * an OAuth token — the container is headless and holds no refresh token.
+ */
+interface ResolvedMcpServer {
+  id: string
+  name: string
+  url: string
+  token?: string
+}
 
 /**
  * Turn a task into a run.
@@ -42,8 +62,9 @@ export async function dispatchTask(args: {
   store: Store
   task: TaskRow
   config: DispatchConfig
+  mcp: McpAccess
 }): Promise<{ runId: string }> {
-  const { store, task, config } = args
+  const { store, task, config, mcp } = args
 
   const branch = renderBranchName('feat/{{task.slug}}-{{task.id}}', {
     taskId: task.id.replace(/^task_/, ''),
@@ -52,19 +73,22 @@ export async function dispatchTask(args: {
   const run = store.createRun(task.id, task.harness, branch)
   store.setTaskStatus(task.id, 'dispatched')
 
-  const spec = buildRunSpec({ task, run: run.id, branch, config })
+  const servers = await resolveMcpServers(task, mcp)
+  const spec = buildRunSpec({ task, run: run.id, branch, config, servers })
 
   // Deliberately not awaited: dispatch returns 202 and the UI follows the event stream.
   // A dispatch that blocked until the run finished would make the request time out long
   // before a real task completes.
-  void execute({ store, runId: run.id, taskId: task.id, spec, config }).catch((error: unknown) => {
-    store.updateRun(run.id, {
-      status: 'failed',
-      endedAt: new Date().toISOString(),
-      failureReason: error instanceof Error ? error.message : String(error),
-    })
-    moveTask(store, task.id, 'failed')
-  })
+  void execute({ store, runId: run.id, taskId: task.id, spec, config, servers }).catch(
+    (error: unknown) => {
+      store.updateRun(run.id, {
+        status: 'failed',
+        endedAt: new Date().toISOString(),
+        failureReason: error instanceof Error ? error.message : String(error),
+      })
+      moveTask(store, task.id, 'failed')
+    },
+  )
 
   return { runId: run.id }
 }
@@ -75,8 +99,9 @@ async function execute(args: {
   taskId: string
   spec: RunSpec
   config: DispatchConfig
+  servers: readonly ResolvedMcpServer[]
 }): Promise<void> {
-  const { store, runId, taskId, spec, config } = args
+  const { store, runId, taskId, spec, config, servers } = args
   store.updateRun(runId, { status: 'provisioning' })
 
   const sink = (event: AgentEvent) => {
@@ -102,7 +127,9 @@ async function execute(args: {
       spec,
       credentials: new LocalCredentialProvider({
         ...(config.githubToken ? { githubToken: config.githubToken } : {}),
-        mcpTokens: mcpTokens(store.getTask(taskId)?.mcp),
+        mcpTokens: Object.fromEntries(
+          servers.flatMap((server) => (server.token ? [[server.id, server.token]] : [])),
+        ),
       }),
       sink,
       paths: {
@@ -116,7 +143,7 @@ async function execute(args: {
     return
   }
 
-  await executeInDocker({ store, runId, taskId, spec, config, sink })
+  await executeInDocker({ store, runId, taskId, spec, config, sink, servers })
 }
 
 /**
@@ -134,8 +161,9 @@ async function executeInDocker(args: {
   spec: RunSpec
   config: DispatchConfig
   sink: (event: AgentEvent) => void
+  servers: readonly ResolvedMcpServer[]
 }): Promise<void> {
-  const { store, runId, taskId, spec, config, sink } = args
+  const { store, runId, taskId, spec, config, sink, servers } = args
 
   // Under the work root, not `os.tmpdir()`. On macOS the temp dir is `/var/folders/...`,
   // which Docker Desktop does not share with the VM, so a bind mount of it fails with
@@ -178,7 +206,7 @@ async function executeInDocker(args: {
         // than baked into the image: a real run clones over HTTPS, where the check is a
         // genuine protection and should keep firing.
         ...(config.extraMounts?.length ? { INTELLIDEV_GIT_SAFE_DIRECTORY: '*' } : {}),
-        ...mcpTokenEnv(store.getTask(taskId)?.mcp),
+        ...mcpTokenEnv(servers),
       },
       mounts: [
         { source: exchange, target: '/run/exchange' },
@@ -298,14 +326,35 @@ function recordStage(store: Store, runId: string, event: AgentEvent): void {
  * The broker reads a per-server token from the environment, so this is the one place that
  * has to agree with `LocalCredentialProvider.mcpToken` on the variable name.
  */
-function mcpTokenEnv(mcp: TaskMcpServer | undefined): Record<string, string> {
-  if (!mcp?.token) return {}
-  return { [`INTELLIDEV_MCP_TOKEN_${mcp.id.toUpperCase()}`]: mcp.token }
+function mcpTokenEnv(servers: readonly ResolvedMcpServer[]): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const server of servers) {
+    if (server.token) env[`INTELLIDEV_MCP_TOKEN_${server.id.toUpperCase()}`] = server.token
+  }
+  return env
 }
 
-/** The same token, for the in-process path, keyed the way the provider expects. */
-function mcpTokens(mcp: TaskMcpServer | undefined): Record<string, string> {
-  return mcp?.token ? { [mcp.id]: mcp.token } : {}
+/**
+ * Turn the task's server ids into specs with live tokens.
+ *
+ * Refreshing happens here, once per dispatch. A server the task names but that is no longer
+ * connected is skipped rather than fatal: losing one optional tool source should degrade the
+ * run, not delete it — and the run log records the absence via `upstream_unavailable`.
+ */
+async function resolveMcpServers(task: TaskRow, mcp: McpAccess): Promise<ResolvedMcpServer[]> {
+  const resolved: ResolvedMcpServer[] = []
+  for (const id of task.mcpServerIds ?? []) {
+    const server = mcp.registry.get(id)
+    if (!server) continue
+    const token = await mcp.oauth.accessToken(server)
+    resolved.push({
+      id: server.id,
+      name: server.name,
+      url: server.url,
+      ...(token ? { token } : {}),
+    })
+  }
+  return resolved
 }
 
 /**
@@ -371,8 +420,9 @@ function buildRunSpec(args: {
   run: string
   branch: string
   config: DispatchConfig
+  servers: readonly ResolvedMcpServer[]
 }): RunSpec {
-  const { task, run, branch, config } = args
+  const { task, run, branch, config, servers } = args
 
   // A single-gate template for the local path: the default template's gates assume a pnpm
   // project, and a demo repo rarely is one.
@@ -427,31 +477,27 @@ function buildRunSpec(args: {
     harness: task.harness,
     stageTemplate: template,
     toolset: {
-      servers: task.mcp
-        ? [
-            {
-              server: {
-                id: task.mcp.id,
-                name: task.mcp.name,
-                kind: 'remote_http',
-                // Bearer whenever a token was given. The adapter then pulls it from the
-                // broker at connect time, so the token never enters the harness config.
-                auth: task.mcp.token ? 'bearer' : 'none',
-                url: containerReachableUrl(task.mcp.url, config.mode),
-                args: [],
-              },
-              attachment: {
-                serverId: task.mcp.id,
-                config: {},
-                required: true,
-                // Empty means every tool, in every stage.
-                enabledTools: [],
-                stages: [],
-                health: 'ok',
-              },
-            },
-          ]
-        : [],
+      servers: servers.map((server) => ({
+        server: {
+          id: server.id,
+          name: server.name,
+          kind: 'remote_http',
+          // Bearer whenever a token was resolved — an OAuth server looks identical to a PAT
+          // server from here, which is what keeps the container ignorant of OAuth.
+          auth: server.token ? 'bearer' : 'none',
+          url: containerReachableUrl(server.url, config.mode),
+          args: [],
+        },
+        attachment: {
+          serverId: server.id,
+          config: {},
+          required: false,
+          // Empty means every tool, in every stage.
+          enabledTools: [],
+          stages: [],
+          health: 'ok',
+        },
+      })),
       skills: [],
     },
     git: {

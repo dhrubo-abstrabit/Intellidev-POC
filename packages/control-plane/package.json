@@ -14,12 +14,12 @@
   "dependencies": {
     "@intellidev/adapter": "workspace:*",
     "@intellidev/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "fastify": "^5.2.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
-    "vitest": "^2.1.5",
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "vitest": "^2.1.5"
   }
 }

@@ -19,22 +19,6 @@ import {
  * The shapes deliberately match the tables in `docs/architecture.md §10`, so replacing this
  * with Drizzle is a swap behind the same methods.
  */
-/**
- * One MCP server attached to a task.
- *
- * A single server, not a list, because this is the local validation path: it exists to prove
- * the gateway and the credential broker work end to end. The real shape is a project-level
- * catalogue plus per-project attachments — `ToolsetSpec` in the shared package already
- * models that, and the control plane will resolve it once projects are real.
- */
-export interface TaskMcpServer {
-  id: string
-  name: string
-  url: string
-  /** Never sent back to the UI, and never reaches the agent — the gateway holds it. */
-  token?: string
-}
-
 export interface TaskRow {
   id: string
   title: string
@@ -46,7 +30,13 @@ export interface TaskRow {
   createdAt: string
   repoUrl: string
   baseBranch: string
-  mcp?: TaskMcpServer
+  /**
+   * Which connected servers this task uses, by id.
+   *
+   * Ids, not inline config: a server is connected once in the UI and reused, so a task holds
+   * a reference and never a credential.
+   */
+  mcpServerIds: string[]
 }
 
 export interface RunRow {

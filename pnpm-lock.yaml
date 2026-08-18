@@ -56,6 +56,9 @@ importers:
       '@intellidev/shared':
         specifier: workspace:*
         version: link:../shared
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@3.25.76)
       fastify:
         specifier: ^5.2.0
         version: 5.12.0
@@ -63,9 +66,6 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.30.0
-        version: 1.30.0(zod@3.25.76)
       typescript:
         specifier: ^5.6.3
         version: 5.9.3

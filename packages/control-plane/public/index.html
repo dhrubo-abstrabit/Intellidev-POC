@@ -70,6 +70,23 @@
       button.secondary { background: var(--btn2); color: var(--fg); border-color: var(--bd-strong); }
       button.secondary:hover:not(:disabled) { background: var(--btn2h); }
       .row { display: flex; gap: 8px; align-items: center; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+      .dot.ok { background: var(--green); }
+      .dot.unauthorized { background: var(--amber); }
+      .dot.error { background: var(--red); }
+      .dot.unknown { background: var(--fg5); }
+      .srv { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0;
+             border-bottom: 1px solid var(--bd-soft); }
+      .srv:last-child { border-bottom: 0; }
+      .srv .grow { flex: 1; min-width: 0; }
+      .srv .name { font-weight: 600; font-size: 13px; }
+      .srv .meta { color: var(--fg3); font-size: 12px; margin: 2px 0 0;
+                   overflow-wrap: anywhere; }
+      .srv button { padding: 3px 8px; font-size: 12px; font-weight: 500; }
+      .checks label { display: flex; gap: 7px; align-items: center; font-weight: 400;
+                      margin: 0 0 5px; text-transform: none; letter-spacing: 0; font-size: 13px;
+                      color: var(--fg); }
+      .checks input { width: auto; margin: 0; }
       .card {
         background: var(--card); border: 1px solid var(--bd-soft); border-radius: 8px;
         padding: 12px; margin-bottom: 8px;
@@ -142,27 +159,50 @@
           <label for="baseBranch">Base branch</label>
           <input id="baseBranch" value="main" />
 
-          <details style="margin-top: 14px">
-            <summary class="hint" style="cursor: pointer">Attach an MCP server (optional)</summary>
-            <label for="mcpId">Server id</label>
-            <input id="mcpId" placeholder="facts" />
-            <label for="mcpName">Display name</label>
-            <input id="mcpName" placeholder="Project facts" />
-            <label for="mcpUrl">URL</label>
-            <input id="mcpUrl" placeholder="http://127.0.0.1:4100/mcp" />
-            <label for="mcpToken">Bearer token</label>
-            <input id="mcpToken" type="password" placeholder="left blank means no auth" />
-            <p class="hint">
-              The token is held by the adapter's gateway and never reaches the agent or the
-              harness config. In docker mode a loopback URL is rewritten to
-              <code>host.docker.internal</code> so the container can reach it.
-            </p>
-          </details>
+          <label>Tools</label>
+          <div id="taskServers"><p class="hint">No MCP servers connected yet.</p></div>
 
           <div class="row" style="margin-top: 14px">
             <button type="submit" id="create">Create task</button>
           </div>
           <p class="hint" id="formHint"></p>
+        </form>
+
+        <h2 style="margin-top: 22px">
+          MCP servers
+          <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">Add</button>
+        </h2>
+        <div id="servers"><p class="empty">Nothing connected.</p></div>
+
+        <form id="serverForm" hidden>
+          <label for="sPreset">Preset</label>
+          <select id="sPreset"></select>
+          <label for="sId">Server id</label>
+          <input id="sId" placeholder="supabase" />
+          <label for="sName">Display name</label>
+          <input id="sName" placeholder="Supabase" />
+          <label for="sUrl">URL</label>
+          <input id="sUrl" placeholder="https://mcp.supabase.com/mcp" />
+          <label for="sAuth">Auth</label>
+          <select id="sAuth">
+            <option value="oauth2">OAuth (opens a consent window)</option>
+            <option value="bearer">Bearer token</option>
+            <option value="none">None</option>
+          </select>
+          <div id="sTokenRow" hidden>
+            <label for="sToken">Bearer token</label>
+            <input id="sToken" type="password" placeholder="stored locally, never sent to the agent" />
+          </div>
+          <div id="sScopeRow">
+            <label for="sScope">Scopes (space separated)</label>
+            <input id="sScope" placeholder="leave blank for everything the server offers" />
+          </div>
+          <p class="hint" id="sHint"></p>
+          <div class="row" style="margin-top: 10px">
+            <button type="submit" id="saveServer">Save &amp; connect</button>
+            <button type="button" id="cancelServer" class="secondary">Cancel</button>
+          </div>
+          <p class="hint" id="serverHint"></p>
         </form>
 
         <h2 style="margin-top: 22px">Tasks</h2>
@@ -176,7 +216,10 @@
 
     <script type="module">
       const $ = (id) => document.getElementById(id)
-      const state = { tasks: [], selected: null, run: null, stream: null, lastSeq: -1 }
+      const state = {
+        tasks: [], selected: null, run: null, stream: null, lastSeq: -1,
+        servers: [], presets: [],
+      }
 
       // --- theme ---------------------------------------------------------------
       $('theme').onclick = () => {
@@ -210,13 +253,194 @@
               <h3>${escape(t.title)}</h3>
               <span class="pill ${t.status}">${t.status.replace(/_/g, ' ')}</span>
             </div>
-            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}${t.mcp ? ` · mcp:${escape(t.mcp.id)}` : ''}</p>
+            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}${t.mcpServerIds?.length ? ` · ${escape(t.mcpServerIds.join(', '))}` : ''}</p>
           </div>`,
                 )
                 .join('')
         for (const el of $('tasks').querySelectorAll('.task')) {
           el.onclick = () => select(el.dataset.id)
         }
+      }
+
+      // --- mcp servers ---------------------------------------------------------
+
+      async function loadServers() {
+        const [servers, presets] = await Promise.all([
+          fetch('/api/mcp/servers').then((r) => r.json()),
+          state.presets.length ? { presets: state.presets } : fetch('/api/mcp/presets').then((r) => r.json()),
+        ])
+        state.servers = servers.servers
+        state.presets = presets.presets
+        renderServers()
+        renderTaskServers()
+      }
+
+      function renderServers() {
+        const el = $('servers')
+        if (!state.servers.length) {
+          el.innerHTML = '<p class="empty">Nothing connected.</p>'
+          return
+        }
+        el.innerHTML = state.servers
+          .map((s) => {
+            // An authorized-but-unverified server is its own state: the token exists but no
+            // tool list has been proven, so the button says Verify rather than Connect.
+            const needsAuth = !s.authorized
+            const label = needsAuth ? (s.auth === 'oauth2' ? 'Connect' : 'Add token') : 'Verify'
+            const detail = s.health === 'ok'
+              ? `${s.toolCount ?? 0} tools`
+              : s.lastError
+                ? s.lastError.slice(0, 90)
+                : s.authorized ? 'not verified yet' : 'not connected'
+            return `
+              <div class="srv">
+                <span class="dot ${s.health}" title="${escape(s.health)}"></span>
+                <div class="grow">
+                  <div class="name">${escape(s.name)} <span style="color:var(--fg4);font-weight:400">${escape(s.auth)}</span></div>
+                  <p class="meta">${escape(detail)}</p>
+                </div>
+                <button class="secondary" data-connect="${escape(s.id)}">${label}</button>
+                <button class="secondary" data-remove="${escape(s.id)}" title="Remove">×</button>
+              </div>`
+          })
+          .join('')
+
+        el.querySelectorAll('[data-connect]').forEach((b) => {
+          b.onclick = () => connectServer(b.dataset.connect, b)
+        })
+        el.querySelectorAll('[data-remove]').forEach((b) => {
+          b.onclick = async () => {
+            await fetch(`/api/mcp/servers/${b.dataset.remove}`, { method: 'DELETE' })
+            await loadServers()
+          }
+        })
+      }
+
+      async function connectServer(id, button) {
+        const server = state.servers.find((s) => s.id === id)
+        // A bearer server with no token yet has nothing to connect to; reopen the form so the
+        // token can be supplied, rather than failing a verify that was always going to fail.
+        if (server && server.auth === 'bearer' && !server.authorized) {
+          openServerForm(server)
+          return
+        }
+        button.disabled = true
+        button.textContent = '…'
+        try {
+          const res = await fetch(`/api/mcp/servers/${id}/connect`, { method: 'POST' })
+          const body = await res.json()
+          if (!res.ok) {
+            $('serverHint').textContent = body.error ?? 'could not connect'
+          } else if (body.kind === 'oauth') {
+            // A popup, not a redirect: the board keeps its state and the callback page can
+            // tell this window when consent is done.
+            window.open(body.authorizationUrl, 'intellidev-oauth', 'width=560,height=760')
+          }
+        } finally {
+          await loadServers()
+        }
+      }
+
+      // The callback page posts this when the exchange finishes.
+      window.addEventListener('message', (event) => {
+        if (event.data?.type === 'intellidev:mcp-connected') void loadServers()
+      })
+
+      function openServerForm(server) {
+        $('serverForm').hidden = false
+        $('addServer').hidden = true
+        $('sPreset').innerHTML =
+          '<option value="">Custom…</option>' +
+          state.presets.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
+        $('sId').value = server?.id ?? ''
+        $('sName').value = server?.name ?? ''
+        $('sUrl').value = server?.url ?? ''
+        $('sAuth').value = server?.auth ?? 'oauth2'
+        $('sToken').value = ''
+        $('sScope').value = ''
+        $('sHint').textContent = ''
+        $('serverHint').textContent = ''
+        syncAuthRows()
+      }
+
+      function syncAuthRows() {
+        const auth = $('sAuth').value
+        $('sTokenRow').hidden = auth !== 'bearer'
+        $('sScopeRow').hidden = auth !== 'oauth2'
+      }
+      $('sAuth').onchange = syncAuthRows
+
+      $('sPreset').onchange = () => {
+        const preset = state.presets.find((p) => p.id === $('sPreset').value)
+        if (!preset) return
+        $('sId').value = preset.id
+        $('sName').value = preset.name
+        $('sUrl').value = preset.url
+        $('sAuth').value = preset.auth
+        $('sScope').value = preset.scope ?? ''
+        $('sHint').textContent = preset.hint
+        syncAuthRows()
+      }
+
+      $('addServer').onclick = () => openServerForm(null)
+      $('cancelServer').onclick = () => {
+        $('serverForm').hidden = true
+        $('addServer').hidden = false
+      }
+
+      $('serverForm').onsubmit = async (event) => {
+        event.preventDefault()
+        $('saveServer').disabled = true
+        $('serverHint').textContent = ''
+        const body = {
+          id: $('sId').value.trim(),
+          name: $('sName').value.trim() || $('sId').value.trim(),
+          url: $('sUrl').value.trim(),
+          auth: $('sAuth').value,
+          ...($('sAuth').value === 'bearer' && $('sToken').value ? { token: $('sToken').value } : {}),
+          ...($('sAuth').value === 'oauth2' && $('sScope').value.trim()
+            ? { scope: $('sScope').value.trim() }
+            : {}),
+        }
+        const res = await fetch('/api/mcp/servers', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        $('saveServer').disabled = false
+        if (!res.ok) {
+          const error = await res.json()
+          $('serverHint').textContent =
+            (error.issues ?? []).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ||
+            error.error || 'could not save'
+          return
+        }
+        $('serverForm').hidden = true
+        $('addServer').hidden = false
+        await loadServers()
+        // Saving and connecting are one action: a server nobody connected is not useful, and
+        // making it two clicks just invites forgetting the second.
+        const row = $('servers').querySelector(`[data-connect="${body.id}"]`)
+        if (row) await connectServer(body.id, row)
+      }
+
+      function renderTaskServers() {
+        const usable = state.servers.filter((s) => s.authorized)
+        const el = $('taskServers')
+        if (!usable.length) {
+          el.innerHTML =
+            '<p class="hint">No MCP servers connected yet — add one above to give the agent tools.</p>'
+          return
+        }
+        el.innerHTML =
+          '<div class="checks">' +
+          usable
+            .map(
+              (s) => `<label><input type="checkbox" class="taskServer" value="${escape(s.id)}" />
+                 ${escape(s.name)} <span style="color:var(--fg4)">${s.toolCount ?? 0} tools</span></label>`,
+            )
+            .join('') +
+          '</div>'
       }
 
       $('form').onsubmit = async (event) => {
@@ -234,18 +458,7 @@
           harness: $('harness').value,
           baseBranch: $('baseBranch').value.trim() || 'main',
         }
-        // Sent only when an id and url are both present, so a half-filled optional section
-        // fails the form rather than dispatching a run with a server that cannot connect.
-        const mcpId = $('mcpId').value.trim()
-        const mcpUrl = $('mcpUrl').value.trim()
-        if (mcpId || mcpUrl) {
-          body.mcp = {
-            id: mcpId,
-            name: $('mcpName').value.trim() || mcpId,
-            url: mcpUrl,
-            ...($('mcpToken').value ? { token: $('mcpToken').value } : {}),
-          }
-        }
+        body.mcpServerIds = [...document.querySelectorAll('.taskServer:checked')].map((c) => c.value)
         const res = await fetch('/api/tasks', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -417,6 +630,7 @@
         return el.innerHTML
       }
 
+      await loadServers()
       await loadTasks()
     </script>
   </body>

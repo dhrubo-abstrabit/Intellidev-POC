@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
+import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
 
 /**
@@ -19,6 +20,9 @@ const workRoot = resolve(process.env['INTELLIDEV_WORK_ROOT'] ?? join(repoRoot, '
 const bundleRoot = resolve(process.env['INTELLIDEV_BUNDLE'] ?? join(repoRoot, 'examples/bundle'))
 
 await mkdir(workRoot, { recursive: true })
+
+// Under the work root, not the repo: the file holds live OAuth refresh tokens.
+const mcp = await McpRegistry.open(join(workRoot, 'mcp-servers.json'))
 
 const app = await buildServer({
   dispatch: {
@@ -42,6 +46,7 @@ const app = await buildServer({
         }
       : {}),
   },
+  mcp,
   publicDir: resolve(import.meta.dirname, '..', 'public'),
 })
 
@@ -56,6 +61,7 @@ process.stderr.write(
     `  mode    ${mode}${mode === 'inline' ? '  (set INTELLIDEV_MODE=docker to run in a container)' : ''}`,
     `  bundle  ${bundleRoot}`,
     `  work    ${workRoot}`,
+    `  mcp     ${mcp.list().length} connected server(s)`,
     ``,
   ].join('\n'),
 )
