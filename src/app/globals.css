@@ -187,6 +187,36 @@
   --sidebar-ring: var(--brand-teal-400);
 }
 
+/* Re-declares the :root (light) values for the semantic tokens above,
+ * scoped to a class instead of :root/.dark. next-themes only manages a
+ * single class on <html>, so a subtree that must ignore the app-wide
+ * theme (the (auth) pages) can't rely on a nested ThemeProvider — it's a
+ * no-op when nested (next-themes bails out and renders a plain Fragment
+ * once it detects an ancestor provider already in context). Overriding
+ * the variables locally works instead, since custom-property resolution
+ * follows DOM proximity: this class's declaration wins over .dark on a
+ * higher ancestor for every element inside it. */
+.theme-forced-light {
+  --background: var(--brand-n-0);
+  --foreground: var(--brand-n-900);
+  --card: var(--brand-n-0);
+  --card-foreground: var(--brand-n-900);
+  --popover: var(--brand-n-0);
+  --popover-foreground: var(--brand-n-900);
+  --primary: var(--brand-teal-500);
+  --primary-foreground: var(--brand-n-0);
+  --secondary: var(--brand-n-100);
+  --secondary-foreground: var(--brand-n-800);
+  --muted: var(--brand-n-50);
+  --muted-foreground: var(--brand-n-600);
+  --accent: var(--brand-teal-50);
+  --accent-foreground: var(--brand-teal-700);
+  --destructive: var(--brand-danger);
+  --border: var(--brand-n-200);
+  --input: var(--brand-n-200);
+  --ring: var(--brand-teal-500);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
