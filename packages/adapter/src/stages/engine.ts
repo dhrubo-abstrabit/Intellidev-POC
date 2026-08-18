@@ -299,7 +299,24 @@ export class StageEngine {
     state.pendingSteers = []
 
     for await (const event of session.events) this.deps.bus.emit(event)
-    await session.done()
+    const exit = await session.done()
+
+    // FOUND BY RUNNING IT. This return value used to be discarded, so a harness that died
+    // mid-stage still "passed": the stage has no gate, nothing else inspected the exit, and
+    // the run reported success while having produced nothing. A crash is a stage failure —
+    // and it is deliberately not treated as a *gate* failure, because `maxAttempts` bounds
+    // how often a gate may reject work, not how often the process may die.
+    if (exit.exitCode !== 0 && exit.exitCode !== null) {
+      throw new Error(
+        `harness ${ctx.harness} exited ${exit.exitCode} during stage "${stage.id}" — ` +
+          `see the harness.crashed event for what it reported`,
+      )
+    }
+    if (exit.signal) {
+      throw new Error(
+        `harness ${ctx.harness} was killed by ${exit.signal} during stage "${stage.id}"`,
+      )
+    }
 
     if (session.resumeToken) state.resumeTokens[stage.id] = session.resumeToken
 

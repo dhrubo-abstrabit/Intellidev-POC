@@ -35,6 +35,10 @@ class FakeDriver implements HarnessDriver {
       { type: 'assistant.message', data: { text: 'done' } },
     ],
     private readonly leftoverSteers: string[] = [],
+    private readonly exit: { exitCode: number | null; signal: string | null } = {
+      exitCode: 0,
+      signal: null,
+    },
   ) {}
 
   async materialise(): Promise<void> {}
@@ -53,7 +57,7 @@ class FakeDriver implements HarnessDriver {
       usage: () => ({ tokensIn: 0, tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0 }),
       info: () => null,
       resumeToken: `session_${req.stage}`,
-      done: async () => ({ exitCode: 0, signal: null }),
+      done: async () => this.exit,
     }
   }
 }
@@ -170,6 +174,52 @@ describe('happy path', () => {
     await engine.run()
     expect(driver.requests.map((r) => r.stage)).toEqual(['code'])
     expect(events.filter((e) => e.type === 'stage.entered')).toHaveLength(1)
+  })
+})
+
+describe('a harness that dies', () => {
+  /**
+   * REGRESSION. `session.done()`'s exit used to be discarded, so a harness that exited
+   * non-zero still passed its (gateless) stage and the run reported success having produced
+   * nothing at all. Seen in a real run: `design harness crashed (1)` followed immediately by
+   * `design passed`.
+   */
+  it('fails the stage instead of passing it', async () => {
+    const crashing = new FakeDriver('claude-code', undefined, [], [], {
+      exitCode: 1,
+      signal: null,
+    })
+    const { engine, events } = harness({
+      template: {
+        name: 't',
+        stages: [
+          { id: 'design', kind: 'agent', promptFile: 'p.md' },
+          { id: 'code', kind: 'agent', promptFile: 'p.md' },
+        ],
+      },
+      drivers: { 'claude-code': crashing },
+    })
+
+    const { outcome, state } = await engine.run()
+    expect(outcome).toBe('failed')
+    expect(state.records.map((r) => `${r.stage}:${r.status}`)).toEqual(['design:failed'])
+    // And it stops there rather than carrying on into the next stage.
+    expect(crashing.requests.map((r) => r.stage)).toEqual(['design'])
+    expect(events.at(-1)).toMatchObject({ type: 'run.finished' })
+  })
+
+  it('fails when the harness is killed by a signal', async () => {
+    const killed = new FakeDriver('claude-code', undefined, [], [], {
+      exitCode: null,
+      signal: 'SIGKILL',
+    })
+    const { engine } = harness({
+      template: { name: 't', stages: [{ id: 'code', kind: 'agent', promptFile: 'p.md' }] },
+      drivers: { 'claude-code': killed },
+    })
+    const { outcome, state } = await engine.run()
+    expect(outcome).toBe('failed')
+    expect(state.records[0]?.status).toBe('failed')
   })
 })
 
