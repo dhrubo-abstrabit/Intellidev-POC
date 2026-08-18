@@ -35,8 +35,25 @@ export interface LoginState {
 }
 
 interface Recipe {
-  /** Argv for the login, run inside the image. */
+  /**
+   * Where the login runs, which is decided per harness by where its credential lands.
+   *
+   *  - `container` for Claude Code: on macOS it writes to the Keychain, so a host login leaves
+   *    nothing importable, while a Linux login writes exactly the file a run reads.
+   *  - `host` for Codex: it stores a file on macOS too, *and* its flow completes through a
+   *    callback on localhost — which the browser can reach on the host but not inside a
+   *    container, where the server binds the container's own loopback.
+   */
+  where: 'container' | 'host'
+  /** Argv for the login. */
   argv: string[]
+  /**
+   * Ports to publish, for a login that completes through a local callback.
+   *
+   * Codex's normal flow starts a server on 1455 and asks the authorization server to redirect
+   * there, so the browser on the host has to be able to reach into the container.
+   */
+  ports?: string[]
   /** Credential files to capture from the container's HOME afterwards. */
   capture: string[]
   /** Whether the CLI reads the authorization code from stdin. */
@@ -46,13 +63,17 @@ interface Recipe {
 const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
   // Prints an authorize URL, then reads the code from stdin.
   'claude-code': {
+    where: 'container',
     argv: ['claude', 'auth', 'login', '--claudeai'],
     capture: ['.claude/.credentials.json'],
     needsCode: true,
   },
-  // Device-code flow: prints a URL and a short code, then polls on its own.
+  // The normal browser flow rather than `--device-auth`, because device authorization is off by
+  // default on a ChatGPT account and enabling it is a setting in someone's security page. Run on
+  // the host so the callback on localhost:1455 is the same localhost the browser will visit.
   codex: {
-    argv: ['codex', 'login', '--device-auth'],
+    where: 'host',
+    argv: ['codex', 'login'],
     capture: ['.codex/auth.json'],
     needsCode: false,
   },
@@ -60,8 +81,8 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
   // deliberately absent: importing the file it writes is the honest path there.
 }
 
-/** Both CLIs surface the link as a bare URL in their output. */
-const URL_PATTERN = /https?:\/\/[^\s'"]+/
+/** Every URL in the output; which one is the sign-in link is decided in `pickSignInUrl`. */
+const URL_PATTERN = /https?:\/\/[^\s'"]+/g
 /** A device code, e.g. `ZF8D-ZDTZF`. */
 const CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/
 
@@ -109,23 +130,30 @@ export class HarnessLogin {
     const state: LoginState = { harness, status: 'starting', needsCode: recipe.needsCode }
     this.state = state
 
-    // `-i` keeps stdin open for the code. HOME is bind-mounted so the credential the CLI writes
-    // outlives the container.
-    const child = spawn(
-      'docker',
-      [
-        'run',
-        '--rm',
-        '-i',
-        '--mount',
-        `type=bind,source=${this.home},target=/home/adapter`,
-        '--entrypoint',
-        recipe.argv[0]!,
-        this.image,
-        ...recipe.argv.slice(1),
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    )
+    // HOME is redirected either way: in a container so the credential outlives it, and on the
+    // host so a re-login cannot clobber the developer's own credential file.
+    const child =
+      recipe.where === 'container'
+        ? spawn(
+            'docker',
+            [
+              'run',
+              '--rm',
+              // Keeps stdin open for the code.
+              '-i',
+              '--mount',
+              `type=bind,source=${this.home},target=/home/adapter`,
+              '--entrypoint',
+              recipe.argv[0]!,
+              this.image,
+              ...recipe.argv.slice(1),
+            ],
+            { stdio: ['pipe', 'pipe', 'pipe'] },
+          )
+        : spawn(recipe.argv[0]!, recipe.argv.slice(1), {
+            env: { ...process.env, HOME: this.home },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          })
     this.child = child
 
     let seen = ''
@@ -135,9 +163,9 @@ export class HarnessLogin {
         state.output = stripAnsi(seen).slice(-1500)
 
         if (!state.authorizationUrl) {
-          const url = URL_PATTERN.exec(stripAnsi(seen))
+          const url = pickSignInUrl(stripAnsi(seen))
           if (url) {
-            state.authorizationUrl = url[0]
+            state.authorizationUrl = url
             state.status = recipe.needsCode ? 'awaiting_code' : 'awaiting_authorization'
             resolve()
           }
@@ -249,4 +277,19 @@ export class HarnessLogin {
  */
 function stripAnsi(text: string): string {
   return text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[a-zA-Z]`, 'g'), '')
+}
+
+/**
+ * Choose the sign-in link out of everything the CLI printed.
+ *
+ * FOUND BY RUNNING IT. Codex announces its own callback server first —
+ * `Starting local login server on http://localhost:1455.` — so taking the first URL sent people
+ * to a blank local page instead of OpenAI. A loopback address is never where a human signs in,
+ * and the real link always carries query parameters.
+ */
+export function pickSignInUrl(output: string): string | undefined {
+  const candidates = output.match(URL_PATTERN) ?? []
+  return candidates
+    .map((url) => url.replace(/[.,)]+$/, ''))
+    .find((url) => !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) && url.includes('?'))
 }
