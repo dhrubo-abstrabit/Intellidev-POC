@@ -43,23 +43,46 @@ export function WorkspaceMenuItems({ workspaces }: { workspaces: WorkspaceSummar
   );
 }
 
-export function WorkspaceSwitcher({ current, workspaces }: { current: WorkspaceSummary; workspaces: WorkspaceSummary[] }) {
+export function WorkspaceSwitcher({
+  current,
+  workspaces,
+  collapsed = false,
+}: {
+  current: WorkspaceSummary;
+  workspaces: WorkspaceSummary[];
+  /** Icon-only rail mode (see workspace-sidebar.tsx's collapsed branch) —
+   * same dropdown/menu items, just a compact initial-letter trigger instead
+   * of the full-width named button. */
+  collapsed?: boolean;
+}) {
   return (
     <DropdownMenu>
       {/* This component's underlying primitive (Base UI, not Radix) composes
           via a `render={<element/>}` prop, not a boolean `asChild`. */}
       <DropdownMenuTrigger
         render={
-          <Button
-            variant="outline"
-            className="w-full justify-between gap-2 rounded-md border-transparent px-2.5 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          >
-            <span className="truncate">{current.name}</span>
-            <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
-          </Button>
+          collapsed ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              title={current.name}
+              aria-label={`Switch workspace — current: ${current.name}`}
+              className="text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              {current.name.charAt(0).toUpperCase()}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              className="w-full justify-between gap-2 rounded-md border-transparent px-2.5 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              <span className="truncate">{current.name}</span>
+              <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          )
         }
       />
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" side={collapsed ? "right" : "bottom"}>
         <WorkspaceMenuItems workspaces={workspaces} />
       </DropdownMenuContent>
     </DropdownMenu>
