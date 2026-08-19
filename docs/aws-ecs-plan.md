@@ -50,7 +50,78 @@ These change what gets built, so they are worth settling first.
 | D4  | Credential storage              | Secrets Manager per credential · KMS-encrypted column in Postgres          | **Secrets Manager** — rotation and audit come free; ~$0.40/secret/month               |
 | D5  | Harness refresh tokens (see D3) | long-lived tokens only · in-container writeback · one seat per concurrency | **decide with D3** — this is the sharpest new constraint                              |
 
+## Constraints every task inherits
+
+These are the difference between a deployment and a platform. A task is not done unless it holds
+to them.
+
+- **Every AWS capability sits behind an interface with a local implementation.** `Runner`,
+  `CacheProvider`, `SecretStore`, event sink. The local loop must keep working after every task, or
+  reproducing a production failure means deploying to reproduce it.
+- **No resource name, ARN or region in application code.** They arrive as config resolved at boot,
+  so `dev` and `prod` differ by configuration and never by code path.
+- **Everything is scoped by project.** S3 keys, secret names, log groups, seats, cache prefixes. The
+  local path hardcodes `projectId: 'local'` — that is known debt, and the first task that touches a
+  resource name should retire it rather than copy it.
+- **Every AWS call is retried and idempotent.** Throttling is normal. Dispatch keyed on `runId` so a
+  retried call cannot launch two containers for one run.
+- **Least privilege, three separate roles.** Control-plane role, task execution role (pull image,
+  write logs), task role (its own S3 prefix and nothing else). A run must never hold credentials it
+  did not ask the broker for.
+- **The control plane must be stateless.** Any in-process state is a ceiling of one instance —
+  which is exactly what D1 and C6 exist to remove.
+- **Each task ships the signal that proves it works** — a metric, a log line, or an event. "It
+  seemed to work" is not an acceptance criterion.
+- **Each task carries a test that fails without it.** For infrastructure that means a deploy-time
+  assertion or a smoke check, not a unit test for its own sake.
+
 ## Phase A · Foundations
+
+### A0 · AWS access and CLI authentication
+
+- **Goal** anyone picking up this plan can reach the account from a terminal, without a long-lived
+  key on disk.
+- **State today** AWS CLI **2.36.25** installed; **no profile, no credentials**. CDK not installed
+  (`npx aws-cdk` is fine). Node 24.17.
+
+**Recommended — console session, auto-refreshing** (simplest for local dev):
+
+```bash
+aws login                      # opens a browser, pick the console session
+aws sts get-caller-identity    # must print an account and an ARN
+```
+
+- Acquires temporary credentials plus a refresh token and renews them itself, so nothing
+  long-lived is stored.
+
+**If the org uses IAM Identity Center** (preferred once there is more than one person):
+
+```bash
+aws configure sso              # start URL, region, account, role → name the profile
+export AWS_PROFILE=intellidev-dev
+aws sts get-caller-identity
+```
+
+**Last resort — access keys.** A long-lived secret in `~/.aws/credentials`; only if neither of the
+above is available, and rotate it:
+
+```bash
+aws configure                  # access key, secret, region, output
+```
+
+**Then, regardless of method:**
+
+```bash
+export AWS_REGION=ap-south-1            # pick one region and record it here
+npx aws-cdk@latest --version            # no global install needed
+npx aws-cdk bootstrap aws://<account>/<region>
+```
+
+- **Done when** `aws sts get-caller-identity` works in a fresh shell, the region is written into this
+  document, and `cdk bootstrap` has succeeded once.
+- **Never** commit credentials, and never bake them into the image — the runner gets its permissions
+  from its **task role**, not from a key.
+- **For CI later** use GitHub OIDC with a deploy role. No access keys in Actions secrets.
 
 ### A1 · IaC skeleton and environments
 
@@ -164,6 +235,20 @@ These change what gets built, so they are worth settling first.
 - **Depends on** C1, C4.
 - **Why it matters** a run stuck `running` blocks its seat (D2) and hides cost.
 
+### C6 · Cross-instance event fan-out
+
+- **Goal** a UI client connected to one control-plane instance sees events delivered to another.
+- **Problem** `store.subscribe()` fans out **in process**. The adapter's WebSocket lands on whichever
+  instance the ALB chose, so with two instances a browser watching a run can silently receive
+  nothing — and the run looks stalled while it is progressing.
+- **Scope** Postgres `LISTEN`/`NOTIFY` (no new infrastructure) behind the existing `subscribe`
+  method; SSE backfills from `seq` on connect, as it already does, so a gap self-heals.
+- **Done when** two control-plane instances are running, events arrive on one, and a browser
+  attached to the other streams them in order.
+- **Depends on** B1, C4.
+- **Why now** without it the control plane is capped at one instance, which makes the ALB decorative
+  and every deploy a gap in the stream.
+
 ## Phase D · Correct under concurrency
 
 Everything here was discovered by running the local path. None of it is theoretical.
@@ -228,13 +313,15 @@ Everything here was discovered by running the local path. None of it is theoreti
 ## Suggested order
 
 ```
-A1 → A2 → A3 → B1 → B2 → B3 → C1 → C2 → C3 → C4 → C5 → D1 → D2 → D3 → E1 → E2 → E3
+A0 → A1 → A2 → A3 → B1 → B2 → B3 → C1 → C2 → C3 → C4 → C5 → C6 → D1 → D2 → D3 → E1 → E2 → E3
 ```
 
+- **A0** first and once: everything else needs a terminal that can reach the account.
 - **A1–A3** are independent of application code and can go first without blocking local work.
 - **B1** unblocks the most: seats, events and the broker all need a real database.
 - **C1–C5** is the smallest set that makes a run work on AWS end to end. C5 is not optional: without
   it a task that dies quietly leaves a run running for ever.
+- **C6 and D1** are what allow a second control-plane instance. Until both land, run one.
 - **D1–D3** should land before anyone runs two tasks at once against one account.
 
 ## Definition of done for the whole track
@@ -245,3 +332,5 @@ A1 → A2 → A3 → B1 → B2 → B3 → C1 → C2 → C3 → C4 → C5 → D1 
 - Idle cost is the control plane and the database only — verified by leaving it alone for a day.
 - No credential in a task's environment; every one pulled through the broker with a run token.
 - `DockerRunner` still works, so a failing run can be reproduced locally.
+- Two control-plane instances can serve the same run — proving nothing important is in process
+  memory.

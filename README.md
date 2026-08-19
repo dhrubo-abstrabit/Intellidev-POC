@@ -6,6 +6,8 @@ opens a PR — streamed live. Three harnesses behind one adapter: **opencode**, 
 
 - **Docs** — start at [docs/README.md](docs/README.md); local details in
   [docs/running-locally.md](docs/running-locally.md)
+- **Deploying to AWS** — task breakdown in [docs/aws-ecs-plan.md](docs/aws-ecs-plan.md); begin at
+  **A0** (AWS CLI authentication)
 - **Requires** — Node 24+, pnpm, Docker Desktop running
 
 ---
