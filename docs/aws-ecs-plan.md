@@ -14,6 +14,21 @@ Task breakdown for moving the validated local path onto AWS. Decisions already t
 | Adapter + harness      | `docker run` per task      | **one Fargate task per run** (`RunTask`) | yes            |
 | Caches, bundles, specs | named volume + bind mounts | S3                                       | yes            |
 
+### Who starts and stops the container
+
+| Concern                   | Local today                               | On AWS                                               |
+| ------------------------- | ----------------------------------------- | ---------------------------------------------------- |
+| Launch                    | control plane runs `docker run`           | control plane calls `ecs:RunTask`                    |
+| Placement, image pull     | local Docker                              | **ECS scheduler + Fargate** — not our code           |
+| Knowing it finished       | `launch()` awaits the child process       | `run.finished` event, plus EventBridge as safety net |
+| Cancel                    | `docker kill`                             | `ecs:StopTask`                                       |
+| Wall-clock / idle timeout | control plane's own `setTimeout` kills it | **nothing — ECS has no task timeout.** Ours to build |
+| Cleanup                   | `--rm` removes the container              | task and its ephemeral storage die with it           |
+
+**ECS is the container orchestrator.** We ask for a task and it handles placement, the image pull,
+the run and the reaping. What ECS does _not_ do is bound the task's life or tell our code that a run
+ended — those two are the work in C1, C5 and E1.
+
 Two things worth being explicit about, because they are the most common misreading:
 
 - **The orchestrator is not a service.** It is the stage engine (`stages/engine.ts`) running
@@ -97,8 +112,12 @@ These change what gets built, so they are worth settling first.
 ### C1 · `FargateRunner`
 
 - **Goal** dispatch launches a Fargate task instead of `docker run`.
-- **Scope** implement the existing `Runner` interface (`create` / `start` / `stop`) with `RunTask`,
-  overrides for env and command, task ARN as the run handle, `stop` on cancel.
+- **Scope** implement the `Runner` interface with `RunTask`, overrides for env and command, task ARN
+  as the run handle, `stop` on cancel.
+- **Reshape the interface first.** `launch()` currently **blocks until the container exits** and
+  returns its exit code, which is a Docker-shaped contract: `RunTask` returns a task ARN
+  immediately. Split it into `start(spec) → handle` plus an observed terminal outcome, and let
+  `DockerRunner` satisfy the same shape by watching its own child.
 - **Done when** a dispatched task appears in ECS, its ARN is stored on the run, and cancelling from
   the UI stops it.
 - **Depends on** A2, A3.
@@ -130,6 +149,20 @@ These change what gets built, so they are worth settling first.
 - **Done when** killing the connection mid-run produces a gapless event log.
 - **Depends on** B1, B3.
 - **Note** per-run monotonic `seq` already exists precisely so reconnect is a replay, not a hole.
+
+### C5 · Run lifecycle observation and reconciliation
+
+- **Goal** every run reaches a terminal state, including runs whose container died without saying so.
+- **Problem** today the control plane learns the outcome by awaiting the Docker child. On Fargate
+  nothing reports back: a task killed by OOM, a failed image pull, or a Spot interruption leaves the
+  run sitting `running` for ever, and the task row is the only evidence.
+- **Scope** treat `run.finished` as the primary signal; add an **EventBridge** rule on ECS Task State
+  Change delivering stopped-task reasons to the control plane; add a reconciler that sweeps runs
+  marked running whose task is gone and settles them with the ECS stop reason.
+- **Done when** killing a task from the AWS console — with no cooperation from the adapter — moves
+  the run to `failed` with a reason a human can act on.
+- **Depends on** C1, C4.
+- **Why it matters** a run stuck `running` blocks its seat (D2) and hides cost.
 
 ## Phase D · Correct under concurrency
 
@@ -169,10 +202,15 @@ Everything here was discovered by running the local path. None of it is theoreti
 
 ### E1 · Limits, TTL and idle-kill
 
-- **Goal** no run bills forever.
-- **Scope** enforce `wallClockSec` and `idleKillSec` outside the container, a stopped-task reaper,
-  and a run-level cost ceiling.
-- **Done when** a hung task is stopped by the platform, not by someone noticing.
+- **Goal** no run bills for ever.
+- **ECS has no task timeout.** Locally the control plane's own `setTimeout` kills the container; on
+  Fargate nothing does, so a hung adapter runs until someone notices. This is required work, not
+  polish.
+- **Scope** enforce `wallClockSec` and `idleKillSec` from the control plane (a scheduled sweep
+  calling `StopTask`), plus a run-level cost ceiling and a stopped-task reaper.
+- **Done when** a task whose adapter is wedged is stopped by the platform within its budget, and the
+  run says why.
+- **Depends on** C5.
 
 ### E2 · Logs, metrics and alarms
 
@@ -190,12 +228,13 @@ Everything here was discovered by running the local path. None of it is theoreti
 ## Suggested order
 
 ```
-A1 → A2 → A3 → B1 → B2 → B3 → C1 → C2 → C3 → C4 → D1 → D2 → D3 → E1 → E2 → E3
+A1 → A2 → A3 → B1 → B2 → B3 → C1 → C2 → C3 → C4 → C5 → D1 → D2 → D3 → E1 → E2 → E3
 ```
 
 - **A1–A3** are independent of application code and can go first without blocking local work.
 - **B1** unblocks the most: seats, events and the broker all need a real database.
-- **C1–C4** is the smallest set that makes a run work on AWS end to end.
+- **C1–C5** is the smallest set that makes a run work on AWS end to end. C5 is not optional: without
+  it a task that dies quietly leaves a run running for ever.
 - **D1–D3** should land before anyone runs two tasks at once against one account.
 
 ## Definition of done for the whole track
