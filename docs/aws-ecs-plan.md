@@ -77,12 +77,16 @@ to them.
 
 ## Phase A · Foundations
 
-### A0 · AWS access and CLI authentication
+### A0 · AWS access and CLI authentication — **done, except bootstrap**
 
 - **Goal** anyone picking up this plan can reach the account from a terminal, without a long-lived
   key on disk.
-- **State today** AWS CLI **2.36.25** installed; **no profile, no credentials**. CDK not installed
-  (`npx aws-cdk` is fine). Node 24.17.
+- **Settled** region is **`ap-south-1`** — every stack, bucket and repository goes there unless a
+  task says otherwise. Authentication is a **console session with an assumed role**, so credentials
+  are temporary and refresh themselves; no static key exists on the machine.
+- **Still to do** `cdk bootstrap` for the account, which A1 needs. Resolve the account id at deploy
+  time with `aws sts get-caller-identity` rather than writing it down anywhere.
+- **Environment then found** AWS CLI 2.36.25, no CDK installed (`npx aws-cdk` is fine), Node 24.17.
 
 **Recommended — console session, auto-refreshing** (simplest for local dev):
 
@@ -112,13 +116,19 @@ aws configure                  # access key, secret, region, output
 **Then, regardless of method:**
 
 ```bash
-export AWS_REGION=ap-south-1            # pick one region and record it here
-npx aws-cdk@latest --version            # no global install needed
-npx aws-cdk bootstrap aws://<account>/<region>
+aws configure set region ap-south-1        # already set
+aws sts get-caller-identity               # confirm the session is live
+npx aws-cdk@latest --version              # no global install needed
+npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --output text)/ap-south-1"
 ```
 
-- **Done when** `aws sts get-caller-identity` works in a fresh shell, the region is written into this
-  document, and `cdk bootstrap` has succeeded once.
+- **Verify the region really applies**, not just that it is configured:
+  `aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text`
+  must print `ap-south-1`.
+- **Done when** `aws sts get-caller-identity` works in a fresh shell and `cdk bootstrap` has
+  succeeded once.
+- **A session expires.** When any AWS call starts failing with an expired-token error, run
+  `aws login` again — it is not a broken setup.
 - **Never** commit credentials, and never bake them into the image — the runner gets its permissions
   from its **task role**, not from a key.
 - **For CI later** use GitHub OIDC with a deploy role. No access keys in Actions secrets.
