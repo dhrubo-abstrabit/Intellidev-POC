@@ -46,6 +46,15 @@ like a random crash.
 **Cannot be deferred:** the `seat` column on `usage_records`. Land it in M0 or
 per-project cost attribution is unrecoverable.
 
+## Deployment · ECS Fargate
+
+Broken into tasks in [aws-ecs-plan.md](aws-ecs-plan.md). Runs alongside the milestones below
+rather than after them: A1–A3 touch no application code, and B1 (Postgres) is what M3 needs
+anyway.
+
+**Trigger:** the local path is validated end to end — task in, commit out, tools and credentials
+connected once. That has happened.
+
 ## M4 · Hardening
 
 Egress allowlist as security groups plus VPC endpoints — enforcement outside the

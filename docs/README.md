@@ -9,6 +9,7 @@ implements, tests, reviews and opens a PR — streamed live and steerable mid-ru
 | Doc                                | What it covers                                                        |
 | ---------------------------------- | --------------------------------------------------------------------- |
 | [architecture.md](architecture.md) | System shape, components, data model, API surface, decisions taken    |
+| [aws-ecs-plan.md](aws-ecs-plan.md) | Task breakdown for deploying to ECS Fargate, and what runs where      |
 | [stack.md](stack.md)               | Framework and library choices, with the alternatives rejected and why |
 | [milestone-0.md](milestone-0.md)   | The walking skeleton — the first slice to build, task by task         |
 | [roadmap.md](roadmap.md)           | M1–M5 after the skeleton, with the trigger for each                   |
