@@ -33,7 +33,7 @@ These change what gets built, so they are worth settling first.
 | D2  | Control-plane hosting           | Fargate service + ALB · App Runner                                         | **Fargate service + ALB** — App Runner cannot reach a VPC-only RDS without extra work |
 | D3  | Database                        | RDS `db.t4g.micro` · Aurora Serverless v2 (0.5 ACU floor)                  | **RDS t4g.micro** — cheaper at this size; Aurora's floor costs more than it saves     |
 | D4  | Credential storage              | Secrets Manager per credential · KMS-encrypted column in Postgres          | **Secrets Manager** — rotation and audit come free; ~$0.40/secret/month               |
-| D5  | Harness refresh tokens (see F3) | long-lived tokens only · in-container writeback · one seat per concurrency | **decide with F3** — this is the sharpest new constraint                              |
+| D5  | Harness refresh tokens (see D3) | long-lived tokens only · in-container writeback · one seat per concurrency | **decide with D3** — this is the sharpest new constraint                              |
 
 ## Phase A · Foundations
 
