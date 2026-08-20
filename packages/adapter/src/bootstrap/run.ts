@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, relative, resolve as resolvePath } from 'node:path'
 import {
@@ -58,6 +59,16 @@ export interface RunOptions {
   spec: RunSpec
   credentials: CredentialProvider
   sink: EventSink
+  /**
+   * Called once the bus exists, for a sink that needs to replay and acknowledge.
+   *
+   * The outbound WebSocket sink needs both: on reconnect it re-sends everything not yet
+   * acknowledged, and it tells the bus what the control plane has stored so the buffer can
+   * be dropped. It cannot simply be passed as `sink`, because those capabilities only exist
+   * once the bus does — and handing the whole bus to a sink would let it number events,
+   * which exactly one thing is allowed to do.
+   */
+  bindSink?: (source: EventReplaySource) => EventSink
   paths?: { brokerSocket?: string; statePath?: string; bundleRoot?: string; home?: string }
   /** Overridden in tests; real runs use the three CLIs. */
   drivers?: Partial<Record<HarnessId, HarnessDriver>>
@@ -65,6 +76,12 @@ export interface RunOptions {
   /** Wire everything up and stop before running a model. */
   dryRun?: boolean
   now?: () => Date
+}
+
+/** The bus's replay surface, without the ability to emit. */
+export interface EventReplaySource {
+  replayFrom(seq: number): AgentEvent[]
+  ack(seq: number): void
 }
 
 export interface RunResultSummary {
@@ -110,14 +127,22 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
   let stage: StageId | null = null
   let attempt = 1
 
+  // Assigned before any event can be emitted, so the late-bound sink is never called with
+  // a bus that does not exist yet.
+  let boundSink: EventSink | undefined
   const bus = new EventBus(
     spec.runId,
     (event) => {
       events.push(event)
       opts.sink(event)
+      boundSink?.(event)
     },
     opts.now,
   )
+  boundSink = opts.bindSink?.({
+    replayFrom: (seq) => bus.replayFrom(seq),
+    ack: (seq) => bus.ack(seq),
+  })
   bus.emit({ type: 'run.provisioning', data: { message: `harness ${spec.harness}` } })
 
   // 1. Broker.
@@ -174,7 +199,12 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       },
     })
     const repo = new RunRepo(git, {
-      mirror: join(spec.git.mirrorPath, 'repo.git'),
+      // Keyed by repo URL, not the fixed name `repo.git` it used to be. The cache is
+      // per-project, so a single `repo.git` meant two tasks in one project with different
+      // repositories reused one mirror — and the second failed with `fetch origin` pointing
+      // at the first repository, an error that reads like a broken remote rather than a
+      // cache collision.
+      mirror: join(spec.git.mirrorPath, `${mirrorKey(spec.git.repoUrl)}.git`),
       worktree: spec.git.worktreePath,
     })
 
@@ -488,6 +518,27 @@ async function safeDirectoryConfig(home: string): Promise<Record<string, string>
   const path = join(home, '.gitconfig-intellidev')
   await writeFile(path, `[safe]\n\tdirectory = ${value}\n`)
   return { GIT_CONFIG_GLOBAL: path }
+}
+
+/**
+ * A stable, filesystem-safe directory name for a repository.
+ *
+ * A hash rather than a slug of the URL: two URLs can differ only in credentials or a
+ * trailing `.git`, and a slug would either collide or grow unbounded. The short prefix is
+ * long enough that a collision is not a practical concern for one project's repositories,
+ * and the readable suffix keeps a cache directory diagnosable by eye.
+ */
+export function mirrorKey(repoUrl: string): string {
+  const digest = createHash('sha256').update(repoUrl).digest('hex').slice(0, 12)
+  const readable =
+    repoUrl
+      .replace(/\.git$/, '')
+      .split(/[/:]/)
+      .filter(Boolean)
+      .pop()
+      ?.replace(/[^a-zA-Z0-9._-]/g, '-')
+      .slice(0, 32) ?? 'repo'
+  return `${readable}-${digest}`
 }
 
 async function readContext(bundleRoot: string, spec: RunSpec): Promise<string> {

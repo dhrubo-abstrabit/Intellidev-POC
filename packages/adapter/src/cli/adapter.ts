@@ -9,6 +9,8 @@ import {
   UrlSpecProvider,
 } from '../bootstrap/providers.js'
 import { materialiseBundle } from '../bootstrap/bundle.js'
+import { WebSocketEventSink } from '../bootstrap/ws-sink.js'
+import type { EventReplaySource } from '../bootstrap/run.js'
 import { consoleSink, fileSink, multiSink } from '../bootstrap/sinks.js'
 
 /**
@@ -68,6 +70,19 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
       })
   io.stderr(`bundle → ${bundle.root} (${bundle.source})\n\n`)
 
+  /**
+   * The outbound event socket, when the control plane told us where to dial.
+   *
+   * Absent locally, where the JSONL file and the console are enough to watch a run. On
+   * Fargate there is no shared filesystem, so this is the only way events leave the
+   * container — and the run token is the one credential a run legitimately holds.
+   */
+  const eventsUrl = io.env['INTELLIDEV_EVENTS_URL']
+  const runToken = io.env['INTELLIDEV_RUN_TOKEN']
+  // Held so the socket can be flushed and closed after the run, rather than left to the
+  // process exiting and dropping whatever was still unacknowledged.
+  let liveSink: WebSocketEventSink | undefined
+
   const result = await runAdapter({
     spec,
     credentials: new LocalCredentialProvider({
@@ -79,6 +94,24 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
       consoleSink({ ...(args.verbose ? { verbose: true } : {}) }),
       fileSink(eventLog),
     ),
+    // Constructed inside the hook, because it can only exist once the bus does.
+    ...(eventsUrl && runToken
+      ? {
+          bindSink: (source: EventReplaySource) => {
+            const bound = new WebSocketEventSink({
+              url: eventsUrl,
+              token: runToken,
+              runId: spec.runId,
+              replayFrom: (seq) => source.replayFrom(seq),
+              onAck: (seq) => source.ack(seq),
+              onDiagnostic: (message) => io.stderr(`${message}\n`),
+            })
+            bound.start()
+            liveSink = bound
+            return bound.sink
+          },
+        }
+      : {}),
     paths: {
       brokerSocket: join(runtimeDir, 'broker.sock'),
       statePath: join(runtimeDir, 'state.json'),
@@ -87,6 +120,11 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     },
     ...(args.dryRun ? { dryRun: true } : {}),
   })
+
+  // Closed before reporting, so `run.finished` has a chance to ship. If it does not, C5's
+  // reconciler settles the run from the ECS stop reason instead — a bounded gap rather
+  // than an unbounded wait here.
+  liveSink?.close()
 
   io.stderr('\n')
   io.stdout(

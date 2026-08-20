@@ -27,7 +27,14 @@ export interface RunLaunchSpec {
   timeoutSec?: number
   /** Streamed as the run produces it, rather than collected at the end. */
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void
-  /** The exact argv, so a failing launch can be logged and reproduced by hand. */
+  /**
+   * The argv, so a failing launch can be logged and reproduced by hand.
+   *
+   * **Secret values are replaced before this is called.** The argv carries `--env` pairs
+   * including the run token, and this is written to the control plane's log — so printing it
+   * verbatim would put a live credential in plaintext wherever those logs go. The names are
+   * kept, because knowing *which* variables were set is most of the debugging value.
+   */
   onArgv?: (argv: readonly string[]) => void
 }
 

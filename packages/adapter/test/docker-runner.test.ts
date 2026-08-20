@@ -98,3 +98,44 @@ describe('DockerRunner.start', () => {
     expect(args.join(' ')).toContain('--pids-limit')
   })
 })
+
+describe('redactArgv', () => {
+  it('hides the run token, which is logged on every dispatch', async () => {
+    // The argv is written to the control plane's log. Printing it verbatim put a live
+    // credential in plaintext wherever those logs go.
+    const { redactArgv } = await import('../src/runner/docker.js')
+    const argv = redactArgv([
+      'docker',
+      'run',
+      '--env',
+      'INTELLIDEV_RUN_TOKEN=Dof4SsnfCg8VkZvq',
+      '--env',
+      'INTELLIDEV_EVENTS_URL=ws://host/x',
+      'image',
+    ])
+    expect(argv.join(' ')).toContain('INTELLIDEV_RUN_TOKEN=<redacted>')
+    // The name survives, because knowing which variables were set is the debugging value.
+    expect(argv.join(' ')).toContain('INTELLIDEV_EVENTS_URL=ws://host/x')
+  })
+
+  it('redacts by the shape of the name, so a new secret is covered by default', async () => {
+    const { redactArgv } = await import('../src/runner/docker.js')
+    for (const name of [
+      'ANTHROPIC_API_KEY',
+      'INTELLIDEV_SEAT_MATERIAL',
+      'GITHUB_TOKEN',
+      'DB_PASSWORD',
+      'SOME_SECRET',
+      'MY_CREDENTIALS',
+    ]) {
+      expect(redactArgv(['--env', `${name}=live-value`]).join(' ')).toBe(`--env ${name}=<redacted>`)
+    }
+  })
+
+  it('leaves non-env arguments alone', async () => {
+    // An image reference or a mount path can contain "key" without being one.
+    const { redactArgv } = await import('../src/runner/docker.js')
+    const argv = redactArgv(['docker', 'run', '--mount', 'source=/keys/data,target=/x', 'img'])
+    expect(argv).toEqual(['docker', 'run', '--mount', 'source=/keys/data,target=/x', 'img'])
+  })
+})

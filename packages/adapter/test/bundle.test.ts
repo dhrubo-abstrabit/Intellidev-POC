@@ -161,3 +161,34 @@ describe('materialiseBundle locally', () => {
     expect(result.root).toBe(src)
   })
 })
+
+describe('mirrorKey', () => {
+  it('gives two repositories in one project different mirrors', async () => {
+    // The bug this closes: the mirror was a fixed `repo.git` inside a per-project cache, so
+    // a second repository reused the first's mirror and failed on `fetch origin` with an
+    // error that read like a broken remote rather than a cache collision.
+    const { mirrorKey } = await import('../src/bootstrap/run.js')
+    expect(mirrorKey('https://github.com/a/one.git')).not.toBe(
+      mirrorKey('https://github.com/a/two.git'),
+    )
+  })
+
+  it('is stable, so the second run on a repo is a cache hit', async () => {
+    const { mirrorKey } = await import('../src/bootstrap/run.js')
+    const url = 'https://github.com/octocat/Hello-World.git'
+    expect(mirrorKey(url)).toBe(mirrorKey(url))
+  })
+
+  it('stays readable and filesystem-safe', async () => {
+    const { mirrorKey } = await import('../src/bootstrap/run.js')
+    expect(mirrorKey('https://github.com/octocat/Hello-World.git')).toMatch(
+      /^Hello-World-[0-9a-f]{12}$/,
+    )
+    expect(mirrorKey('file:///tmp/weird name/../origin.git')).toMatch(/^[a-zA-Z0-9._-]+$/)
+  })
+
+  it('distinguishes URLs that differ only in credentials', async () => {
+    const { mirrorKey } = await import('../src/bootstrap/run.js')
+    expect(mirrorKey('https://u:p@h/r.git')).not.toBe(mirrorKey('https://h/r.git'))
+  })
+})

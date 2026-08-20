@@ -22,6 +22,29 @@ export interface DockerRunnerOptions {
   network?: string
 }
 
+/**
+ * Env var names whose values must never reach a log.
+ *
+ * A denylist by suffix rather than an allowlist, because the set grows: every provider key,
+ * every MCP token and the run token all arrive here as `--env NAME=value`. Matching on the
+ * shape of the name means a new secret is redacted by default rather than when someone
+ * remembers to add it.
+ */
+const SECRET_NAME = /(TOKEN|SECRET|KEY|PASSWORD|MATERIAL|CREDENTIAL)S?$/i
+
+/** Replaces secret env values in an argv, keeping the names. */
+export function redactArgv(argv: readonly string[]): string[] {
+  return argv.map((arg, index) => {
+    // Only the value half of an `--env NAME=value` pair, so a path or an image reference
+    // that happens to contain "key" is left alone.
+    if (argv[index - 1] !== '--env') return arg
+    const eq = arg.indexOf('=')
+    if (eq < 0) return arg
+    const name = arg.slice(0, eq)
+    return SECRET_NAME.test(name) ? `${name}=<redacted>` : arg
+  })
+}
+
 export class DockerRunner implements Runner {
   readonly kind = 'docker' as const
 
@@ -74,7 +97,7 @@ export class DockerRunner implements Runner {
   async start(spec: RunLaunchSpec): Promise<RunHandle> {
     const containerName = `intellidev-${spec.runId}-${randomBytes(3).toString('hex')}`
     const args = this.buildArgs(spec, containerName)
-    spec.onArgv?.([this.opts.binary ?? 'docker', ...args])
+    spec.onArgv?.(redactArgv([this.opts.binary ?? 'docker', ...args]))
 
     const child = spawn(this.opts.binary ?? 'docker', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
