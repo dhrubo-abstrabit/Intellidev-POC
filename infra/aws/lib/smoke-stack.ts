@@ -1,6 +1,8 @@
 import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import type { StackProps } from 'aws-cdk-lib'
+import * as ecr from 'aws-cdk-lib/aws-ecr'
 import * as ecs from 'aws-cdk-lib/aws-ecs'
+import * as iam from 'aws-cdk-lib/aws-iam'
 import * as ec2 from 'aws-cdk-lib/aws-ec2'
 import * as logs from 'aws-cdk-lib/aws-logs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
@@ -13,6 +15,8 @@ export interface SmokeStackProps extends StackProps {
   readonly environment: EnvironmentConfig
   readonly vpc: ec2.IVpc
   readonly securityGroup: ec2.ISecurityGroup
+  /** So the execution role can be granted pull on exactly one repository. */
+  readonly runnerRepository: ecr.IRepository
 }
 
 /**
@@ -31,6 +35,7 @@ export interface SmokeStackProps extends StackProps {
 export class SmokeStack extends Stack {
   readonly cluster: ecs.Cluster
   readonly bucket: s3.Bucket
+  readonly executionRole: iam.Role
 
   constructor(scope: Construct, id: string, props: SmokeStackProps) {
     super(scope, id, props)
@@ -65,10 +70,44 @@ export class SmokeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     })
 
+    /**
+     * The task execution role — the second of the three roles the plan calls for.
+     *
+     * It belongs to ECS, not to the run: it pulls the image and opens the log stream
+     * *before* any of our code exists. Deliberately not the managed
+     * `AmazonECSTaskExecutionRolePolicy`, which grants ECR pull on `*`; this can pull one
+     * repository and write to log groups under this environment's prefix, and nothing else.
+     *
+     * Shared rather than per-task-definition so C1's run task reuses it instead of minting
+     * a fourth role, and so there is one place to audit what ECS itself may do.
+     */
+    this.executionRole = new iam.Role(this, 'TaskExecutionRole', {
+      roleName: resourceName(env.name, 'task-execution'),
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      description: 'Pulls the golden image and opens log streams. Not the run identity.',
+    })
+    // GetAuthorizationToken cannot be resource-scoped: it mints a registry-wide token and
+    // AWS models it as an account-level action. The pull itself is scoped below.
+    this.executionRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['ecr:GetAuthorizationToken'],
+        resources: ['*'],
+      }),
+    )
+    props.runnerRepository.grantPull(this.executionRole)
+    logGroup.grantWrite(this.executionRole)
+
     const task = new ecs.FargateTaskDefinition(this, 'SmokeTask', {
       family: resourceName(env.name, 'egress-smoke'),
       cpu: 256,
       memoryLimitMiB: 512,
+      executionRole: this.executionRole,
+      // Must match the pushed image, or the task dies with an exec-format error that looks
+      // nothing like an architecture mismatch.
+      runtimePlatform: {
+        cpuArchitecture: ecs.CpuArchitecture.of(env.architecture),
+        operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+      },
     })
 
     // Least privilege: this bucket, these two verbs, nothing else. A run must never hold a
@@ -88,6 +127,11 @@ export class SmokeStack extends Stack {
       command: [SMOKE_SCRIPT],
     })
 
+    new ssm.StringParameter(this, 'ExecutionRoleParam', {
+      parameterName: ssmPath(env.name, 'runtime', 'task-execution-role-arn'),
+      stringValue: this.executionRole.roleArn,
+      description: 'Role ECS assumes to pull the image and open log streams.',
+    })
     new ssm.StringParameter(this, 'ClusterParam', {
       parameterName: ssmPath(env.name, 'runtime', 'cluster-name'),
       stringValue: this.cluster.clusterName,

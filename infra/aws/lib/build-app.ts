@@ -2,6 +2,7 @@ import { App, Aspects } from 'aws-cdk-lib'
 import { resolveEnvironment } from './config.js'
 import { NoNatGateways } from './no-nat-aspect.js'
 import { NetworkStack } from './network-stack.js'
+import { RegistryStack } from './registry-stack.js'
 import { SmokeStack } from './smoke-stack.js'
 import { stackName } from './naming.js'
 import { applyTags } from './tags.js'
@@ -18,6 +19,7 @@ export interface BuildAppOverrides {
 export interface BuiltApp {
   readonly app: App
   readonly network: NetworkStack
+  readonly registry: RegistryStack
   readonly smoke: SmokeStack
 }
 
@@ -51,16 +53,23 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     description: `Intellidev ${config.name} network (${config.cidr})`,
   })
 
+  const registry = new RegistryStack(app, stackName(config.name, 'Registry'), {
+    environment: config,
+    env: { account, region: config.region },
+    description: `Intellidev ${config.name} golden-image registry`,
+  })
+
   const smoke = new SmokeStack(app, stackName(config.name, 'Smoke'), {
     environment: config,
     vpc: network.vpc,
     securityGroup: network.runTaskSecurityGroup,
+    runnerRepository: registry.repository,
     env: { account, region: config.region },
     description: `Intellidev ${config.name} egress proof and ECS cluster`,
   })
 
-  for (const stack of [network, smoke]) applyTags(stack, config)
+  for (const stack of [network, registry, smoke]) applyTags(stack, config)
   Aspects.of(app).add(new NoNatGateways())
 
-  return { app, network, smoke }
+  return { app, network, registry, smoke }
 }

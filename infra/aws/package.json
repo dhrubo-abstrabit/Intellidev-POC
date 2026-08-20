@@ -11,9 +11,11 @@
     "synth": "cdk synth --all",
     "diff": "cdk diff",
     "deploy": "./scripts/preflight.sh && cdk deploy --all --require-approval broadening",
-    "destroy": "cdk destroy --all --force",
+    "destroy": "./scripts/destroy.sh",
     "verify": "./scripts/verify.sh",
-    "smoke": "./scripts/smoke-egress.sh"
+    "smoke": "./scripts/smoke-egress.sh",
+    "push": "./scripts/push-image.sh",
+    "measure-pull": "./scripts/measure-pull.sh"
   },
   "devDependencies": {
     "aws-cdk": "2.1137.0",

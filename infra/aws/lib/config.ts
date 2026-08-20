@@ -19,6 +19,16 @@ export interface EnvironmentConfig {
   readonly cidr: string
   readonly azCount: number
   /**
+   * CPU architecture for run tasks.
+   *
+   * `ARM64` because the golden image already builds and runs on arm64 (the local Docker
+   * path proves it), which means native builds on an Apple Silicon machine instead of
+   * emulated cross-compilation — and Graviton is ~20% cheaper. Config rather than a
+   * constant because an x86-only harness would force this back, and that should be a
+   * configuration change, not a code change.
+   */
+  readonly architecture: 'ARM64' | 'X86_64'
+  /**
    * `dev` deploys into whichever account you are authenticated to. `prod` must never be
    * able to land somewhere by accident, so it requires the account id to be passed
    * explicitly and checked against the session.
@@ -34,6 +44,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvironmentConfig> = {
     // 10.21.0.0/16 free for prod so the two could ever be peered.
     cidr: '10.20.0.0/16',
     azCount: 2,
+    architecture: 'ARM64',
     requiresPinnedAccount: false,
   },
   prod: {
@@ -41,6 +52,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvironmentConfig> = {
     region: 'ap-south-1',
     cidr: '10.21.0.0/16',
     azCount: 2,
+    architecture: 'ARM64',
     requiresPinnedAccount: true,
   },
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Template } from 'aws-cdk-lib/assertions'
+import { Match, Template } from 'aws-cdk-lib/assertions'
 import { buildApp } from '../lib/build-app.js'
 import { ssmPath } from '../lib/naming.js'
 
@@ -97,13 +97,48 @@ describe('the egress proof', () => {
     expect(command).toContain('git clone')
   })
 
-  it('scopes the task role to one bucket', () => {
+  it('grants no wildcard resource except where AWS makes it impossible to scope', () => {
+    // A blanket "no Resource: *" assertion is too blunt: ecr:GetAuthorizationToken mints a
+    // registry-wide token and AWS models it as an account-level action, so it genuinely
+    // cannot be scoped. Every *other* wildcard is a mistake, and this is what catches one.
+    const UNSCOPEABLE = new Set(['ecr:GetAuthorizationToken'])
     const { smoke } = templates()
     const policies = smoke.findResources('AWS::IAM::Policy')
-    const rendered = JSON.stringify(Object.values(policies))
+
+    for (const policy of Object.values(policies)) {
+      const statements = (policy['Properties']?.['PolicyDocument']?.['Statement'] ?? []) as Array<
+        Record<string, unknown>
+      >
+      for (const statement of statements) {
+        const resources = [statement['Resource']].flat()
+        if (!resources.includes('*')) continue
+        const actions = [statement['Action']].flat().filter((a) => typeof a === 'string')
+        for (const action of actions) {
+          expect(UNSCOPEABLE, `unscoped wildcard on ${String(action)}`).toContain(action)
+        }
+      }
+    }
+  })
+
+  it('scopes the probe task role to exactly one bucket', () => {
+    const { smoke } = templates()
+    const rendered = JSON.stringify(Object.values(smoke.findResources('AWS::IAM::Policy')))
     expect(rendered).toContain('s3:GetObject')
-    // A wildcard resource would mean the probe could read every bucket in the account.
-    expect(rendered).not.toContain('"Resource":"*"')
+    // The bucket ARN arrives as a Fn::GetAtt, which is what a scoped grant looks like.
+    expect(rendered).toContain('SmokeBucket')
+  })
+
+  it('gives ECS a pull-and-log role that is not the run identity', () => {
+    // The plan calls for three separate roles. This is the execution role: it acts before
+    // any of our code exists, so it must not be able to do what a run can.
+    const { smoke } = templates()
+    const rendered = JSON.stringify(smoke.findResources('AWS::IAM::Policy'))
+    expect(rendered).toContain('ecr:BatchGetImage')
+    expect(rendered).toContain('logs:PutLogEvents')
+    // It has no business touching the probe's bucket data.
+    smoke.hasResourceProperties('AWS::IAM::Role', {
+      Description: Match.stringLikeRegexp('Not the run identity'),
+    })
   })
 
   it('publishes what the smoke script needs to SSM', () => {
