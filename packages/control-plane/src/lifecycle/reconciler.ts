@@ -131,7 +131,7 @@ export class LifecycleReconciler {
     const arn = detail?.taskArn
     if (!arn || detail?.lastStatus !== STOPPED) return true
 
-    const run = this.opts.store.findRunByHandle(arn)
+    const run = await this.opts.store.findRunByHandle(arn)
     if (!run) {
       // A task in our cluster that is not one of our runs — the egress probe, or the pull
       // probe. Not an error, and nothing to settle.
@@ -139,7 +139,7 @@ export class LifecycleReconciler {
     }
 
     const reason = stoppedReason(detail)
-    const settled = settle(
+    const settled = await settle(
       this.opts.store,
       run.id,
       run.taskId,
@@ -160,9 +160,9 @@ export class LifecycleReconciler {
    * inferring from logs.
    */
   async sweep(): Promise<SettledRun[]> {
-    const candidates = this.opts.store
-      .listUnsettledRuns()
-      .filter((run) => run.handle?.startsWith('arn:aws:ecs:'))
+    const candidates = (await this.opts.store.listUnsettledRuns()).filter((run) =>
+      run.handle?.startsWith('arn:aws:ecs:'),
+    )
     if (candidates.length === 0) return []
 
     const settledRuns: SettledRun[] = []
@@ -193,7 +193,7 @@ export class LifecycleReconciler {
           // ever be available for it. Saying so is more useful than leaving it running.
           const reason = 'task no longer known to ECS; it stopped more than an hour ago'
           if (
-            settle(
+            await settle(
               this.opts.store,
               run.id,
               run.taskId,
@@ -224,7 +224,7 @@ export class LifecycleReconciler {
         }
         const reason = stoppedReason(detail)
         if (
-          settle(
+          await settle(
             this.opts.store,
             run.id,
             run.taskId,

@@ -11,7 +11,9 @@
     "build": "echo \"served from source via tsx\"",
     "dev": "tsx watch src/main.ts",
     "prove-runner": "tsx scripts/prove-runner.ts",
-    "prove-reconciler": "tsx scripts/prove-reconciler.ts"
+    "prove-reconciler": "tsx scripts/prove-reconciler.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ecs": "^3.1114.0",
@@ -23,10 +25,14 @@
     "@intellidev/adapter": "workspace:*",
     "@intellidev/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "drizzle-orm": "^0.45.2",
     "fastify": "^5.2.0",
+    "pg": "^8.23.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }

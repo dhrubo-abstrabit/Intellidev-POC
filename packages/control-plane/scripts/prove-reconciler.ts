@@ -13,7 +13,7 @@
 import { ECSClient, RunTaskCommand, StopTaskCommand } from '@aws-sdk/client-ecs'
 import { loadAwsConfig } from '../src/aws/config.js'
 import { LifecycleReconciler } from '../src/lifecycle/reconciler.js'
-import { Store } from '../src/store.js'
+import { InMemoryStore } from '../src/store.js'
 
 const env = process.env['INTELLIDEV_ENV'] ?? 'dev'
 const region = process.env['AWS_REGION'] ?? 'ap-south-1'
@@ -29,7 +29,7 @@ const check = (label: string, ok: boolean, detail = ''): void => {
 
 /** A store holding one run that believes it is still going, as an orphan would. */
 function orphanedRun(handle: string) {
-  const store = new Store()
+  const store = new InMemoryStore()
   const task = store.createTask({
     title: 'c5 orphan',
     description: 'killed from outside with no adapter cooperation',

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
-import { Store } from './store.js'
+import { InMemoryStore, PostgresStore, type Store } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
@@ -86,9 +86,24 @@ const aws =
       })
     : undefined
 
-// Owned here rather than reached for off the Fastify instance, because the reconciler and
-// the server operate on the same runs and that shared ownership should be visible.
-const store = new Store()
+/**
+ * Which store this process uses.
+ *
+ * Postgres when a connection string is configured, in memory otherwise — so a developer
+ * with no database still gets a working UI, and nothing has to be remembered to get
+ * durability once one exists. The choice is logged, because "my board keeps emptying" and
+ * "my board persists" are the same symptom seen from opposite sides.
+ *
+ * Session-mode pooler only: transaction mode loses `LISTEN`/`NOTIFY` (measured: 0 of 3
+ * cross-connection notifications) and cannot hold the migrator's advisory lock.
+ */
+const databaseUrl = process.env['SUPABASE_CONNECTION_STRING_SESSION']
+const store: Store = databaseUrl
+  ? new PostgresStore({
+      connectionString: databaseUrl,
+      onDiagnostic: (message) => process.stderr.write(`${message}\n`),
+    })
+  : new InMemoryStore()
 // One registry shared by dispatch (which mints) and the event socket (which verifies), so
 // there is exactly one place a run's token can be revoked.
 const tokens = new RunTokenRegistry()
@@ -173,6 +188,7 @@ process.stderr.write(
     `  mode    ${mode}${mode === 'inline' ? '  (set INTELLIDEV_MODE=docker to run in a container)' : ''}`,
     `  bundle  ${bundleRoot}`,
     `  work    ${workRoot}`,
+    `  store   ${databaseUrl ? `postgres (${new URL(databaseUrl).hostname})` : 'in memory — nothing survives a restart'}`,
     `  mcp     ${mcp.list().length} connected server(s)`,
     `  model   ${
       Object.entries(models)

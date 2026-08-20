@@ -19,7 +19,7 @@ import { toPublic, type McpAuthKind } from './mcp/types.js'
 import { verifyServer } from './mcp/verify.js'
 import websocket from '@fastify/websocket'
 import { AgentEvent } from '@intellidev/shared'
-import { Store, type TaskRow } from './store.js'
+import { InMemoryStore, type Store, type TaskRow } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 
 /**
@@ -89,7 +89,7 @@ const CreateTask = z.object({
 })
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
-  const store = opts.store ?? new Store()
+  const store = opts.store ?? new InMemoryStore()
   const tokens = opts.tokens ?? new RunTokenRegistry()
   const app = Fastify({ logger: false })
   await app.register(websocket)
@@ -233,7 +233,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // --- tasks ---------------------------------------------------------------
 
-  app.get('/api/tasks', async () => ({ tasks: store.listTasks() }))
+  app.get('/api/tasks', async () => ({ tasks: await store.listTasks() }))
 
   app.post('/api/tasks', async (request, reply) => {
     const parsed = CreateTask.safeParse(request.body)
@@ -248,17 +248,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (unknown.length > 0) {
       return reply.code(400).send({ error: `not a connected MCP server: ${unknown.join(', ')}` })
     }
-    return reply.code(201).send({ task: store.createTask(parsed.data) })
+    return reply.code(201).send({ task: await store.createTask(parsed.data) })
   })
 
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
-    const task = store.getTask(request.params.id)
+    const task = await store.getTask(request.params.id)
     if (!task) return reply.code(404).send({ error: 'no such task' })
-    return { task, runs: store.listRuns(task.id) }
+    return { task, runs: await store.listRuns(task.id) }
   })
 
   app.post<{ Params: { id: string } }>('/api/tasks/:id/dispatch', async (request, reply) => {
-    const task = store.getTask(request.params.id)
+    const task = await store.getTask(request.params.id)
     if (!task) return reply.code(404).send({ error: 'no such task' })
     if (task.status !== 'not_started' && task.status !== 'failed') {
       return reply.code(409).send({ error: `task is ${task.status}` })
@@ -395,7 +395,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // --- runs ----------------------------------------------------------------
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (request, reply) => {
-    const run = store.getRun(request.params.id)
+    const run = await store.getRun(request.params.id)
     if (!run) return reply.code(404).send({ error: 'no such run' })
     return { run }
   })
@@ -403,9 +403,12 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.get<{ Params: { id: string }; Querystring: { since?: string } }>(
     '/api/runs/:id/events',
     async (request, reply) => {
-      if (!store.getRun(request.params.id)) return reply.code(404).send({ error: 'no such run' })
+      if (!(await store.getRun(request.params.id)))
+        return reply.code(404).send({ error: 'no such run' })
       const since = Number(request.query.since ?? -1)
-      return { events: store.eventsSince(request.params.id, Number.isNaN(since) ? -1 : since) }
+      return {
+        events: await store.eventsSince(request.params.id, Number.isNaN(since) ? -1 : since),
+      }
     },
   )
 
@@ -417,7 +420,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     '/api/runs/:id/stream',
     async (request, reply) => {
       const runId = request.params.id
-      if (!store.getRun(runId)) return reply.code(404).send({ error: 'no such run' })
+      if (!(await store.getRun(runId))) return reply.code(404).send({ error: 'no such run' })
 
       reply.raw.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -429,7 +432,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
       const send = (event: unknown) => reply.raw.write(`data: ${JSON.stringify(event)}\n\n`)
       const since = Number(request.query.since ?? -1)
-      for (const event of store.eventsSince(runId, Number.isNaN(since) ? -1 : since)) send(event)
+      for (const event of await store.eventsSince(runId, Number.isNaN(since) ? -1 : since))
+        send(event)
 
       const unsubscribe = store.subscribe(runId, send)
       // Comment frames keep intermediaries from closing an idle stream during a long stage.
@@ -478,6 +482,12 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       }
 
       socket.on('message', (raw: never) => {
+        // The handler body is async because the store is; the listener itself cannot be,
+        // so the promise is launched here and every failure path is handled inside.
+        void handleFrame(raw)
+      })
+
+      const handleFrame = async (raw: never): Promise<void> => {
         let frame: { type?: string; event?: unknown }
         try {
           frame = JSON.parse(String(raw)) as { type?: string; event?: unknown }
@@ -495,10 +505,19 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
         // `appendEvent` already drops duplicate and out-of-order seqs, which is what makes
         // a replay idempotent — the adapter re-sends on every reconnect by design.
-        store.appendEvent(parsed.data)
-        // Acked only after the append. See the note above.
+        try {
+          // Awaited before the ack. Acking first would let the adapter drop an event that a
+          // control-plane crash then lost — a permanent hole, which is the one thing the
+          // sequence numbers exist to prevent.
+          await store.appendEvent(parsed.data)
+        } catch {
+          // Not acked, so the adapter keeps holding it and replays on the next reconnect.
+          // Silence here is deliberate: the run must not be told a transient write failure
+          // means its event was rejected.
+          return
+        }
         socket.send(JSON.stringify({ type: 'ack', seq: parsed.data.seq }))
-      })
+      }
     },
   )
 
@@ -543,4 +562,4 @@ function escapeHtml(text: string): string {
   )
 }
 
-export { Store }
+export type { Store }

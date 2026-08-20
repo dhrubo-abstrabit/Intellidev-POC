@@ -119,8 +119,8 @@ export async function dispatchTask(args: {
     taskId: task.id.replace(/^task_/, ''),
     slug: slugify(task.title),
   })
-  const run = store.createRun(task.id, task.harness, branch)
-  store.setTaskStatus(task.id, 'dispatched')
+  const run = await store.createRun(task.id, task.harness, branch)
+  await store.setTaskStatus(task.id, 'dispatched')
 
   const servers = await resolveMcpServers(task, mcp)
   // Material travels in the environment, not the spec: the spec is written to a bind-mounted
@@ -133,12 +133,12 @@ export async function dispatchTask(args: {
   // before a real task completes.
   void execute({ store, runId: run.id, taskId: task.id, spec, config, servers, seat }).catch(
     (error: unknown) => {
-      store.updateRun(run.id, {
+      void store.updateRun(run.id, {
         status: 'failed',
         endedAt: new Date().toISOString(),
         failureReason: error instanceof Error ? error.message : String(error),
       })
-      moveTask(store, task.id, 'failed')
+      void moveTask(store, task.id, 'failed')
     },
   )
 
@@ -155,23 +155,40 @@ async function execute(args: {
   seat: Record<string, unknown> | undefined
 }): Promise<void> {
   const { store, runId, taskId, spec, config, servers, seat } = args
-  store.updateRun(runId, { status: 'provisioning' })
+  await store.updateRun(runId, { status: 'provisioning' })
 
+  /**
+   * The sink is synchronous by contract — an event is a fact that already happened, and the
+   * bus must not be blocked on a database ~85 ms away. So the writes are launched here and
+   * ordered by chaining rather than awaited: two `updateRun` calls racing would let the
+   * later-resolving one overwrite the other's records.
+   */
+  let writes: Promise<unknown> = Promise.resolve()
   const sink = (event: AgentEvent) => {
-    store.appendEvent(event)
+    writes = writes
+      .then(() => persist(event))
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `[dispatch] failed to persist ${event.type} seq ${event.seq}: ${String(error)}\n`,
+        )
+      })
+  }
+
+  const persist = async (event: AgentEvent): Promise<void> => {
+    await store.appendEvent(event)
     // Stage records are rebuilt from the stream rather than taken from a return value,
     // because in docker mode there is no return value to take them from — the container's
     // events are all that crosses the boundary. Doing it here keeps both modes reporting
     // the same stage list instead of docker runs showing an empty one.
-    recordStage(store, runId, event)
+    await recordStage(store, runId, event)
     if (event.type === 'run.started') {
-      store.updateRun(runId, { status: 'running' })
+      await store.updateRun(runId, { status: 'running' })
       // The task has to move too, not just the run. `dispatched → in_review` is not a
       // legal transition, so without this step the task would be stuck on `dispatched`
       // for the rest of its life while its run reported success.
-      moveTask(store, taskId, 'running')
+      await moveTask(store, taskId, 'running')
     }
-    if (event.type === 'pr.opened') store.updateRun(runId, { prUrl: event.data.url })
+    if (event.type === 'pr.opened') await store.updateRun(runId, { prUrl: event.data.url })
   }
 
   if (config.mode === 'inline') {
@@ -326,20 +343,20 @@ async function executeInDocker(args: {
     // outcome are separate. On Fargate this handle is the task ARN — the only thing that
     // can cancel the run or let the C5 reconciler settle it — and waiting until the run
     // ended to store it would mean not having it during the window it is needed.
-    store.updateRun(runId, { handle: started.handle })
+    await store.updateRun(runId, { handle: started.handle })
 
     const result = await started.outcome
     // Give the tail a moment to drain what the container wrote as it exited.
     await new Promise((r) => setTimeout(r, 300))
 
     const outcome = result.timedOut ? 'failed' : result.exitCode === 0 ? 'succeeded' : 'failed'
-    settle(
+    await settle(
       store,
       runId,
       taskId,
       outcome,
-      store.getRun(runId)?.records ?? [],
-      store.getRun(runId)?.prUrl,
+      (await store.getRun(runId))?.records ?? [],
+      (await store.getRun(runId))?.prUrl,
       // The runtime's own explanation wins when it has one: an ECS stopped reason says
       // "OutOfMemoryError" where an exit code says only that it failed.
       result.timedOut
@@ -395,12 +412,12 @@ function tailEvents(path: string, sink: (event: AgentEvent) => void): { stop: ()
  * template that loops on a failed gate shows each attempt rather than overwriting the
  * history with whichever ran last.
  */
-function recordStage(store: Store, runId: string, event: AgentEvent): void {
+async function recordStage(store: Store, runId: string, event: AgentEvent): Promise<void> {
   if (event.type !== 'stage.entered' && event.type !== 'stage.exited') return
   const stage = event.stage
   if (!stage) return
 
-  const run = store.getRun(runId)
+  const run = await store.getRun(runId)
   if (!run) return
 
   const records = [...run.records]
@@ -429,7 +446,7 @@ function recordStage(store: Store, runId: string, event: AgentEvent): void {
 
   if (index === -1) records.push(record)
   else records[index] = record
-  store.updateRun(runId, { records })
+  await store.updateRun(runId, { records })
 }
 
 /**
@@ -543,7 +560,7 @@ function containerReachableUrl(url: string, mode: DispatchMode): string {
  * Returns whether it settled the run, so a caller can tell "I finished it" from "someone
  * else already had" rather than logging a second outcome for the same run.
  */
-export function settle(
+export async function settle(
   store: Store,
   runId: string,
   taskId: string,
@@ -553,8 +570,8 @@ export function settle(
   failureReason?: string,
   /** Revoked on settle: a token that outlives its run is a standing credential. */
   tokens?: { revoke(runId: string): void },
-): boolean {
-  const existing = store.getRun(runId)
+): Promise<boolean> {
+  const existing = await store.getRun(runId)
   // `isRunTerminal`, not `!== 'running'`. There are four non-terminal statuses — queued,
   // provisioning, running, parked — and a run killed while its task was still PROVISIONING
   // sits in `provisioning`. Guarding on `running` alone meant exactly the leak this
@@ -565,7 +582,7 @@ export function settle(
     return false
   }
   const succeeded = outcome === 'succeeded'
-  store.updateRun(runId, {
+  await store.updateRun(runId, {
     status: succeeded ? 'succeeded' : outcome === 'parked' ? 'parked' : 'failed',
     endedAt: new Date().toISOString(),
     // Only when the caller actually has records: docker mode passes none, and overwriting
@@ -576,7 +593,7 @@ export function settle(
   })
   // A finished run puts the task in review, not done: a human decides whether the PR is
   // acceptable, which is the whole reason the PR is the boundary.
-  moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
+  await moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
   tokens?.revoke(runId)
   return true
 }
@@ -589,11 +606,11 @@ export function settle(
  * transition is either a bug in the caller or a genuine race, and both deserve to be
  * visible rather than silent.
  */
-function moveTask(store: Store, taskId: string, status: TaskStatus): void {
-  const task = store.getTask(taskId)
+async function moveTask(store: Store, taskId: string, status: TaskStatus): Promise<void> {
+  const task = await store.getTask(taskId)
   if (!task || task.status === status) return
   try {
-    store.setTaskStatus(taskId, status)
+    await store.setTaskStatus(taskId, status)
   } catch (error) {
     process.stderr.write(
       `[dispatch] refused task transition ${task.status} → ${status} for ${taskId}: ` +
