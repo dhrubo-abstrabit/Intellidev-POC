@@ -101,6 +101,59 @@ arch=$(aws ssm get-parameter --name "/intellidev/${env_name}/runner/architecture
 # measure-pull.sh runs the image on a real task, which is proof rather than inference.
 ok "run tasks pinned to $arch"
 
+# --- C2: the spec and bundle must travel as objects, not mounts ---
+artifacts=$(aws ssm get-parameter --name "/intellidev/${env_name}/artifacts/bucket" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'artifacts/bucket is not in SSM'
+aws s3api head-bucket --bucket "$artifacts" >/dev/null 2>&1 \
+  || fail "artifacts bucket $artifacts does not exist"
+ok "artifacts bucket $artifacts"
+
+# The done-condition for C2. A single mount point would mean the Fargate path had quietly
+# regressed to needing a filesystem it does not have.
+taskdef=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/run-task-definition-arn" \
+  --query 'Parameter.Value' --output text 2>/dev/null) || fail 'run task definition is not in SSM'
+# Two queries rather than one: JMESPath has no arithmetic, so `length(a) + length(b)` is
+# rejected as a bad expression rather than evaluated.
+read -r mount_points volumes < <(aws ecs describe-task-definition --task-definition "$taskdef" \
+  --query 'taskDefinition.[length(containerDefinitions[0].mountPoints),length(volumes)]' \
+  --output text)
+[ "$mount_points" = "0" ] && [ "$volumes" = "0" ] \
+  || fail "run task definition has $mount_points mount points and $volumes volumes; Fargate has no bind mounts"
+ok 'run task definition has no bind mounts'
+
+# A run must reach the artifacts bucket only through a presigned URL. Any S3 grant on the
+# task role would be a grant over every other run's spec, since one task definition serves
+# every run.
+task_role=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/task-role-arn" \
+  --query 'Parameter.Value' --output text 2>/dev/null) || fail 'task role is not in SSM'
+inline=$(aws iam list-role-policies --role-name "${task_role##*/}" \
+  --query 'length(PolicyNames)' --output text)
+attached=$(aws iam list-attached-role-policies --role-name "${task_role##*/}" \
+  --query 'length(AttachedPolicies)' --output text)
+[ "$inline" = "0" ] && [ "$attached" = "0" ] \
+  || fail "run task role holds $inline inline and $attached attached policies; it should hold none yet"
+ok "run task role ${task_role##*/} holds no permissions at all"
+
+# Every published bundle must be fetchable at the digest that names it.
+for key_param in $(aws ssm get-parameters-by-path --path "/intellidev/${env_name}/bundle" \
+  --recursive --query "Parameters[?ends_with(Name,'/key')].Name" --output text); do
+  project=$(basename "$(dirname "$key_param")")
+  key=$(aws ssm get-parameter --name "$key_param" --query 'Parameter.Value' --output text)
+  digest=$(aws ssm get-parameter --name "/intellidev/${env_name}/bundle/${project}/digest" \
+    --query 'Parameter.Value' --output text 2>/dev/null) \
+    || fail "bundle for $project has a key but no digest"
+  aws s3api head-object --bucket "$artifacts" --key "$key" >/dev/null 2>&1 \
+    || fail "bundle for $project is recorded at $key but the object is missing"
+  # The key is content-addressed, so a key that does not contain its own digest means the
+  # recorded pair has drifted and a run would refuse to extract.
+  case "$key" in
+    *"${digest#sha256:}"*) ;;
+    *) fail "bundle for $project: key $key does not match digest $digest" ;;
+  esac
+  ok "bundle for project $project matches its digest"
+done
+
 # Region-wide, not just this VPC: a NAT gateway anywhere is a scale-to-zero regression.
 nats=$(aws ec2 describe-nat-gateways \
   --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text)

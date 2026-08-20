@@ -25,7 +25,8 @@
     "infra:smoke": "pnpm --filter @intellidev/infra-aws run smoke",
     "image:push": "pnpm --filter @intellidev/infra-aws run push",
     "image:measure": "pnpm --filter @intellidev/infra-aws run measure-pull",
-    "runner:prove": "pnpm --filter @intellidev/control-plane run prove-runner"
+    "runner:prove": "pnpm --filter @intellidev/control-plane run prove-runner",
+    "bundle:push": "pnpm --filter @intellidev/infra-aws run push-bundle"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

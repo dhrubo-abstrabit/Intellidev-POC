@@ -38,7 +38,12 @@ git diff --quiet HEAD -- . || dirty="-dirty"
 tag="${sha}${dirty}"
 
 printf 'push: building %s (%s) for %s\n' "$repo" "$tag" "$want_arch"
-docker build -f ../docker/Dockerfile -t "${repo}:${tag}" -t "${repo}:dev" ../..
+# Also tagged `intellidev/runner:dev`, which is what INTELLIDEV_IMAGE defaults to locally.
+# Without it the local Docker path keeps running whatever was built by hand last, so
+# "the local loop still works" would be testing different code than Fargate runs — and the
+# whole point of keeping DockerRunner is reproducing a Fargate failure locally.
+docker build -f ../docker/Dockerfile \
+  -t "${repo}:${tag}" -t "${repo}:dev" -t intellidev/runner:dev ../..
 
 aws ecr get-login-password --region "$region" \
   | docker login --username AWS --password-stdin "${repo%%/*}" >/dev/null \

@@ -69,3 +69,53 @@ describe('the golden image registry', () => {
     expect(ENVIRONMENTS.prod.architecture).toBe('ARM64')
   })
 })
+
+describe('the artifacts bucket', () => {
+  function artifacts(): Template {
+    const { artifacts } = buildApp({ env: 'dev', ambientAccount: ACCOUNT })
+    return Template.fromStack(artifacts)
+  }
+
+  it('is private and TLS-only', () => {
+    const t = artifacts()
+    t.hasResourceProperties('AWS::S3::Bucket', {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+    })
+    // A presigned URL is a bearer token for one object; an unencrypted-transport path to
+    // the same object would undo the point.
+    expect(JSON.stringify(t.findResources('AWS::S3::BucketPolicy'))).toContain(
+      'aws:SecureTransport',
+    )
+  })
+
+  it('versions objects, so a run in flight cannot have its bundle moved', () => {
+    artifacts().hasResourceProperties('AWS::S3::Bucket', {
+      VersioningConfiguration: { Status: 'Enabled' },
+    })
+  })
+
+  it('expires run specs and aborts abandoned uploads', () => {
+    const buckets = artifacts().findResources('AWS::S3::Bucket')
+    const rules = JSON.stringify(
+      Object.values(buckets)[0]?.['Properties']?.['LifecycleConfiguration'],
+    )
+    expect(rules).toContain('runs/')
+    // An abandoned multipart upload bills storage forever and never appears in the
+    // console's object listing.
+    expect(rules).toContain('AbortIncompleteMultipartUpload')
+  })
+
+  it('grants the run task role nothing on it', () => {
+    // The security argument for this whole stack: one task definition serves every run, so
+    // any S3 grant on the task role is a grant over every other run's spec.
+    const { runtime } = buildApp({ env: 'dev', ambientAccount: ACCOUNT })
+    const policies = JSON.stringify(Template.fromStack(runtime).findResources('AWS::IAM::Policy'))
+    expect(policies).not.toContain('artifacts')
+    expect(policies).not.toContain('s3:GetObject')
+  })
+})
