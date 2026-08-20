@@ -9,7 +9,7 @@ Task breakdown for moving the validated local path onto AWS. Decisions already t
 | ---------------------- | -------------------------- | ---------------------------------------- | -------------- |
 | UI                     | browser → :4000            | browser → ALB                            | n/a            |
 | **Control plane**      | `pnpm ui` on your Mac      | **long-lived Fargate service**           | **no**         |
-| Postgres               | in-memory `Store`          | RDS / Aurora Serverless v2               | no (or near)   |
+| Postgres               | in-memory `Store`          | Supabase (managed, outside the VPC)      | no             |
 | **Orchestrator**       | stage engine in the runner | **unchanged — still in the runner**      | yes            |
 | Adapter + harness      | `docker run` per task      | **one Fargate task per run** (`RunTask`) | yes            |
 | Caches, bundles, specs | named volume + bind mounts | S3                                       | yes            |
@@ -38,17 +38,44 @@ Two things worth being explicit about, because they are the most common misreadi
 - **The control plane is the one thing that cannot scale to zero.** It serves the UI, holds SSE
   connections, and answers the credential broker. Everything else is per-run and idles at $0.
 
-## Decisions to confirm before starting
+## Decisions taken
 
-These change what gets built, so they are worth settling first.
+Settled 2026-08-20. Renamed from D1–D5, which collided with the Phase D task numbers —
+every bare "D1"/"D2"/"D3" elsewhere in this document means the **Phase D task**.
 
-| #   | Question                        | Options                                                                    | Recommendation                                                                        |
-| --- | ------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| D1  | IaC tool                        | AWS CDK (TypeScript) · Terraform                                           | **CDK** — same language as the repo, and `RunTask` wiring is far less verbose         |
-| D2  | Control-plane hosting           | Fargate service + ALB · App Runner                                         | **Fargate service + ALB** — App Runner cannot reach a VPC-only RDS without extra work |
-| D3  | Database                        | RDS `db.t4g.micro` · Aurora Serverless v2 (0.5 ACU floor)                  | **RDS t4g.micro** — cheaper at this size; Aurora's floor costs more than it saves     |
-| D4  | Credential storage              | Secrets Manager per credential · KMS-encrypted column in Postgres          | **Secrets Manager** — rotation and audit come free; ~$0.40/secret/month               |
-| D5  | Harness refresh tokens (see D3) | long-lived tokens only · in-container writeback · one seat per concurrency | **decide with D3** — this is the sharpest new constraint                              |
+| #   | Question               | Settled                                                                                                          |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Q1  | IaC tool               | **AWS CDK (TypeScript)** — same language as the repo; the app lives in `infra/aws`                               |
+| Q2  | Control-plane hosting  | **Fargate service + ALB** — App Runner's per-request timeout ceiling is hostile to long-lived SSE connections    |
+| Q3  | Database               | **Supabase Postgres 17**, plain Postgres only — see below                                                        |
+| Q4  | Credential storage     | **Secrets Manager**, behind the `SecretStore` interface (B2)                                                     |
+| Q5  | Harness refresh tokens | **long-lived tokens + one seat per account**; credential writeback only if subscription accounts become the norm |
+
+**On Q2.** The earlier justification — "App Runner cannot reach a VPC-only RDS" — stopped
+applying when Q3 moved the database out of the VPC. ALB remains right for a different
+reason: it terminates TLS, holds long-lived SSE connections, and is what allows a second
+control-plane instance at all (C6).
+
+**On Q3.** Cost was a wash — $10/mo for a Supabase project against ~$14 for
+`db.t4g.micro` — so it turned on operational familiarity rather than price. What RDS gives
+up is **IAM database auth**, where no database password exists at all; with Supabase one
+long-lived credential does. It lives in Secrets Manager and never reaches a run container.
+
+Three commitments, listed because each fails _silently_ rather than loudly:
+
+- **Session-mode connection string.** Transaction pooling accepts the connection and runs
+  queries normally but never delivers `LISTEN`/`NOTIFY` — which presents as a run that
+  looks stalled while it is progressing, exactly the C6 failure mode.
+- **`pg_advisory_xact_lock`, never `pg_advisory_lock`** (D1). Session-scoped locks do not
+  survive transaction pooling.
+- **No Supabase-specific features** — no Realtime, no RLS, no PostgREST, no `supabase-js`.
+  B1's `Store` stays vendor-neutral, so moving to RDS later is a connection string plus a
+  migration run.
+
+**Open on Q3.** The project created for this (`wfsnuveiadnopafbxxvc`) is in
+**ap-southeast-1**, not `ap-south-1` — ~55–70 ms from Mumbai against 1–5 ms same-region,
+paid on every event insert. Recreate it in `ap-south-1` while it is still empty, or accept
+the latency and batch event writes in B1.
 
 ## Constraints every task inherits
 
@@ -77,15 +104,27 @@ to them.
 
 ## Phase A · Foundations
 
-### A0 · AWS access and CLI authentication — **done, except bootstrap**
+### A0 · AWS access and CLI authentication — **done**
 
 - **Goal** anyone picking up this plan can reach the account from a terminal, without a long-lived
   key on disk.
 - **Settled** region is **`ap-south-1`** — every stack, bucket and repository goes there unless a
-  task says otherwise. Authentication is a **console session with an assumed role**, so credentials
-  are temporary and refresh themselves; no static key exists on the machine.
-- **Still to do** `cdk bootstrap` for the account, which A1 needs. Resolve the account id at deploy
-  time with `aws sts get-caller-identity` rather than writing it down anywhere.
+  task says otherwise.
+- **Interactive access** is `aws login`, which vends temporary, self-refreshing credentials for an
+  **IAM user** (`user/Abstrabit_Internal_Tech`) — not an assumed role, as an earlier draft of this
+  section claimed. Nothing long-lived is on disk, which was the actual goal, but the caller ARN is a
+  user and a reader expecting a role ARN will not find one. Sessions expire; `aws login` again.
+- **Unattended access** is the `intellidev` profile: an access key on
+  `user/intellidev-deploy-cli`, whose _only_ permission is `sts:AssumeRole` on the
+  `IntellidevDeploy` role, which holds the actual deploy policy. The CLI refreshes the assumed-role
+  credentials on its own, so a long deploy cannot expire halfway. A leaked key can do exactly one
+  thing, and revocation is deleting one role.
+- **Done** `cdk bootstrap` has run — bootstrap version **32**, default qualifier `hnb659fds`. The
+  account id is resolved at deploy time from `aws sts get-caller-identity` and written down nowhere.
+- **Known deviation** a non-`--trust` bootstrap attaches `AdministratorAccess` to the
+  CloudFormation execution role, and `IntellidevDeploy` needs IAM write access because CDK creates
+  the task roles in A2 and C1. Tighten both together before B1: re-bootstrap with
+  `--custom-permissions-boundary` and scope the execution policy.
 - **Environment then found** AWS CLI 2.36.25, no CDK installed (`npx aws-cdk` is fine), Node 24.17.
 
 **Recommended — console session, auto-refreshing** (simplest for local dev):
@@ -133,11 +172,36 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
   from its **task role**, not from a key.
 - **For CI later** use GitHub OIDC with a deploy role. No access keys in Actions secrets.
 
-### A1 · IaC skeleton and environments
+### A1 · IaC skeleton and environments — **done**
 
 - **Goal** one `infra/aws/` CDK app with a `dev` stage that deploys nothing but a VPC.
-- **Scope** CDK bootstrap, stack layout, config per environment, `pnpm infra:deploy` script.
-- **Done when** `cdk deploy` creates and destroys cleanly, and the repo has no hand-made resources.
+- **Shipped** `@intellidev/infra-aws` as a workspace package, so its assertions run inside the
+  existing `pnpm check` rather than in a gate of their own. `lib/config.ts` is the environment
+  table; `lib/naming.ts` is the only place a resource name is formed; `lib/build-app.ts` holds the
+  wiring so the tests assert the template that actually deploys.
+- **The VPC** is 2 AZs, public plus private-isolated, `natGateways: 0` from the first line —
+  `ec2.Vpc` defaults to one NAT per AZ, so the expensive choice is the library's default.
+  `mapPublicIpOnLaunch` stays off: a public address is a per-task decision at `RunTask` time.
+- **The application seam** is SSM, not CloudFormation outputs. Stacks write
+  `/intellidev/<env>/network/{vpc-id,public-subnet-ids,isolated-subnet-ids}`; the control plane
+  reads that prefix at boot, because it is not a CDK process and must not call CloudFormation at
+  runtime.
+- **The guardrail** is a CDK `Aspect` that **throws** on `CfnNatGateway` or `CfnEIP` in any stack.
+  It throws rather than using `Annotations.addError`, which only makes the CLI refuse to deploy and
+  leaves an in-process synth passing — an untestable rule is not a rule.
+- **Tests** 20 in `test/network.test.ts`: no NAT, no EIP, the aspect itself fails when a NAT is
+  added, CIDR and AZ count come from config, both SSM tiers exist, tags are applied, and `prod`
+  refuses to synth without an explicit matching account.
+- **Proving signal** `pnpm infra:verify` checks deployed reality, not the template — SSM resolves
+  to a VPC that exists with the configured CIDR and the tags, and no NAT gateway exists anywhere in
+  the region. It was confirmed to fail after `destroy`, so it is not vacuous.
+- **`pnpm infra:deploy` runs `scripts/preflight.sh` first**, which refuses to deploy as the wrong
+  principal, account or region. This exists because forgetting `AWS_PROFILE` deploys _successfully_
+  under a different principal in the same account, bypassing the scoped role with nothing looking
+  wrong until an audit.
+- **Verified** deploy → verify → destroy → redeploy, all clean; `10.20.0.0/16`, no NAT gateways,
+  nothing left behind but `CDKToolkit`. `pnpm check` passes, and no application code changed, so
+  the local Docker path is untouched.
 
 ### A2 · Network without a NAT gateway
 
@@ -168,6 +232,12 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
   board.
 - **Depends on** A1.
 - **Note** the current `Store` was written to be swapped: same method names, same row shapes.
+- **`run_events` needs a retention policy, and there was none anywhere in this plan.** It is the
+  dominant table by volume: 35 event types, previews capped at 2 000 chars, order 10²–10³ events
+  per run — roughly 0.5–5 MB a run, so 0.25–2.5 GB/month at 500 runs, growing without bound. It
+  also sits on the live streaming path, since SSE backfill and C4's reconnect-replay both read it.
+  Supabase Pro includes 8 GB, which makes this land inside the first year. Decide retention (and
+  whether terminal runs collapse to a summary) as part of the schema, not after.
 
 ### B2 · Credentials into Secrets Manager
 
