@@ -223,7 +223,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 
 ## Phase B · State the control plane needs
 
-### B1 · Postgres replaces the in-memory store
+### B1 · Postgres replaces the in-memory store — **done**
 
 - **Goal** tasks, runs and events survive a restart.
 - **Scope** Drizzle schema for the tables in [architecture.md §10](architecture.md), migrations, and
@@ -260,7 +260,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 
 ## Phase C · The run path
 
-### C1 · `FargateRunner`
+### C1 · `FargateRunner` — **done**
 
 - **Goal** dispatch launches a Fargate task instead of `docker run`.
 - **Scope** implement the `Runner` interface with `RunTask`, overrides for env and command, task ARN
@@ -274,7 +274,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 - **Depends on** A2, A3.
 - **Note** `DockerRunner` stays — it is the local loop and the fastest way to reproduce a failure.
 
-### C2 · Spec and bundle over S3
+### C2 · Spec and bundle over S3 — **done**
 
 - **Goal** remove the bind mounts.
 - **Scope** write the run spec to S3 at dispatch, presigned GET into the task; bundle already
@@ -292,7 +292,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 - **Depends on** C1.
 - **Why not EFS** it never scales to zero and a block volume attaches to one task.
 
-### C4 · Events over WebSocket
+### C4 · Events over WebSocket — **done**
 
 - **Goal** replace tailing a JSONL file with the adapter dialling out.
 - **Scope** WebSocket endpoint authenticated by the run token, adapter sink that reconnects and
@@ -301,7 +301,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 - **Depends on** B1, B3.
 - **Note** per-run monotonic `seq` already exists precisely so reconnect is a replay, not a hole.
 
-### C5 · Run lifecycle observation and reconciliation
+### C5 · Run lifecycle observation and reconciliation — **done**
 
 - **Goal** every run reaches a terminal state, including runs whose container died without saying so.
 - **Problem** today the control plane learns the outcome by awaiting the Docker child. On Fargate
@@ -315,7 +315,7 @@ npx aws-cdk bootstrap "aws://$(aws sts get-caller-identity --query Account --out
 - **Depends on** C1, C4.
 - **Why it matters** a run stuck `running` blocks its seat (D2) and hides cost.
 
-### C6 · Cross-instance event fan-out
+### C6 · Cross-instance event fan-out — **done**
 
 - **Goal** a UI client connected to one control-plane instance sees events delivered to another.
 - **Problem** `store.subscribe()` fans out **in process**. The adapter's WebSocket lands on whichever
@@ -389,6 +389,44 @@ Everything here was discovered by running the local path. None of it is theoreti
 - **Goal** the bill matches the model in [architecture.md §11](architecture.md).
 - **Scope** budget alarm, per-project attribution from the usage ledger, a daily report.
 - **Done when** projected idle cost is the control plane plus RDS and nothing else.
+
+## What is done, and what each phase left open
+
+Measured on the deployed `dev` environment, not inferred.
+
+| Phase        | State | Proving signal                                                                    |
+| ------------ | ----- | --------------------------------------------------------------------------------- |
+| A0–A3        | done  | `pnpm infra:verify` (17 checks), `pnpm infra:smoke`, `pnpm image:measure`         |
+| B1           | done  | 58-test store contract against **both** implementations; board survives `kill -9` |
+| C1           | done  | `pnpm runner:prove` — ARN before exit, cancel stops the task                      |
+| C2           | done  | tampered bundle refused before extraction; task definition has no mounts          |
+| C4           | done  | 13 events gapless over a real socket from a real container                        |
+| C5           | done  | `pnpm reconciler:prove` — a task killed from outside settles with a reason        |
+| C6           | done  | two live instances: events written to A streamed gapless from B                   |
+| B2, B3       | open  | credentials still travel in the task environment                                  |
+| C3           | open  | no S3 cache: every Fargate run re-clones                                          |
+| D1–D3, E1–E3 | open  | —                                                                                 |
+
+**Measured numbers, recorded so they are not re-guessed:**
+
+- Image pull on Fargate: **7.3–7.9 s** for a 387 MB compressed image (the 1.52 GB figure is
+  the uncompressed size). Dispatch to running: **~24 s** against a 60–120 s budget. The
+  contingency to split the harness layer is **not needed**.
+- Supabase round trip from Mumbai to ap-southeast-1: **~73–86 ms**. Session-mode pooler
+  delivers cross-connection `LISTEN`/`NOTIFY` 3 of 3; transaction mode 0 of 3, at identical
+  latency. Event writes are batched because of this.
+
+**Known open items that are not phases:**
+
+- `run_events` has **no retention policy**. It grows 0.25–2.5 GB/month at 500 runs and
+  Supabase Pro includes 8 GB. Nothing prunes it.
+- The control plane is **not reachable from a Fargate task**: it listens on loopback, so a
+  Fargate run cannot open its event socket. Docker mode rewrites to `host.docker.internal`,
+  which is how C4 was proven. A reachable control plane — the ALB in Q2 — is what makes a
+  Fargate run watchable from the UI.
+- `IntellidevDeploy` still cannot assume the `cdk-hnb659fds-*` roles, so deploys bypass the
+  intended role chain. Fix with the permissions-boundary work.
+- The CloudFormation execution role holds `AdministratorAccess`.
 
 ## Suggested order
 
