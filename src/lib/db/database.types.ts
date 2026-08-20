@@ -7,11 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.15"
-  }
   public: {
     Tables: {
       action_item_source_events: {
@@ -1251,7 +1246,6 @@ export type Database = {
           idempotency_key: string | null
           integration_id: string
           max_attempts: number
-          qstash_message_id: string | null
           scheduled_for: string
           started_at: string | null
           status: Database["public"]["Enums"]["sync_job_status"]
@@ -1273,7 +1267,6 @@ export type Database = {
           idempotency_key?: string | null
           integration_id: string
           max_attempts?: number
-          qstash_message_id?: string | null
           scheduled_for?: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["sync_job_status"]
@@ -1295,7 +1288,6 @@ export type Database = {
           idempotency_key?: string | null
           integration_id?: string
           max_attempts?: number
-          qstash_message_id?: string | null
           scheduled_for?: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["sync_job_status"]
@@ -1994,3 +1986,4 @@ export const Constants = {
     },
   },
 } as const
+
