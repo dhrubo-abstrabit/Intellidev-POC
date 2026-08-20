@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import type { Runner, RunLaunchResult, RunLaunchSpec } from './types.js'
+import type { RunHandle, Runner, RunLaunchSpec, RunOutcome } from './types.js'
 
 /**
  * Launches a run in a local Docker container.
@@ -64,31 +64,38 @@ export class DockerRunner implements Runner {
     return args
   }
 
-  async launch(spec: RunLaunchSpec): Promise<RunLaunchResult> {
+  /**
+   * Spawns the container and returns as soon as it has a name.
+   *
+   * `docker run` blocks until the container exits, so the outcome promise wraps the child
+   * rather than the call: the handle is available immediately, which is what the interface
+   * requires and what lets dispatch record it before the run finishes.
+   */
+  async start(spec: RunLaunchSpec): Promise<RunHandle> {
     const containerName = `intellidev-${spec.runId}-${randomBytes(3).toString('hex')}`
     const args = this.buildArgs(spec, containerName)
     spec.onArgv?.([this.opts.binary ?? 'docker', ...args])
 
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.opts.binary ?? 'docker', args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      let timedOut = false
+    const child = spawn(this.opts.binary ?? 'docker', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let timedOut = false
 
-      child.stdout.setEncoding('utf8')
-      child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (chunk: string) => spec.onOutput?.('stdout', chunk))
-      child.stderr.on('data', (chunk: string) => spec.onOutput?.('stderr', chunk))
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => spec.onOutput?.('stdout', chunk))
+    child.stderr.on('data', (chunk: string) => spec.onOutput?.('stderr', chunk))
 
-      const timer = spec.timeoutSec
-        ? setTimeout(() => {
-            timedOut = true
-            // Stop the container, not just the client: killing `docker run` leaves the
-            // container running and still billing.
-            void this.stop(containerName)
-          }, spec.timeoutSec * 1000)
-        : null
+    const timer = spec.timeoutSec
+      ? setTimeout(() => {
+          timedOut = true
+          // Stop the container, not just the client: killing `docker run` leaves the
+          // container running and still billing.
+          void this.stop(containerName)
+        }, spec.timeoutSec * 1000)
+      : null
 
+    const outcome = new Promise<RunOutcome>((resolve, reject) => {
       child.on('error', (error) => {
         if (timer) clearTimeout(timer)
         reject(error)
@@ -97,12 +104,14 @@ export class DockerRunner implements Runner {
         if (timer) clearTimeout(timer)
         resolve({
           runId: spec.runId,
-          exitCode: code ?? -1,
+          exitCode: code,
           timedOut,
-          handle: containerName,
+          ...(timedOut ? { reason: 'exceeded wall clock' } : {}),
         })
       })
     })
+
+    return { runId: spec.runId, handle: containerName, outcome }
   }
 
   async stop(handle: string): Promise<void> {

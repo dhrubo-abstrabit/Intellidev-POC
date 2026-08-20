@@ -31,18 +31,57 @@ export interface RunLaunchSpec {
   onArgv?: (argv: readonly string[]) => void
 }
 
-export interface RunLaunchResult {
+/**
+ * How a run ended.
+ *
+ * `exitCode` is `null` when the runtime never reported one — a Fargate task killed for
+ * exceeding its memory limit, or one whose image pull failed, has a stop reason but no
+ * exit code. Collapsing that to `-1` would make "the container returned failure" and "the
+ * container never ran" indistinguishable, which is exactly the distinction a human needs.
+ */
+export interface RunOutcome {
   runId: string
-  exitCode: number
-  /** Set when the run was killed for exceeding its wall clock. */
+  exitCode: number | null
+  /** Set when the run was stopped for exceeding its wall clock. */
   timedOut: boolean
-  /** Runtime-specific handle: container id, task ARN. Recorded on the run row. */
+  /** Runtime-supplied explanation, e.g. an ECS stopped reason. Surfaced to the run row. */
+  reason?: string
+}
+
+/**
+ * A started run.
+ *
+ * `handle` is available immediately — that is the whole reason this type exists. The
+ * previous shape returned only when the container exited, which meant the task ARN could
+ * not be recorded until the run was already over: precisely when it is no longer useful
+ * for cancelling, and precisely when a control-plane restart would lose it.
+ */
+export interface RunHandle {
+  runId: string
+  /** Runtime-specific handle: container name, task ARN. Record this before awaiting. */
   handle: string
+  /**
+   * Resolves when the run reaches a terminal state.
+   *
+   * For Docker that is the child process exiting. For Fargate it is currently a poll of
+   * `DescribeTasks` — deliberately the weakest part of this implementation, and what C5
+   * replaces with `run.finished` plus an EventBridge rule. Until then, a control-plane
+   * restart loses the observer and the run needs the C5 reconciler to settle.
+   */
+  outcome: Promise<RunOutcome>
 }
 
 export interface Runner {
   readonly kind: 'docker' | 'fargate'
-  launch(spec: RunLaunchSpec): Promise<RunLaunchResult>
+  /**
+   * Launches the run and returns as soon as it has a handle.
+   *
+   * Split from the outcome because `RunTask` returns a task ARN immediately while
+   * `docker run` blocks until exit. Making the Docker shape the interface would have
+   * forced Fargate to pretend it was synchronous, and the ARN — the only thing that can
+   * cancel or reconcile a run — would have arrived too late to store.
+   */
+  start(spec: RunLaunchSpec): Promise<RunHandle>
   /** Best-effort stop, for cancellation. */
   stop(handle: string): Promise<void>
 }
