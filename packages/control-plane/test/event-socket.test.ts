@@ -84,7 +84,8 @@ function connect(url: string) {
     if (parsed.type === 'ack' && typeof parsed.seq === 'number') acks.push(parsed.seq)
   }
   socket.onclose = (e) => {
-    closeCode = (e as CloseEvent).code
+    // Typed structurally rather than as `CloseEvent`, which the node lib does not declare.
+    closeCode = (e as { code?: number }).code
   }
   return {
     socket,

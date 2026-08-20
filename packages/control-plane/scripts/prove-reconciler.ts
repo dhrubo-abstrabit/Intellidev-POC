@@ -28,9 +28,9 @@ const check = (label: string, ok: boolean, detail = ''): void => {
 }
 
 /** A store holding one run that believes it is still going, as an orphan would. */
-function orphanedRun(handle: string) {
+async function orphanedRun(handle: string) {
   const store = new InMemoryStore()
-  const task = store.createTask({
+  const task = await store.createTask({
     title: 'c5 orphan',
     description: 'killed from outside with no adapter cooperation',
     acceptanceCriteria: ['settles'],
@@ -39,10 +39,10 @@ function orphanedRun(handle: string) {
     baseBranch: 'master',
     mcpServerIds: [],
   })
-  store.setTaskStatus(task.id, 'dispatched')
-  store.setTaskStatus(task.id, 'running')
-  const run = store.createRun(task.id, 'claude-code', 'feat/c5')
-  store.updateRun(run.id, { handle, status: 'running' })
+  await store.setTaskStatus(task.id, 'dispatched')
+  await store.setTaskStatus(task.id, 'running')
+  const run = await store.createRun(task.id, 'claude-code', 'feat/c5')
+  await store.updateRun(run.id, { handle, status: 'running' })
   return { store, runId: run.id }
 }
 
@@ -83,7 +83,7 @@ console.log('  stopped it from outside; nothing in the adapter was involved')
 // Wait for ECS to record the stop. The reconciler is not being tested on its patience.
 for (let i = 0; i < 30; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 4000))
-  const { store, runId } = orphanedRun(arn)
+  const { store, runId } = await orphanedRun(arn)
   const settled = await new LifecycleReconciler({
     store,
     clusterName: config.clusterName,
@@ -92,7 +92,7 @@ for (let i = 0; i < 30; i += 1) {
   }).sweep()
 
   if (settled.length > 0) {
-    const run = store.getRun(runId)
+    const run = await store.getRun(runId)
     check('run moved off running', run?.status === 'failed', `status=${run?.status}`)
     check(
       'reason is actionable, not just "it stopped"',
@@ -106,7 +106,7 @@ for (let i = 0; i < 30; i += 1) {
 
 // --- 2. a run whose task ECS has forgotten still settles ---
 console.log('\n2/2 a run whose task ECS never knew still settles')
-const { store, runId } = orphanedRun(
+const { store, runId } = await orphanedRun(
   `arn:aws:ecs:${region}:523366816420:task/${config.clusterName}/${'0'.repeat(32)}`,
 )
 const settled = await new LifecycleReconciler({
@@ -118,8 +118,8 @@ const settled = await new LifecycleReconciler({
 check('settled rather than left running forever', settled.length === 1)
 check(
   'says why no reason is available',
-  (store.getRun(runId)?.failureReason ?? '').includes('no longer known to ECS'),
-  store.getRun(runId)?.failureReason ?? '(none)',
+  ((await store.getRun(runId))?.failureReason ?? '').includes('no longer known to ECS'),
+  (await store.getRun(runId))?.failureReason ?? '(none)',
 )
 
 console.log(failures === 0 ? '\nprove-reconciler: ok' : `\nprove-reconciler: ${failures} FAILED`)

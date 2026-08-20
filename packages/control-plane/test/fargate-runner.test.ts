@@ -11,6 +11,9 @@ const CONFIG: AwsRuntimeConfig = {
   subnetIds: ['subnet-a', 'subnet-b'],
   securityGroupIds: ['sg-1'],
   containerName: 'adapter',
+  artifactBucket: 'bkt',
+  taskEventsQueueUrl: 'https://sqs/q',
+  bundles: {},
 }
 
 /** Records what was sent, and replies with whatever the test queued. */
@@ -63,7 +66,7 @@ describe('FargateRunner.start', () => {
       await runner.start({ runId: 'r', image: 'i', args: ['run'] })
     ).outcome
     const net = ecs.sent[0]?.['networkConfiguration'] as Record<string, never>
-    expect(net['awsvpcConfiguration']['assignPublicIp']).toBe('ENABLED')
+    expect(net['awsvpcConfiguration']?.['assignPublicIp']).toBe('ENABLED')
   })
 
   it('passes command and env as overrides, not as a new task definition', async () => {
@@ -74,7 +77,10 @@ describe('FargateRunner.start', () => {
     await (
       await runner.start({ runId: 'r', image: 'i', args: ['run', '--spec', '/s'], env: { A: '1' } })
     ).outcome
-    const override = (ecs.sent[0]?.['overrides'] as Record<string, never>)['containerOverrides'][0]
+    const overrides = ecs.sent[0]?.['overrides'] as {
+      containerOverrides: Array<Record<string, unknown>>
+    }
+    const override = overrides.containerOverrides[0]!
     expect(override['name']).toBe('adapter')
     expect(override['command']).toEqual(['run', '--spec', '/s'])
     expect(override['environment']).toEqual([{ name: 'A', value: '1' }])
