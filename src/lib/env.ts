@@ -4,10 +4,10 @@ import { z } from "zod";
  * Server env is split into per-concern schemas, each independently
  * parseable, rather than one monolithic bundle. Two reasons: (1) a module
  * that only needs the crypto keys (e.g. lib/crypto/tokens.ts) shouldn't
- * fail to load in a unit test just because QSTASH_TOKEN isn't set; (2) the
- * error message points at the actual missing concern instead of a wall of
- * unrelated fields. `serverEnv()` still validates everything together for
- * the "fail fast at boot" case.
+ * fail to load in a unit test just because an unrelated secret (e.g.
+ * ANTHROPIC_API_KEY) isn't set; (2) the error message points at the actual
+ * missing concern instead of a wall of unrelated fields. `serverEnv()` still
+ * validates everything together for the "fail fast at boot" case.
  */
 const cryptoSchema = z.object({
   TOKEN_ENC_KEYS: z.string().min(1),
@@ -20,27 +20,6 @@ const supabaseServerSchema = z.object({
 
 const cronSchema = z.object({
   CRON_SECRET: z.string().min(1),
-});
-
-const queueSchema = z.object({
-  // Upstash accounts provisioned in a specific region (e.g. eu-central-1)
-  // must use that region's URL — the global endpoint 404s for them. Optional
-  // because most accounts use the global default.
-  QSTASH_URL: z.string().url().default("https://qstash.upstash.io"),
-  QSTASH_TOKEN: z.string().min(1),
-  QSTASH_CURRENT_SIGNING_KEY: z.string().min(1),
-  QSTASH_NEXT_SIGNING_KEY: z.string().min(1),
-});
-
-/**
- * Switches the job queue transport between Upstash QStash and Postgres
- * (pgmq + pg_cron) — see src/lib/queue/index.ts. Kept separate from
- * queueSchema (which is QStash-specific and stays that way) so that running
- * with JOB_BACKEND=pgmq never requires the four QSTASH_* secrets to be set
- * at all, on top of never touching Upstash.
- */
-const jobBackendSchema = z.object({
-  JOB_BACKEND: z.enum(["qstash", "pgmq"]).default("qstash"),
 });
 
 // SLACK_OAUTH_STATE_SECRET moved to oauthStateSchema below (it now signs
@@ -89,8 +68,6 @@ const llmSchema = z.object({
 const serverSchema = cryptoSchema
   .extend(supabaseServerSchema.shape)
   .extend(cronSchema.shape)
-  .extend(queueSchema.shape)
-  .extend(jobBackendSchema.shape)
   .extend(slackSchema.shape)
   .extend(googleSchema.shape)
   .extend(llmSchema.shape)
@@ -146,19 +123,10 @@ export function supabaseServerEnv() {
   return parseWith(supabaseServerSchema, "Supabase server");
 }
 
-/** Just the Vercel Cron shared secret. */
+/** Just the pg_cron/job-dispatch shared secret (job_dispatch_secret in
+ * Vault is deliberately the same value — see the pgmq/pg_cron migration). */
 export function cronEnv() {
   return parseWith(cronSchema, "cron");
-}
-
-/** Just the Upstash QStash credentials. */
-export function queueEnv() {
-  return parseWith(queueSchema, "queue");
-}
-
-/** Which job queue transport is active. See src/lib/queue/index.ts. */
-export function jobBackendEnv() {
-  return parseWith(jobBackendSchema, "job backend");
 }
 
 /** Just the Slack OAuth app credentials. */
@@ -195,10 +163,11 @@ export function publicEnv(): PublicEnv {
 
 /**
  * The app's own externally-reachable base URL — used to build OAuth
- * redirect_uris and QStash callback URLs. SERVER-ONLY: reads
- * `process.env.VERCEL_URL` directly, which (unlike a `NEXT_PUBLIC_` var)
- * Next.js does not inline into client bundles, so this must never be
- * called from a Client Component.
+ * redirect_uris and (via Vault's app_base_url secret, mirrored manually —
+ * see supabase/local-dispatch-secrets.sql) the base pg_cron's dispatcher
+ * fires job routes against. SERVER-ONLY: reads `process.env.VERCEL_URL`
+ * directly, which (unlike a `NEXT_PUBLIC_` var) Next.js does not inline into
+ * client bundles, so this must never be called from a Client Component.
  *
  * `NEXT_PUBLIC_APP_URL` is used verbatim when set — Production always sets
  * it explicitly, to its real custom domain (VERCEL_URL there is the
@@ -207,7 +176,7 @@ export function publicEnv(): PublicEnv {
  * Preview deployments get a fresh unique URL every deploy, so there is no
  * single static value that's correct for the whole Preview environment —
  * see CLAUDE.md's "Google connector specifics" for why a stale value here
- * would silently break both OAuth callbacks and QStash-triggered syncs.
+ * would silently break OAuth callbacks.
  */
 export function appUrl(): string {
   const explicit = publicEnv().NEXT_PUBLIC_APP_URL;
