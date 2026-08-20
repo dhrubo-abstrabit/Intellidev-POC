@@ -178,6 +178,7 @@ describe('loadAwsConfig', () => {
           ['/intellidev/dev/network/public-subnet-ids', 'subnet-a,subnet-b'],
           ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
           ['/intellidev/dev/artifacts/bucket', 'bkt'],
+          ['/intellidev/dev/runtime/task-events-queue-url', 'https://sqs/q'],
         ]),
     }
     const config = await loadAwsConfig({
@@ -196,6 +197,7 @@ describe('loadAwsConfig', () => {
     ['/intellidev/dev/network/public-subnet-ids', 'subnet-a'],
     ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
     ['/intellidev/dev/artifacts/bucket', 'bkt'],
+    ['/intellidev/dev/runtime/task-events-queue-url', 'https://sqs/q'],
   ]
 
   it('collects bundles per project, so two projects cannot share one', async () => {

@@ -499,7 +499,18 @@ function containerReachableUrl(url: string, mode: DispatchMode): string {
   return url.replace(/^(https?:\/\/)(127\.0\.0\.1|localhost)(?=[:/]|$)/, '$1host.docker.internal')
 }
 
-function settle(
+/**
+ * Records a run's terminal state, once.
+ *
+ * Three paths can now reach a finished run and they genuinely race: the runner's own
+ * observed outcome, an ECS task-state-change event off the queue, and the reconciler's
+ * sweep. That is deliberate redundancy — each covers a failure the others miss — so the
+ * requirement is that whichever arrives first wins and the rest are no-ops.
+ *
+ * Returns whether it settled the run, so a caller can tell "I finished it" from "someone
+ * else already had" rather than logging a second outcome for the same run.
+ */
+export function settle(
   store: Store,
   runId: string,
   taskId: string,
@@ -507,7 +518,13 @@ function settle(
   records: unknown[],
   prUrl?: string,
   failureReason?: string,
-): void {
+): boolean {
+  const existing = store.getRun(runId)
+  if (existing && existing.status !== 'running') {
+    // Already terminal. Overwriting would replace a specific cause with whichever path was
+    // slowest — typically the reconciler's "task is gone", which says nothing useful.
+    return false
+  }
   const succeeded = outcome === 'succeeded'
   store.updateRun(runId, {
     status: succeeded ? 'succeeded' : outcome === 'parked' ? 'parked' : 'failed',
@@ -521,6 +538,7 @@ function settle(
   // A finished run puts the task in review, not done: a human decides whether the PR is
   // acceptable, which is the whole reason the PR is the boundary.
   moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
+  return true
 }
 
 /**

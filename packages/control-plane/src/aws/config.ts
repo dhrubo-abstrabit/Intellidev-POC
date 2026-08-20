@@ -20,6 +20,8 @@ export interface AwsRuntimeConfig {
   readonly securityGroupIds: readonly string[]
   readonly containerName: string
   readonly artifactBucket: string
+  /** Where ECS task-state-change events land, for C5's reconciler. */
+  readonly taskEventsQueueUrl: string
   /**
    * Published bundles, keyed by project id.
    *
@@ -38,6 +40,7 @@ const REQUIRED = {
   subnetIds: 'network/public-subnet-ids',
   securityGroupIds: 'network/run-task-security-group-id',
   artifactBucket: 'artifacts/bucket',
+  taskEventsQueueUrl: 'runtime/task-events-queue-url',
 } as const
 
 /** `bundle/<projectId>/{key,digest}` — one pair per project that has published one. */
@@ -123,6 +126,7 @@ export async function loadAwsConfig(opts: LoadAwsConfigOptions): Promise<AwsRunt
     subnetIds: list(REQUIRED.subnetIds),
     securityGroupIds: list(REQUIRED.securityGroupIds),
     artifactBucket: get(REQUIRED.artifactBucket),
+    taskEventsQueueUrl: get(REQUIRED.taskEventsQueueUrl),
     bundles,
   }
 }

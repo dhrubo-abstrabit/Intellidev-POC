@@ -2,6 +2,8 @@ import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
+import { LifecycleReconciler } from './lifecycle/reconciler.js'
+import { Store } from './store.js'
 import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
@@ -83,7 +85,12 @@ const aws =
       })
     : undefined
 
+// Owned here rather than reached for off the Fastify instance, because the reconciler and
+// the server operate on the same runs and that shared ownership should be visible.
+const store = new Store()
+
 const app = await buildServer({
+  store,
   dispatch: {
     mode,
     bundleRoot,
@@ -116,6 +123,27 @@ const app = await buildServer({
   accounts,
   publicDir: resolve(import.meta.dirname, '..', 'public'),
 })
+
+/**
+ * The lifecycle reconciler, started only where there is something to reconcile.
+ *
+ * It runs *after* listen so a slow first sweep cannot delay the port opening, and it sweeps
+ * immediately on start because a restart is exactly when orphaned runs exist — the
+ * in-process observer that was watching them died with the previous process.
+ */
+if (aws) {
+  const reconciler = new LifecycleReconciler({
+    store,
+    clusterName: aws.clusterName,
+    queueUrl: aws.taskEventsQueueUrl,
+    region: aws.region,
+    log: (message) => process.stderr.write(`${message}\n`),
+  })
+  reconciler.start()
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => reconciler.stop())
+  }
+}
 
 await app.listen({ port, host: '127.0.0.1' })
 

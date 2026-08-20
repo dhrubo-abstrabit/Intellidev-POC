@@ -26,7 +26,8 @@
     "image:push": "pnpm --filter @intellidev/infra-aws run push",
     "image:measure": "pnpm --filter @intellidev/infra-aws run measure-pull",
     "runner:prove": "pnpm --filter @intellidev/control-plane run prove-runner",
-    "bundle:push": "pnpm --filter @intellidev/infra-aws run push-bundle"
+    "bundle:push": "pnpm --filter @intellidev/infra-aws run push-bundle",
+    "reconciler:prove": "pnpm --filter @intellidev/control-plane run prove-reconciler"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

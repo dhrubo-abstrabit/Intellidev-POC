@@ -10,11 +10,13 @@
     "test": "vitest run --passWithNoTests",
     "build": "echo \"served from source via tsx\"",
     "dev": "tsx watch src/main.ts",
-    "prove-runner": "tsx scripts/prove-runner.ts"
+    "prove-runner": "tsx scripts/prove-runner.ts",
+    "prove-reconciler": "tsx scripts/prove-reconciler.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ecs": "^3.1114.0",
     "@aws-sdk/client-s3": "^3.1114.0",
+    "@aws-sdk/client-sqs": "^3.1114.0",
     "@aws-sdk/client-ssm": "^3.1114.0",
     "@aws-sdk/s3-request-presigner": "^3.1114.0",
     "@intellidev/adapter": "workspace:*",

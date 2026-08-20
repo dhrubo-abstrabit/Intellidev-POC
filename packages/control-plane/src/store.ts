@@ -124,6 +124,26 @@ export class Store {
     return this.runs.get(id)
   }
 
+  /**
+   * Finds a run by its runtime handle — a container name locally, a task ARN on Fargate.
+   *
+   * The lifecycle reconciler and the ECS task-state consumer both start from a task ARN and
+   * need the run it belongs to. Matching on the handle rather than a tag is deliberate: an
+   * ECS task-state-change event does not reliably carry task tags, and the handle is
+   * already recorded at dispatch precisely so a run can be found from the outside.
+   */
+  findRunByHandle(handle: string): RunRow | undefined {
+    for (const run of this.runs.values()) {
+      if (run.handle === handle) return run
+    }
+    return undefined
+  }
+
+  /** Runs the platform still believes are live. What the reconciler sweeps. */
+  listRunningRuns(): RunRow[] {
+    return [...this.runs.values()].filter((run) => run.status === 'running')
+  }
+
   listRuns(taskId?: string): RunRow[] {
     const all = [...this.runs.values()]
     const filtered = taskId ? all.filter((r) => r.taskId === taskId) : all
