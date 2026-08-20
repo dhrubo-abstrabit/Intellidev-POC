@@ -21,7 +21,8 @@
     "infra:diff": "pnpm --filter @intellidev/infra-aws run diff",
     "infra:deploy": "pnpm --filter @intellidev/infra-aws run deploy",
     "infra:destroy": "pnpm --filter @intellidev/infra-aws run destroy",
-    "infra:verify": "pnpm --filter @intellidev/infra-aws run verify"
+    "infra:verify": "pnpm --filter @intellidev/infra-aws run verify",
+    "infra:smoke": "pnpm --filter @intellidev/infra-aws run smoke"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

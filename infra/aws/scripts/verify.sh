@@ -43,6 +43,37 @@ managed=$(aws ec2 describe-vpcs --vpc-ids "$vpc_id" \
 [ "$managed" = "cdk" ] || fail "VPC is not tagged intellidev:managed-by=cdk (got '$managed')"
 ok 'VPC carries the intellidev tags'
 
+# --- A2: the S3 gateway endpoint must actually be in the route tables ---
+endpoint=$(aws ssm get-parameter --name "$prefix/s3-endpoint-id" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail "$prefix/s3-endpoint-id is not in SSM"
+routed=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$vpc_id" \
+  --query "length(RouteTables[?Routes[?GatewayId=='$endpoint']])" --output text)
+# Four subnets, so four route tables. An endpoint that exists but is not routed is the
+# quiet failure here: S3 still works, over the internet, billed per GB.
+[ "$routed" = "4" ] || fail "S3 endpoint $endpoint is routed from $routed/4 route tables"
+ok "S3 endpoint $endpoint routed from all 4 route tables"
+
+# An interface endpoint bills ~\$7/month per AZ whether used or not.
+iface=$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpc_id" \
+  --query "VpcEndpoints[?VpcEndpointType=='Interface'].ServiceName" --output text)
+[ -z "$iface" ] || fail "interface endpoint(s) present, which bill hourly: $iface"
+ok 'no interface endpoints'
+
+# --- A2: the egress allowlist must be an allowlist ---
+sg=$(aws ssm get-parameter --name "$prefix/run-task-security-group-id" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail "$prefix/run-task-security-group-id is not in SSM"
+ingress=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query 'length(SecurityGroups[0].IpPermissions)' --output text)
+[ "$ingress" = "0" ] || fail "run-task group has $ingress inbound rules; it should have none"
+allow_all=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query "length(SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'])" --output text)
+[ "$allow_all" = "0" ] || fail 'run-task group has an allow-all egress rule'
+ports=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query 'SecurityGroups[0].IpPermissionsEgress[].FromPort' --output text | tr '\t' ' ')
+ok "run-task group $sg: no inbound, egress ports [$ports]"
+
 # Region-wide, not just this VPC: a NAT gateway anywhere is a scale-to-zero regression.
 nats=$(aws ec2 describe-nat-gateways \
   --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text)

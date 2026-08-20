@@ -8,11 +8,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "echo \"@intellidev/infra-aws synthesises; nothing to build\"",
-    "synth": "cdk synth",
-    "diff": "cdk diff",
-    "deploy": "./scripts/preflight.sh && cdk deploy --require-approval broadening",
-    "destroy": "cdk destroy --force",
-    "verify": "./scripts/verify.sh"
+    "synth": "cdk synth --all",
+    "diff": "cdk diff --all",
+    "deploy": "./scripts/preflight.sh && cdk deploy --all --require-approval broadening",
+    "destroy": "cdk destroy --all --force",
+    "verify": "./scripts/verify.sh",
+    "smoke": "./scripts/smoke-egress.sh"
   },
   "devDependencies": {
     "aws-cdk": "2.1137.0",

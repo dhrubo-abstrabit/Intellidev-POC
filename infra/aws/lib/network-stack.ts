@@ -26,6 +26,8 @@ export interface NetworkStackProps extends StackProps {
  */
 export class NetworkStack extends Stack {
   readonly vpc: ec2.Vpc
+  readonly runTaskSecurityGroup: ec2.SecurityGroup
+  readonly s3Endpoint: ec2.GatewayVpcEndpoint
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
     super(scope, id, props)
@@ -52,6 +54,54 @@ export class NetworkStack extends Stack {
       ],
     })
 
+    /**
+     * S3 over a **gateway** endpoint, which is free and has no idle cost.
+     *
+     * Interface endpoints are deliberately absent: each one bills ~$7/month per AZ, and a
+     * task in a public subnet with a public IP already reaches ECR, CloudWatch and the
+     * model APIs over the internet for nothing. S3 gets an endpoint anyway because it is
+     * the one service where per-GB data transfer would otherwise be charged, and cache
+     * restore moves real volume (C3).
+     */
+    this.s3Endpoint = this.vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+      // Both tiers: run tasks live in public, and the isolated tier should be able to
+      // reach S3 without ever acquiring a route to the internet.
+      subnets: [
+        { subnetType: ec2.SubnetType.PUBLIC },
+        { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      ],
+    })
+
+    /**
+     * The run task security group.
+     *
+     * This is the egress allowlist, and the reason it is worth having: enforcement lives
+     * **outside the container**, where model-authored code cannot reach it. A run that is
+     * compromised still cannot open a socket the group does not permit.
+     *
+     * `allowAllOutbound: false` is the whole point — CDK's default is an any/any egress
+     * rule, which would make the group decorative.
+     */
+    this.runTaskSecurityGroup = new ec2.SecurityGroup(this, 'RunTaskSg', {
+      vpc: this.vpc,
+      securityGroupName: resourceName(env.name, 'run-task'),
+      description: 'Run tasks: no inbound at all, egress limited to HTTPS and DNS.',
+      allowAllOutbound: false,
+    })
+    // No ingress rule of any kind. The adapter dials out; nothing connects to a run.
+    this.runTaskSecurityGroup.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(443),
+      'HTTPS: git, model APIs, ECR pull, S3, CloudWatch, the control plane',
+    )
+    this.runTaskSecurityGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(53), 'DNS')
+    this.runTaskSecurityGroup.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(53),
+      'DNS over TCP, for responses that do not fit in a UDP datagram',
+    )
+
     // The infrastructure-to-application seam. The control plane reads this prefix at boot;
     // it never learns a vpc id or subnet id from code, an env var baked at build time, or a
     // CloudFormation call at runtime.
@@ -69,6 +119,17 @@ export class NetworkStack extends Stack {
       parameterName: ssmPath(env.name, 'network', 'isolated-subnet-ids'),
       stringListValue: this.vpc.isolatedSubnets.map((s) => s.subnetId),
       description: 'Subnets with no internet route, for the database tier.',
+    })
+
+    new ssm.StringParameter(this, 'RunTaskSgParam', {
+      parameterName: ssmPath(env.name, 'network', 'run-task-security-group-id'),
+      stringValue: this.runTaskSecurityGroup.securityGroupId,
+      description: 'Egress allowlist for run tasks. No inbound rules.',
+    })
+    new ssm.StringParameter(this, 'S3EndpointParam', {
+      parameterName: ssmPath(env.name, 'network', 's3-endpoint-id'),
+      stringValue: this.s3Endpoint.vpcEndpointId,
+      description: 'Gateway endpoint so S3 traffic never leaves the AWS network.',
     })
 
     new CfnOutput(this, 'VpcId', { value: this.vpc.vpcId })
