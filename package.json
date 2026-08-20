@@ -15,7 +15,13 @@
     "check": "pnpm format:check && pnpm typecheck && pnpm test",
     "adapter": "tsx packages/adapter/src/cli/adapter.ts",
     "cred": "tsx packages/adapter/src/cli/cred.ts",
-    "ui": "tsx packages/control-plane/src/main.ts"
+    "ui": "tsx packages/control-plane/src/main.ts",
+    "infra:bootstrap": "pnpm --filter @intellidev/infra-aws exec cdk bootstrap",
+    "infra:synth": "pnpm --filter @intellidev/infra-aws run synth",
+    "infra:diff": "pnpm --filter @intellidev/infra-aws run diff",
+    "infra:deploy": "pnpm --filter @intellidev/infra-aws run deploy",
+    "infra:destroy": "pnpm --filter @intellidev/infra-aws run destroy",
+    "infra:verify": "pnpm --filter @intellidev/infra-aws run verify"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

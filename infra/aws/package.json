@@ -1,0 +1,25 @@
+{
+  "name": "@intellidev/infra-aws",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "CDK app for the AWS deployment. Every resource name, ARN and region lives here, never in application code.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "echo \"@intellidev/infra-aws synthesises; nothing to build\"",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "./scripts/preflight.sh && cdk deploy --require-approval broadening",
+    "destroy": "cdk destroy --force",
+    "verify": "./scripts/verify.sh"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1137.0",
+    "aws-cdk-lib": "^2.219.0",
+    "constructs": "^10.4.2",
+    "tsx": "^4.23.12",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

@@ -22,3 +22,6 @@ coverage/
 
 # Local docker-mode fixtures (bind-mounted into the runner; /Users is what Docker Desktop shares)
 .intellidev-local/
+
+# cdk synth output
+cdk.out/
