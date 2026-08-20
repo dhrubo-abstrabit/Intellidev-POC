@@ -32,6 +32,54 @@ export interface DockerRunnerOptions {
  */
 const SECRET_NAME = /(TOKEN|SECRET|KEY|PASSWORD|MATERIAL|CREDENTIAL)S?$/i
 
+/**
+ * Messages that mean the container never ran.
+ *
+ * Matched on shape rather than exit code, because the obvious discriminator does not work:
+ * a dead daemon makes the client exit **1**, not 125, and 1 is also a perfectly ordinary
+ * container exit code. Discriminating on the code would either miss the daemon case or
+ * treat every failed run as a launch failure.
+ *
+ * A pattern list is the honest tool here. These are the Docker *client's* own errors, which
+ * a container cannot produce because it does not exist yet — so matching one is proof the
+ * message is Docker's and not the run's.
+ */
+const LAUNCH_FAILURE_PATTERNS = [
+  /cannot connect to the docker daemon/i,
+  /is the docker daemon running/i,
+  /permission denied while trying to connect to the docker daemon/i,
+  /error response from daemon/i,
+  /unable to find image/i,
+  /invalid reference format/i,
+  /no such file or directory.*docker\.sock/i,
+  /exec:.*not found/i,
+]
+
+/**
+ * Explains a failure a human can act on, without turning the run log into a leak.
+ *
+ * stderr is surfaced **only** when it matches a Docker client error. For a container that
+ * ran, stderr is whatever the adapter and the harness printed, and copying that into a
+ * stored reason would put arbitrary run output — potentially a token a harness echoed — into
+ * a row that outlives the run. Its explanation belongs in the event stream instead.
+ */
+function reasonFor(
+  code: number | null,
+  timedOut: boolean,
+  stderrTail: string,
+): { reason?: string } {
+  if (timedOut) return { reason: 'exceeded wall clock' }
+  if (code === null || code === 0) return {}
+
+  const line = stderrTail
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .find((l) => LAUNCH_FAILURE_PATTERNS.some((pattern) => pattern.test(l)))
+
+  return line ? { reason: `container did not start: ${line}` } : {}
+}
+
 /** Replaces secret env values in an argv, keeping the names. */
 export function redactArgv(argv: readonly string[]): string[] {
   return argv.map((arg, index) => {
@@ -104,10 +152,21 @@ export class DockerRunner implements Runner {
     })
     let timedOut = false
 
+    /**
+     * The tail of stderr, kept only to explain a launch that never became a container.
+     *
+     * Bounded, because a chatty run would otherwise hold its whole log in memory for a
+     * string that is at most a sentence.
+     */
+    let stderrTail = ''
+
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => spec.onOutput?.('stdout', chunk))
-    child.stderr.on('data', (chunk: string) => spec.onOutput?.('stderr', chunk))
+    child.stderr.on('data', (chunk: string) => {
+      stderrTail = (stderrTail + chunk).slice(-2000)
+      spec.onOutput?.('stderr', chunk)
+    })
 
     const timer = spec.timeoutSec
       ? setTimeout(() => {
@@ -129,7 +188,7 @@ export class DockerRunner implements Runner {
           runId: spec.runId,
           exitCode: code,
           timedOut,
-          ...(timedOut ? { reason: 'exceeded wall clock' } : {}),
+          ...reasonFor(code, timedOut, stderrTail),
         })
       })
     })

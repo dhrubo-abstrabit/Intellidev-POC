@@ -139,3 +139,59 @@ describe('redactArgv', () => {
     expect(argv).toEqual(['docker', 'run', '--mount', 'source=/keys/data,target=/x', 'img'])
   })
 })
+
+describe('explaining a failure', () => {
+  /** A stub that exits with a chosen code after writing to stderr. */
+  async function stubExiting(code: number, message: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'runner-exit-'))
+    const path = join(dir, 'fake-docker')
+    await writeFile(
+      path,
+      [
+        '#!/bin/sh',
+        'case "$1" in stop) exit 0 ;; esac',
+        `echo "${message}" >&2`,
+        `exit ${code}`,
+      ].join('\n'),
+    )
+    await chmod(path, 0o755)
+    return path
+  }
+
+  it('surfaces why a container never started', async () => {
+    // A dead daemon exits **1**, not 125 — verified, after an earlier version of this guessed
+    // 125 and silently recorded no reason at all. Since 1 is also an ordinary container exit
+    // code, the message shape is what discriminates.
+    const binary = await stubExiting(
+      1,
+      'Cannot connect to the Docker daemon. Is the docker daemon running?',
+    )
+    const runner = new DockerRunner({ binary })
+    const started = await runner.start({ runId: 'r', image: 'x', args: [], onOutput: () => {} })
+    const outcome = await started.outcome
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.reason).toMatch(/Cannot connect to the Docker daemon/)
+  })
+
+  it('reports a missing image', async () => {
+    const binary = await stubExiting(125, "Unable to find image 'intellidev/runner:dev' locally")
+    const runner = new DockerRunner({ binary })
+    const outcome = await (
+      await runner.start({ runId: 'r', image: 'x', args: [], onOutput: () => {} })
+    ).outcome
+    expect(outcome.reason).toMatch(/Unable to find image/)
+  })
+
+  it('does not copy container output into the reason', async () => {
+    // For a container that actually ran, stderr is whatever the adapter and harness printed.
+    // Storing that would put arbitrary run output — potentially a token a harness echoed —
+    // into a row that outlives the run. Its explanation belongs in the event stream.
+    const binary = await stubExiting(1, 'ANTHROPIC_API_KEY=sk-live-should-never-be-stored')
+    const runner = new DockerRunner({ binary })
+    const outcome = await (
+      await runner.start({ runId: 'r', image: 'x', args: [], onOutput: () => {} })
+    ).outcome
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.reason).toBeUndefined()
+  })
+})
