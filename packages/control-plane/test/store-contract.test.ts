@@ -42,6 +42,15 @@ function connectionString(): string | undefined {
  * own required payload, so a generic helper that swapped the type while keeping one `data`
  * shape produced schema failures that looked like store bugs.
  */
+/** Waits for a predicate, since backfill is asynchronous in both implementations. */
+async function until(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
 function event(runId: string, seq: number): AgentEvent {
   return AgentEvent.parse({
     seq,
@@ -300,15 +309,80 @@ function contract(
     })
 
     describe('subscription', () => {
+      it('backfills from `since`, so there is no separate read to race', async () => {
+        const task = await store.createTask(TASK)
+        const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
+        for (const seq of [0, 1, 2]) await store.appendEvent(event(runId, seq))
+
+        const seen: number[] = []
+        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: 0 })
+        await until(() => seen.length >= 2)
+        // Exclusive: `since: 0` means "after seq 0".
+        expect(seen).toEqual([1, 2])
+        unsubscribe()
+      })
+
+      it('delivers the whole log for `since: -1`', async () => {
+        const task = await store.createTask(TASK)
+        const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
+        for (const seq of [0, 1]) await store.appendEvent(event(runId, seq))
+
+        const seen: number[] = []
+        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: -1 })
+        await until(() => seen.length >= 2)
+        expect(seen).toEqual([0, 1])
+        unsubscribe()
+      })
+
+      it('gives two subscribers of one run their own backlog', async () => {
+        // A shared watermark let whoever subscribed first starve the second of its history.
+        const task = await store.createTask(TASK)
+        const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
+        for (const seq of [0, 1, 2]) await store.appendEvent(event(runId, seq))
+
+        const first: number[] = []
+        const second: number[] = []
+        const un1 = store.subscribe(runId, (e) => first.push(e.seq), { since: -1 })
+        await until(() => first.length >= 3)
+        const un2 = store.subscribe(runId, (e) => second.push(e.seq), { since: -1 })
+        await until(() => second.length >= 3)
+
+        expect(first).toEqual([0, 1, 2])
+        expect(second).toEqual([0, 1, 2])
+        un1()
+        un2()
+      })
+
+      it('delivers only what follows a mid-log `since`', async () => {
+        // Replaces a test for an "omitted since" mode that no longer exists: reading the
+        // run's current position asynchronously could return a watermark that already
+        // included the event the subscriber was meant to see, skipping it with nothing to
+        // retry. `since` is required now, so the caller states where it is.
+        const task = await store.createTask(TASK)
+        const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
+        for (const seq of [0, 1]) await store.appendEvent(event(runId, seq))
+
+        const seen: number[] = []
+        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: 1 })
+        await store.appendEvent(event(runId, 2))
+        await until(() => seen.length >= 1)
+        await new Promise((resolve) => setTimeout(resolve, 250))
+
+        expect(seen).toEqual([2])
+        unsubscribe()
+      })
+
       it('delivers new events to a listener and stops on unsubscribe', async () => {
         const task = await store.createTask(TASK)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         const seen: number[] = []
-        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq))
+        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: -1 })
         await store.appendEvent(event(runId, 0))
         await store.appendEvent(event(runId, 1))
+        await until(() => seen.length >= 2)
         unsubscribe()
         await store.appendEvent(event(runId, 2))
+        await new Promise((resolve) => setTimeout(resolve, 300))
         expect(seen).toEqual([0, 1])
       })
 
@@ -317,10 +391,12 @@ function contract(
         const task = await store.createTask(TASK)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         const seen: number[] = []
-        store.subscribe(runId, (e) => seen.push(e.seq))
+        const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: -1 })
         await store.appendEvent(event(runId, 0))
         await store.appendEvent(event(runId, 0))
+        await new Promise((resolve) => setTimeout(resolve, 300))
         expect(seen).toEqual([0])
+        unsubscribe()
       })
     })
   })

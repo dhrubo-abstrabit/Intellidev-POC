@@ -101,9 +101,16 @@ const databaseUrl = process.env['SUPABASE_CONNECTION_STRING_SESSION']
 const store: Store = databaseUrl
   ? new PostgresStore({
       connectionString: databaseUrl,
+      // On whenever there is a database. It costs one idle connection and it is the
+      // difference between "the UI shows a stalled run" and "the UI is right" the moment a
+      // second instance exists — which is not a state anyone remembers to turn a flag on for.
+      crossInstanceFanOut: true,
       onDiagnostic: (message) => process.stderr.write(`${message}\n`),
     })
   : new InMemoryStore()
+
+// Opens the LISTEN connection before serving, so the first request cannot race it.
+if (store instanceof PostgresStore) await store.start()
 // One registry shared by dispatch (which mints) and the event socket (which verifies), so
 // there is exactly one place a run's token can be revoked.
 const tokens = new RunTokenRegistry()

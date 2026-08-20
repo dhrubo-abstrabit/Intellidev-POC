@@ -8,6 +8,11 @@ import {
 } from '@intellidev/shared'
 import type { Listener, RunRow, Store, TaskRow } from './types.js'
 
+interface Subscription {
+  readonly listener: Listener
+  deliveredThrough: number
+}
+
 /**
  * In-memory store, for local development and for tests.
  *
@@ -25,7 +30,14 @@ export class InMemoryStore implements Store {
   private readonly tasks = new Map<string, TaskRow>()
   private readonly runs = new Map<string, RunRow>()
   private readonly events = new Map<string, AgentEvent[]>()
-  private readonly listeners = new Map<string, Set<Listener>>()
+  /**
+   * One record per subscription, each with its own watermark.
+   *
+   * Per-subscription rather than per-run: two watchers of the same run join at different
+   * points, and a shared watermark would mean whichever subscribed first silently starved
+   * the second of its backlog.
+   */
+  private readonly subscriptions = new Map<string, Set<Subscription>>()
 
   // --- tasks ---------------------------------------------------------------
 
@@ -166,8 +178,20 @@ export class InMemoryStore implements Store {
     const run = this.runs.get(event.runId)
     if (run) run.seqHwm = Math.max(run.seqHwm, event.seq)
 
-    for (const listener of this.listeners.get(event.runId) ?? []) listener(event)
+    this.fanOut(event.runId)
     return true
+  }
+
+  /** Delivers to every subscription of a run whatever it has not seen, in seq order. */
+  private fanOut(runId: string): void {
+    const log = this.events.get(runId) ?? []
+    for (const subscription of this.subscriptions.get(runId) ?? []) {
+      for (const event of log) {
+        if (event.seq <= subscription.deliveredThrough) continue
+        subscription.deliveredThrough = event.seq
+        subscription.listener(event)
+      }
+    }
   }
 
   /** Everything after `since`. `-1` returns the whole log. */
@@ -189,11 +213,24 @@ export class InMemoryStore implements Store {
     return inserted
   }
 
-  subscribe(runId: string, listener: Listener): () => void {
-    const set = this.listeners.get(runId) ?? new Set()
-    set.add(listener)
-    this.listeners.set(runId, set)
-    return () => set.delete(listener)
+  subscribe(runId: string, listener: Listener, opts: { since?: number } = {}): () => void {
+    const log = this.events.get(runId) ?? []
+    const subscription: Subscription = {
+      listener,
+      // Omitting `since` means "only what arrives from now on", so the watermark starts at
+      // the newest event rather than at -1.
+      deliveredThrough: opts.since === undefined ? (log.at(-1)?.seq ?? -1) : opts.since,
+    }
+    const set = this.subscriptions.get(runId) ?? new Set()
+    set.add(subscription)
+    this.subscriptions.set(runId, set)
+
+    // Backfill on the next tick, matching Postgres, where the read is a round trip. Doing it
+    // synchronously here would make the two implementations differ in observable timing and
+    // let a test pass against one and fail against the other.
+    if (opts.since !== undefined) queueMicrotask(() => this.fanOut(runId))
+
+    return () => set.delete(subscription)
   }
 
   /** Nothing to release. Present so callers need not know which implementation they hold. */

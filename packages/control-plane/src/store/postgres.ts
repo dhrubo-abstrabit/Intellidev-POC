@@ -12,6 +12,12 @@ import {
 } from '@intellidev/shared'
 import type { Listener, RunRow, Store, TaskRow } from './types.js'
 import { runEvents, runs, tasks } from './schema.js'
+import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
+
+interface Subscription {
+  readonly listener: Listener
+  deliveredThrough: number
+}
 
 /**
  * Postgres-backed store.
@@ -33,14 +39,33 @@ export interface PostgresStoreOptions {
   /** Bounded: Supavisor has its own ceiling, and an unbounded pool finds it. */
   readonly maxConnections?: number
   readonly onDiagnostic?: (message: string) => void
+  /**
+   * Turns on cross-instance fan-out.
+   *
+   * Off by default so a single instance — and every test — behaves exactly as before,
+   * without opening a second connection nothing needs. `main` enables it.
+   */
+  readonly crossInstanceFanOut?: boolean
+  /** Injected in tests, so the listener can be driven without a database. */
+  readonly createNotifyClient?: (connectionString: string) => NotifyClient
 }
 
 export class PostgresStore implements Store {
   private readonly pool: pg.Pool
   private readonly db: NodePgDatabase
-  private readonly listeners = new Map<string, Set<Listener>>()
+  /**
+   * One record per subscription, each with its own watermark.
+   *
+   * The watermark is what makes cross-instance delivery duplicate-free without an instance
+   * id in the payload: whoever delivered an event advances past it, so a notification for
+   * work already delivered finds nothing. Per *subscription* rather than per run, because a
+   * shared watermark let the first subscriber starve the second of its backlog — and, with
+   * SSE backfilling separately, produced a stream of 0,1,2,3,4,0,1,2,3,4.
+   */
+  private readonly subscriptions = new Map<string, Set<Subscription>>()
+  private notify: NotifyListener | undefined
 
-  constructor(opts: PostgresStoreOptions) {
+  constructor(private readonly opts: PostgresStoreOptions) {
     this.pool = new pg.Pool({
       connectionString: opts.connectionString,
       max: opts.maxConnections ?? 10,
@@ -59,6 +84,70 @@ export class PostgresStore implements Store {
       opts.onDiagnostic?.(`postgres pool error: ${error.message}`)
     })
     this.db = drizzle(this.pool)
+
+    if (opts.crossInstanceFanOut) {
+      this.notify = new NotifyListener({
+        connectionString: opts.connectionString,
+        onRunChanged: (runId) => void this.drain(runId),
+        // Everything that happened while the connection was down was never delivered, and
+        // only a re-read closes that gap.
+        onReconnected: () => {
+          for (const runId of this.subscriptions.keys()) void this.drain(runId)
+        },
+        ...(opts.onDiagnostic ? { onDiagnostic: opts.onDiagnostic } : {}),
+        ...(opts.createNotifyClient ? { createClient: opts.createNotifyClient } : {}),
+      })
+    }
+  }
+
+  /** Starts the listener, if cross-instance fan-out was asked for. */
+  async start(): Promise<void> {
+    await this.notify?.start()
+  }
+
+  /**
+   * Delivers whatever a run has that local listeners have not seen.
+   *
+   * Reads rather than trusting a payload, which is what makes a lost notification
+   * recoverable: it asks for everything after what it has delivered, not for one event.
+   */
+  private async drain(runId: string): Promise<void> {
+    const set = this.subscriptions.get(runId)
+    if (!set || set.size === 0) return
+
+    // One query for every subscriber, from the furthest-behind watermark, then filtered per
+    // subscription. Querying per subscriber would multiply round trips on a link where a
+    // round trip is the dominant cost.
+    const lowest = Math.min(...[...set].map((s) => s.deliveredThrough))
+    let fresh: AgentEvent[]
+    try {
+      fresh = await this.eventsSince(runId, lowest)
+    } catch (error) {
+      // A failed read must not kill the listener: the next notification retries, and a
+      // reconnect drains from the same watermarks.
+      this.opts.onDiagnostic?.(`fan-out read failed for ${runId}: ${String(error)}`)
+      return
+    }
+    if (fresh.length === 0) return
+
+    for (const subscription of set) {
+      for (const event of fresh) {
+        if (event.seq <= subscription.deliveredThrough) continue
+        subscription.deliveredThrough = event.seq
+        subscription.listener(event)
+      }
+    }
+  }
+
+  /** Delivers what is already in hand, without a read. Used on the write path. */
+  private deliverLocally(runId: string, events: readonly AgentEvent[]): void {
+    for (const subscription of this.subscriptions.get(runId) ?? []) {
+      for (const event of events) {
+        if (event.seq <= subscription.deliveredThrough) continue
+        subscription.deliveredThrough = event.seq
+        subscription.listener(event)
+      }
+    }
   }
 
   // --- tasks ---------------------------------------------------------------
@@ -234,9 +323,22 @@ export class PostgresStore implements Store {
 
       // Fan out only what was genuinely new, so a replay does not re-render in the UI.
       const fresh = new Set(rows.map((row) => row.seq))
-      for (const event of batch) {
-        if (!fresh.has(event.seq)) continue
-        for (const listener of this.listeners.get(runId) ?? []) listener(event)
+      this.deliverLocally(
+        runId,
+        batch.filter((event) => fresh.has(event.seq)).sort((a, b) => a.seq - b.seq),
+      )
+
+      if (this.notify) {
+        // The payload is the run id, not the events: NOTIFY caps at 8000 bytes and an event
+        // can carry a 2000-character preview. Other instances read the rows themselves.
+        // Failing to notify must not fail the write — the events are already durable, and
+        // SSE backfills from `seq` on connect, so a missed notification costs latency on
+        // another instance rather than correctness.
+        try {
+          await this.db.execute(sql`select pg_notify(${RUN_EVENTS_CHANNEL}, ${runId})`)
+        } catch (error) {
+          this.opts.onDiagnostic?.(`pg_notify failed for ${runId}: ${String(error)}`)
+        }
       }
     }
     return inserted
@@ -260,18 +362,23 @@ export class PostgresStore implements Store {
    * support — so a browser attached to one control-plane instance sees events that arrived
    * at another. Until then, running more than one instance means a UI can miss events.
    */
-  subscribe(runId: string, listener: Listener): () => void {
-    const set = this.listeners.get(runId) ?? new Set()
-    set.add(listener)
-    this.listeners.set(runId, set)
-    return () => set.delete(listener)
+  subscribe(runId: string, listener: Listener, opts: { since: number }): () => void {
+    const subscription: Subscription = { listener, deliveredThrough: opts.since }
+    const set = this.subscriptions.get(runId) ?? new Set()
+    set.add(subscription)
+    this.subscriptions.set(runId, set)
+
+    // Backfill immediately; every later delivery comes from a notification.
+    void this.drain(runId)
+
+    return () => set.delete(subscription)
   }
 
   /**
    * Empties every table. For tests only.
    *
    * `tasks` cascades to `runs` and `run_events`, so one statement covers all three — which
-   * matters because it is also one round trip rather than three against a database 85 ms
+   * matters because it is also one round trip rather than three against a database ~85 ms
    * away, and this runs before every contract test.
    */
   async truncateAll(): Promise<void> {
@@ -279,6 +386,7 @@ export class PostgresStore implements Store {
   }
 
   async close(): Promise<void> {
+    await this.notify?.close()
     await this.pool.end()
   }
 }

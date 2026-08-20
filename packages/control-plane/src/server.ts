@@ -431,11 +431,19 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       })
 
       const send = (event: unknown) => reply.raw.write(`data: ${JSON.stringify(event)}\n\n`)
-      const since = Number(request.query.since ?? -1)
-      for (const event of await store.eventsSince(runId, Number.isNaN(since) ? -1 : since))
-        send(event)
+      const requested = Number(request.query.since ?? -1)
+      const since = Number.isNaN(requested) ? -1 : requested
 
-      const unsubscribe = store.subscribe(runId, send)
+      /**
+       * Backfill and live delivery are one subscription, not two steps.
+       *
+       * Reading `eventsSince` and then subscribing had two defects: an event landing between
+       * the read and the registration was missed, and once cross-instance fan-out existed
+       * the subscription re-delivered from the start — which put 0,1,2,3,4,0,1,2,3,4 on the
+       * wire in a live two-instance test. Passing `since` gives the subscription one
+       * watermark covering both.
+       */
+      const unsubscribe = store.subscribe(runId, send, { since })
       // Comment frames keep intermediaries from closing an idle stream during a long stage.
       const keepAlive = setInterval(() => reply.raw.write(': keep-alive\n\n'), 15_000)
 

@@ -100,8 +100,26 @@ export interface Store {
   appendEvents(events: readonly AgentEvent[]): Promise<number>
   eventsSince(runId: string, since?: number): Promise<AgentEvent[]>
 
-  /** Registers an in-process listener. See the note on C6 above. */
-  subscribe(runId: string, listener: Listener): () => void
+  /**
+   * Watches a run, optionally from a point in its history.
+   *
+   * **Backfill is part of subscribing, not a separate step.** The caller used to read
+   * `eventsSince(since)` and then subscribe, which had two defects: an event landing between
+   * the read and the registration was missed, and with cross-instance fan-out the
+   * subscription re-delivered from the start — producing a stream like 0,1,2,3,4,0,1,2,3,4.
+   * One watermark per subscription removes both.
+   *
+   * `since` is **required and exclusive**: `-1` means the whole log, `5` means everything
+   * after seq 5. It is not optional on purpose. An "everything from now on" mode would have
+   * to learn the run's current position, and reading that asynchronously is racy in the one
+   * direction that matters — the read can return a watermark that already includes the event
+   * the subscriber was meant to receive, which is then skipped with nothing to retry it. A
+   * caller always knows where it is, so it says.
+   *
+   * Delivery of the backlog is asynchronous, so events may arrive shortly after this
+   * returns — in `seq` order, which is what a timeline needs.
+   */
+  subscribe(runId: string, listener: Listener, opts: { since: number }): () => void
 
   /** Releases connections. A no-op in memory. */
   close(): Promise<void>
