@@ -18,8 +18,8 @@ import { generateActionItems } from "./generate";
 describe("generateActionItems (real Anthropic call, real local DB)", () => {
   const service = createServiceClient();
   let userId: string;
-  let workspaceId: string;
-  let projectId: string;
+  let tenantId: string;
+  let clientSpaceId: string;
   let integrationId: string;
 
   beforeAll(async () => {
@@ -32,27 +32,45 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     if (authError || !authUser.user) throw new Error(`Failed to create test user: ${authError?.message}`);
     userId = authUser.user.id;
 
-    const { data: workspace, error: workspaceError } = await service
-      .from("workspaces")
+    // Full 4-level chain: a workspace can't exist without a tenant above it,
+    // and an integration can't exist without a client space above it (see
+    // src/lib/scope.ts).
+    const { data: tenant, error: tenantError } = await service
+      .from("tenants")
       .insert({ name: "LLM Integration Test", slug: `llm-itest-${Date.now()}`, owner_id: userId })
       .select("id")
       .single();
+    if (tenantError || !tenant) throw new Error(`Failed to create test tenant: ${tenantError?.message}`);
+    tenantId = tenant.id;
+
+    const { data: workspace, error: workspaceError } = await service
+      .from("workspaces")
+      .insert({ tenant_id: tenantId, name: "LLM Integration Test", slug: `llm-itest-${Date.now()}`, owner_id: userId })
+      .select("id")
+      .single();
     if (workspaceError || !workspace) throw new Error(`Failed to create test workspace: ${workspaceError?.message}`);
-    workspaceId = workspace.id;
+    const workspaceId = workspace.id;
+
+    const { data: clientSpace, error: clientSpaceError } = await service
+      .from("client_spaces")
+      .insert({ workspace_id: workspaceId, tenant_id: tenantId, name: "Test Client Space", slug: "test-client-space" })
+      .select("id")
+      .single();
+    if (clientSpaceError || !clientSpace) throw new Error(`Failed to create test client space: ${clientSpaceError?.message}`);
+    clientSpaceId = clientSpace.id;
 
     const { data: project, error: projectError } = await service
       .from("projects")
-      .insert({ workspace_id: workspaceId, name: "Test Project", slug: "test-project", created_by: userId })
+      .insert({ client_space_id: clientSpaceId, workspace_id: workspaceId, name: "Test Project", slug: "test-project", created_by: userId })
       .select("id")
       .single();
     if (projectError || !project) throw new Error(`Failed to create test project: ${projectError?.message}`);
-    projectId = project.id;
 
     const { data: integration, error: integrationError } = await service
       .from("integrations")
       .insert({
+        client_space_id: clientSpaceId,
         workspace_id: workspaceId,
-        project_id: projectId,
         provider: "mock",
         status: "connected",
         display_name: "Mock (sample data)",
@@ -69,15 +87,17 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
   }, 30000);
 
   afterAll(async () => {
-    await service.from("workspaces").delete().eq("id", workspaceId);
+    // Deleting the tenant cascades through workspaces, client_spaces,
+    // projects, integrations, and everything keyed under them.
+    await service.from("tenants").delete().eq("id", tenantId);
     await service.auth.admin.deleteUser(userId);
   });
 
   it("generates action items from real events via a real Haiku 4.5 call", async () => {
-    // The mock connector stamps occurredAt as "now" — the test project
-    // defaults to timezone 'UTC' (projects.timezone's column default), so
-    // projectToday("UTC") always matches.
-    const result = await generateActionItems(projectId, projectToday("UTC"));
+    // The mock connector stamps occurredAt as "now" — the test client space
+    // defaults to timezone 'UTC' (client_spaces.timezone's column default),
+    // so projectToday("UTC") always matches.
+    const result = await generateActionItems(clientSpaceId, projectToday("UTC"));
 
     expect(result.status).toBe("succeeded");
     expect(result.error).toBeUndefined();
@@ -85,7 +105,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     const { data: run } = await service
       .from("llm_runs")
       .select("status, model, prompt_tokens, completion_tokens, cost_usd, input_event_ids")
-      .eq("project_id", projectId)
+      .eq("client_space_id", clientSpaceId)
       .single();
     expect(run?.status).toBe("succeeded");
     expect(run?.model).toBe("claude-haiku-4-5");
@@ -97,12 +117,12 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     // All 5 mock events were "seen" by the model even if not every one
     // produced an action item — the whole point of processed_at is that
     // the backlog doesn't get re-sent forever.
-    const { data: events } = await service.from("normalized_events").select("processed_at").eq("project_id", projectId);
+    const { data: events } = await service.from("normalized_events").select("processed_at").eq("client_space_id", clientSpaceId);
     expect(events?.every((e) => e.processed_at !== null)).toBe(true);
   }, 30000);
 
   it("is a clean skip when there are no unprocessed events left", async () => {
-    const result = await generateActionItems(projectId, projectToday("UTC"));
+    const result = await generateActionItems(clientSpaceId, projectToday("UTC"));
     expect(result).toEqual({ status: "skipped", itemsCreated: 0, itemsMerged: 0 });
   });
 
@@ -110,15 +130,15 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     const { count: beforeTotal } = await service
       .from("action_items")
       .select("id", { count: "exact", head: true })
-      .eq("project_id", projectId);
+      .eq("client_space_id", clientSpaceId);
 
     const syncResult = await runSync(integrationId, "manual");
     expect(syncResult.status).toBe("succeeded");
 
-    const result = await generateActionItems(projectId, projectToday("UTC"));
+    const result = await generateActionItems(clientSpaceId, projectToday("UTC"));
     expect(result.status).toBe("succeeded");
 
-    const { data: allItems } = await service.from("action_items").select("id, title").eq("project_id", projectId);
+    const { data: allItems } = await service.from("action_items").select("id, title").eq("client_space_id", clientSpaceId);
     const titles = allItems?.map((i) => i.title) ?? [];
     // If merging worked, titles stay unique even though the model saw a
     // fresh batch of the *same* synthetic conversation topics again.

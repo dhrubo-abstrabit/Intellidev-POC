@@ -17,11 +17,11 @@ interface BatchTimeoutPayload {
 
 /**
  * Backstop for src/services/sync/batch.ts's fan-in: scheduled (via a
- * delayed QStash message) at the same time a batch is seeded in
+ * delayed pgmq message) at the same time a batch is seeded in
  * src/app/api/cron/tick/route.ts. Cron only runs once/day on the Hobby
  * plan, so if a member integration's sync never reaches a terminal state
- * (a lost QStash delivery, a hard function timeout) nothing else would ever
- * notice — this guarantees every project still gets a same-day digest.
+ * (a lost delivery, a hard function timeout) nothing else would ever
+ * notice — this guarantees every client space still gets a same-day digest.
  */
 async function handler(request: NextRequest) {
   const body = (await request.json()) as Partial<BatchTimeoutPayload>;
@@ -36,7 +36,7 @@ async function handler(request: NextRequest) {
   }
 
   if (result.firedLlmJob) {
-    await triggerDailyExtraction(service, result.projectId, result.batchDate);
+    await triggerDailyExtraction(service, result.clientSpaceId, result.batchDate);
   }
 
   return NextResponse.json(result);

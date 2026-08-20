@@ -1,4 +1,6 @@
+import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { resolveProjectScope } from "@/lib/scope";
 import { isoDaysAgo, projectDayKey, projectToday, utcWindowForDay } from "@/lib/date/project-day";
 import { isGoogleService, type ConnectorProvider, type GoogleService } from "@/components/items/provider-badge";
 import { parseProjectDataSearchParams } from "./filters";
@@ -9,7 +11,7 @@ import type { AttachmentSummary } from "@/components/items/types";
 import type { DayActionPoint, DayEvent, DayIndexEntry, IntegrationSummary } from "./types";
 
 // The manual "Extract for this day" button below runs generateActionItems
-// synchronously in a Server Action rather than through the QStash-queued
+// synchronously in a Server Action rather than through the pgmq-queued
 // /api/jobs/llm route — see actions.ts's doc comment — so this route needs
 // the same extended budget that route sets for its own Anthropic calls.
 export const maxDuration = 60;
@@ -52,18 +54,17 @@ export default async function ProjectDataPage({
   const { workspaceId, projectId } = await params;
   const rawSearchParams = await searchParams;
   const filters = parseProjectDataSearchParams(rawSearchParams);
-  const supabase = await createClient();
 
-  // The parent layout only selects (id, name); the timezone that drives
-  // every day boundary on this page is fetched here instead of widening
-  // that shared query for a value only this tab needs.
-  const { data: project } = await supabase
-    .from("projects")
-    .select("timezone")
-    .eq("id", projectId)
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
-  const timezone = project?.timezone ?? "UTC";
+  // timezone moved off `projects` onto `client_spaces` (see
+  // src/lib/scope.ts) — normalized_events and integrations key on
+  // client_space_id now too, not project_id.
+  const scope = await resolveProjectScope(workspaceId, projectId);
+  if (!scope) {
+    notFound();
+  }
+  const { clientSpaceId, timezone } = scope;
+
+  const supabase = await createClient();
 
   const lookbackCutoff = isoDaysAgo(DAY_INDEX_LOOKBACK_DAYS);
 
@@ -71,14 +72,14 @@ export default async function ProjectDataPage({
     supabase
       .from("normalized_events")
       .select("occurred_at, provider")
-      .eq("project_id", projectId)
+      .eq("client_space_id", clientSpaceId)
       .gte("occurred_at", lookbackCutoff)
       .order("occurred_at", { ascending: false })
       .limit(DAY_INDEX_ROW_LIMIT),
     supabase
       .from("integrations")
       .select("id, provider, status, display_name, config")
-      .eq("project_id", projectId)
+      .eq("client_space_id", clientSpaceId)
       .order("provider"),
   ]);
 
@@ -114,7 +115,7 @@ export default async function ProjectDataPage({
   const { data: eventRows } = await supabase
     .from("normalized_events")
     .select("id, provider, type, actor, actor_display, title, body, occurred_at, resource_url, processed_at, metadata")
-    .eq("project_id", projectId)
+    .eq("client_space_id", clientSpaceId)
     .gte("occurred_at", window.gte)
     .lt("occurred_at", window.lt)
     .order("occurred_at", { ascending: true });

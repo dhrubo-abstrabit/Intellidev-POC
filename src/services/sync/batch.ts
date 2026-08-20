@@ -8,22 +8,27 @@ type ServiceClient = ReturnType<typeof createServiceClient>;
 export type BatchMemberOutcome = "succeeded" | "failed" | "enqueue_failed" | "timed_out";
 
 /**
- * Creates (or reuses, if this project/day was already seeded — e.g. a
+ * Creates (or reuses, if this client space/day was already seeded — e.g. a
  * retried cron invocation) the coordination row for "every one of this
- * project's due integrations must report in before extraction runs for
+ * client space's due integrations must report in before extraction runs for
  * batchDate", plus one membership row per integration. Idempotent: safe to
- * call more than once for the same (project, batchDate).
+ * call more than once for the same (client space, batchDate).
+ *
+ * Batched per CLIENT SPACE, not per project (see
+ * supabase/migrations/20260820100900_sync.sql) — integrations, events and
+ * the daily digest all belong to the client space; a project is a tagged
+ * view over a subset of its action items, not a separate data owner.
  */
-export async function seedBatchForProject(
+export async function seedBatchForClientSpace(
   service: ServiceClient,
-  params: { workspaceId: string; projectId: string; batchDate: string; integrationIds: string[] },
+  params: { workspaceId: string; clientSpaceId: string; batchDate: string; integrationIds: string[] },
 ): Promise<string> {
-  const { workspaceId, projectId, batchDate, integrationIds } = params;
+  const { workspaceId, clientSpaceId, batchDate, integrationIds } = params;
 
   const { data: existing } = await service
     .from("sync_batches")
     .select("id")
-    .eq("project_id", projectId)
+    .eq("client_space_id", clientSpaceId)
     .eq("batch_date", batchDate)
     .maybeSingle();
 
@@ -31,17 +36,17 @@ export async function seedBatchForProject(
   if (!batchId) {
     const { data: inserted, error } = await service
       .from("sync_batches")
-      .insert({ workspace_id: workspaceId, project_id: projectId, batch_date: batchDate })
+      .insert({ workspace_id: workspaceId, client_space_id: clientSpaceId, batch_date: batchDate })
       .select("id")
       .single();
     if (error) {
-      // Unique violation on (project_id, batch_date) means a concurrent
+      // Unique violation on (client_space_id, batch_date) means a concurrent
       // caller won the insert race — reuse its row rather than erroring.
       if (error.code !== "23505") throw new Error(`Could not seed sync batch: ${error.message}`);
       const { data: raceRow, error: raceError } = await service
         .from("sync_batches")
         .select("id")
-        .eq("project_id", projectId)
+        .eq("client_space_id", clientSpaceId)
         .eq("batch_date", batchDate)
         .single();
       if (raceError || !raceRow) throw new Error(`Could not resolve concurrently-seeded sync batch: ${raceError?.message}`);
@@ -53,7 +58,7 @@ export async function seedBatchForProject(
 
   if (integrationIds.length > 0) {
     await service.from("sync_batch_members").upsert(
-      integrationIds.map((integrationId) => ({ batch_id: batchId, integration_id: integrationId, workspace_id: workspaceId })),
+      integrationIds.map((integrationId) => ({ batch_id: batchId, integration_id: integrationId, client_space_id: clientSpaceId })),
       { onConflict: "batch_id,integration_id", ignoreDuplicates: true },
     );
   }
@@ -72,19 +77,20 @@ export type SettleBatchResult =
        * and is now reporting again with fresh work (e.g. a later manual
        * "Sync Now", or attachment extraction finishing after the batch
        * already fired). The batch-wide "every member done" trigger only
-       * ever fires ONCE per (project, batchDate) by design — a late arrival
-       * like this is exactly what callers should treat as "not covered by
-       * that one-shot trigger, fire your own" instead of assuming someone
-       * else already handled it. False for an ordinary in-progress member
-       * (remaining > 0) or the member that itself completed the batch. */
+       * ever fires ONCE per (client space, batchDate) by design — a late
+       * arrival like this is exactly what callers should treat as "not
+       * covered by that one-shot trigger, fire your own" instead of
+       * assuming someone else already handled it. False for an ordinary
+       * in-progress member (remaining > 0) or the member that itself
+       * completed the batch. */
       alreadySettled: boolean;
     };
 
 /**
  * Reports one integration as done (terminal — no further chaining) for its
- * project's batch on batchDate, and fires the day's LLM job exactly once,
- * the moment every member has reported in. Race-safe via two independent
- * conditional updates (`WHERE completed_at IS NULL` / `WHERE
+ * client space's batch on batchDate, and fires the day's LLM job exactly
+ * once, the moment every member has reported in. Race-safe via two
+ * independent conditional updates (`WHERE completed_at IS NULL` / `WHERE
  * llm_triggered_at IS NULL`), each a single-statement compare-and-swap that
  * Postgres serializes via ordinary row locking — no counter arithmetic, no
  * custom RPC.
@@ -98,14 +104,14 @@ export type SettleBatchResult =
  */
 export async function settleBatchMembership(
   service: ServiceClient,
-  params: { projectId: string; integrationId: string; batchDate: string; outcome: BatchMemberOutcome },
+  params: { clientSpaceId: string; integrationId: string; batchDate: string; outcome: BatchMemberOutcome },
 ): Promise<SettleBatchResult> {
-  const { projectId, integrationId, batchDate, outcome } = params;
+  const { clientSpaceId, integrationId, batchDate, outcome } = params;
 
   const { data: batch } = await service
     .from("sync_batches")
     .select("id, llm_triggered_at")
-    .eq("project_id", projectId)
+    .eq("client_space_id", clientSpaceId)
     .eq("batch_date", batchDate)
     .maybeSingle();
   if (!batch) return { inBatch: false };
@@ -127,14 +133,14 @@ export async function settleBatchMembership(
     .select("id");
   if (!claimed || claimed.length === 0) {
     // Already settled — either an earlier delivery of this SAME terminal
-    // event (QStash is at-least-once, in which case the caller that won
-    // that race already did/is doing the remaining-count check below), OR
-    // this integration produced fresh work AGAIN after already completing
-    // its part of today's batch (a second manual "Sync Now", or attachment
-    // extraction finishing after the batch's one-shot trigger already
-    // fired). Only the caller can tell these apart (it knows whether THIS
-    // call actually has new work) — alreadySettled:true is the signal it
-    // needs to decide whether to fire its own catch-up trigger.
+    // event (the job queue is at-least-once, in which case the caller that
+    // won that race already did/is doing the remaining-count check below),
+    // OR this integration produced fresh work AGAIN after already
+    // completing its part of today's batch (a second manual "Sync Now", or
+    // attachment extraction finishing after the batch's one-shot trigger
+    // already fired). Only the caller can tell these apart (it knows
+    // whether THIS call actually has new work) — alreadySettled:true is the
+    // signal it needs to decide whether to fire its own catch-up trigger.
     return { inBatch: true, firedLlmJob: false, alreadySettled: true };
   }
 
@@ -162,7 +168,7 @@ export async function settleBatchMembership(
  * via the 2-hour timeout backstop. */
 export async function markMemberEnqueueFailed(
   service: ServiceClient,
-  params: { projectId: string; integrationId: string; batchDate: string },
+  params: { clientSpaceId: string; integrationId: string; batchDate: string },
 ): Promise<SettleBatchResult> {
   return settleBatchMembership(service, { ...params, outcome: "enqueue_failed" });
 }
@@ -173,8 +179,8 @@ export async function markMemberEnqueueFailed(
 // extraction, not a time window. Anything older stays available via the
 // manual "Extract for this day" button on the Project Data page. Any day
 // that doesn't make the cut this time isn't lost — the same sweep runs again
-// the next time this project's batch completes (tomorrow, ordinarily), so
-// backlog converges over a few days instead of firing unbounded LLM spend
+// the next time this client space's batch completes (tomorrow, ordinarily),
+// so backlog converges over a few days instead of firing unbounded LLM spend
 // in one shot.
 const BACKFILL_DAY_CAP = 30;
 // Bounds a single scan's read size the same way the Project Data page's own
@@ -184,17 +190,17 @@ const BACKFILL_DAY_CAP = 30;
 const BACKFILL_SCAN_ROW_LIMIT = 5000;
 
 /**
- * Fires the LLM job for a project's batchDate once its batch is confirmed
- * complete, and sweeps for older unprocessed backlog at the same time (see
- * BACKFILL_DAY_CAP) — the general mechanism a first-time connector backfill
- * relies on to get more than just "today" extracted, but it applies equally
- * to e.g. a connector that was broken for a week and just caught up.
+ * Fires the LLM job for a client space's batchDate once its batch is
+ * confirmed complete, and sweeps for older unprocessed backlog at the same
+ * time (see BACKFILL_DAY_CAP) — the general mechanism a first-time connector
+ * backfill relies on to get more than just "today" extracted, but it applies
+ * equally to e.g. a connector that was broken for a week and just caught up.
  */
-export async function triggerDailyExtraction(service: ServiceClient, projectId: string, date: string): Promise<void> {
+export async function triggerDailyExtraction(service: ServiceClient, clientSpaceId: string, date: string): Promise<void> {
   const dates = new Set([date]);
 
-  const { data: project } = await service.from("projects").select("timezone").eq("id", projectId).maybeSingle();
-  const timezone = project?.timezone ?? "UTC";
+  const { data: clientSpace } = await service.from("client_spaces").select("timezone").eq("id", clientSpaceId).maybeSingle();
+  const timezone = clientSpace?.timezone ?? "UTC";
 
   // Passing `timezone` gets the EXACT UTC instant of date's own local
   // midnight, not the generic ±1-day buffer utcWindowForDay falls back to
@@ -205,12 +211,12 @@ export async function triggerDailyExtraction(service: ServiceClient, projectId: 
   // nor old enough to clear the buffer, so it was never swept until some
   // later day's cron run finally aged it past the gap. The exact boundary
   // has no such gap — anything before it is unambiguously an earlier
-  // project-local day than `date`.
+  // client-space-local day than `date`.
   const { gte: beforeDate } = utcWindowForDay(date, timezone);
   const { data: olderRows } = await service
     .from("normalized_events")
     .select("occurred_at")
-    .eq("project_id", projectId)
+    .eq("client_space_id", clientSpaceId)
     .is("processed_at", null)
     .lt("occurred_at", beforeDate)
     .order("occurred_at", { ascending: false })
@@ -222,23 +228,23 @@ export async function triggerDailyExtraction(service: ServiceClient, projectId: 
   }
   if (olderRows?.length === BACKFILL_SCAN_ROW_LIMIT && dates.size < BACKFILL_DAY_CAP) {
     console.warn(
-      `[sync] project ${projectId}: backlog scan hit its ${BACKFILL_SCAN_ROW_LIMIT}-row limit before finding ${BACKFILL_DAY_CAP} distinct days — remaining older backlog will be picked up by a future sweep`,
+      `[sync] client space ${clientSpaceId}: backlog scan hit its ${BACKFILL_SCAN_ROW_LIMIT}-row limit before finding ${BACKFILL_DAY_CAP} distinct days — remaining older backlog will be picked up by a future sweep`,
     );
   }
 
   await Promise.allSettled(
     [...dates].map((d) =>
-      enqueueJob("/api/jobs/llm", { projectId, date: d }).catch((err) => {
-        console.error(`[sync] failed to enqueue LLM job for project ${projectId} (date ${d}):`, err);
+      enqueueJob("/api/jobs/llm", { clientSpaceId, date: d }).catch((err) => {
+        console.error(`[sync] failed to enqueue LLM job for client space ${clientSpaceId} (date ${d}):`, err);
       }),
     ),
   );
 }
 
-export type ForceCompleteBatchResult = { projectId: string; batchDate: string; firedLlmJob: boolean };
+export type ForceCompleteBatchResult = { clientSpaceId: string; batchDate: string; firedLlmJob: boolean };
 
 /**
- * Backstop for a batch that never completed on its own — a lost QStash
+ * Backstop for a batch that never completed on its own — a lost job
  * delivery or a hard function timeout means some integration never reached
  * a terminal state, and with cron running once/day there's no later tick to
  * notice. Called from a delayed job scheduled at batch-seed time (see
@@ -252,11 +258,11 @@ export async function forceCompleteTimedOutBatch(
 ): Promise<ForceCompleteBatchResult | null> {
   const { data: batch } = await service
     .from("sync_batches")
-    .select("id, project_id, batch_date, llm_triggered_at")
+    .select("id, client_space_id, batch_date, llm_triggered_at")
     .eq("id", batchId)
     .maybeSingle();
   if (!batch) return null;
-  if (batch.llm_triggered_at) return { projectId: batch.project_id, batchDate: batch.batch_date, firedLlmJob: false };
+  if (batch.llm_triggered_at) return { clientSpaceId: batch.client_space_id, batchDate: batch.batch_date, firedLlmJob: false };
 
   const nowIso = new Date().toISOString();
   await service
@@ -272,5 +278,5 @@ export async function forceCompleteTimedOutBatch(
     .is("llm_triggered_at", null)
     .select("id");
 
-  return { projectId: batch.project_id, batchDate: batch.batch_date, firedLlmJob: (won?.length ?? 0) === 1 };
+  return { clientSpaceId: batch.client_space_id, batchDate: batch.batch_date, firedLlmJob: (won?.length ?? 0) === 1 };
 }

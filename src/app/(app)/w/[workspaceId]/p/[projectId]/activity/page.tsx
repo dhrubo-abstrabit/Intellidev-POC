@@ -1,5 +1,7 @@
+import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/server";
+import { resolveProjectScope } from "@/lib/scope";
 
 const ACTIVITY_PAGE_SIZE = 50;
 
@@ -8,13 +10,20 @@ export default async function ActivityPage({
 }: {
   params: Promise<{ workspaceId: string; projectId: string }>;
 }) {
-  const { projectId } = await params;
+  const { workspaceId, projectId } = await params;
+
+  // normalized_events keys on client_space_id now, not project_id.
+  const scope = await resolveProjectScope(workspaceId, projectId);
+  if (!scope) {
+    notFound();
+  }
+
   const supabase = await createClient();
 
   const { data: events } = await supabase
     .from("normalized_events")
     .select("id, type, provider, actor_display, actor, title, body, occurred_at")
-    .eq("project_id", projectId)
+    .eq("client_space_id", scope.clientSpaceId)
     .order("occurred_at", { ascending: false })
     .limit(ACTIVITY_PAGE_SIZE);
 

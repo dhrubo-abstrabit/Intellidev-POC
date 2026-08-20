@@ -16,7 +16,7 @@ export type IntegrationRow = Pick<
   Database["public"]["Tables"]["integrations"]["Row"],
   | "id"
   | "workspace_id"
-  | "project_id"
+  | "client_space_id"
   | "provider"
   | "credential_id"
   | "sync_interval_seconds"
@@ -96,21 +96,25 @@ export async function runSync(
 
   const { data: integration } = await service
     .from("integrations")
-    .select("id, workspace_id, project_id, provider, credential_id, sync_interval_seconds, consecutive_failures, config")
+    .select("id, workspace_id, client_space_id, provider, credential_id, sync_interval_seconds, consecutive_failures, config")
     .eq("id", integrationId)
     .maybeSingle();
   if (!integration) {
     return { status: "failed", eventsFetched: 0, eventsWritten: 0, hasMore: false, error: "Integration not found" };
   }
 
-  const { data: projectRow } = await service.from("projects").select("timezone").eq("id", integration.project_id).maybeSingle();
-  const effectiveBatchDate = batchDate ?? projectToday(projectRow?.timezone ?? "UTC");
+  const { data: clientSpaceRow } = await service
+    .from("client_spaces")
+    .select("timezone")
+    .eq("id", integration.client_space_id)
+    .maybeSingle();
+  const effectiveBatchDate = batchDate ?? projectToday(clientSpaceRow?.timezone ?? "UTC");
 
   const { data: job, error: jobError } = await service
     .from("sync_jobs")
     .insert({
       workspace_id: integration.workspace_id,
-      project_id: integration.project_id,
+      client_space_id: integration.client_space_id,
       integration_id: integration.id,
       status: "running",
       trigger,
@@ -143,8 +147,7 @@ export async function runSync(
 
     const rawRows = fetchResult.rawPayloads.map((raw) => ({
       id: uuidv7(),
-      workspace_id: integration.workspace_id,
-      project_id: integration.project_id,
+      client_space_id: integration.client_space_id,
       integration_id: integration.id,
       sync_job_id: job.id,
       provider: integration.provider,
@@ -211,8 +214,7 @@ export async function runSync(
             draft,
             row: {
               id: uuidv7(),
-              workspace_id: integration.workspace_id,
-              project_id: integration.project_id,
+              client_space_id: integration.client_space_id,
               integration_id: integration.id,
               raw_event_id: rawIdByProviderEventId.get(raw.providerEventId!) ?? null,
               provider: integration.provider,
@@ -279,8 +281,7 @@ export async function runSync(
           if (!normalizedEventId) return []; // shouldn't happen — the upsert above just wrote or already had this row
           return (draft.attachments ?? []).map((a) => ({
             id: uuidv7(),
-            workspace_id: integration.workspace_id,
-            project_id: integration.project_id,
+            client_space_id: integration.client_space_id,
             integration_id: integration.id,
             normalized_event_id: normalizedEventId,
             provider: integration.provider,
@@ -393,14 +394,14 @@ export async function runSync(
 
       if (!handedOffToAttachmentsJob) {
         const settled = await settleBatchMembership(service, {
-          projectId: integration.project_id,
+          clientSpaceId: integration.client_space_id,
           integrationId: integration.id,
           batchDate: effectiveBatchDate,
           outcome: "succeeded",
         });
         if (settled.inBatch) {
           if (settled.firedLlmJob) {
-            await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+            await triggerDailyExtraction(service, integration.client_space_id, effectiveBatchDate);
           } else if (settled.alreadySettled && eventsWritten > 0) {
             // This integration already reported in for today's batch
             // earlier (its one-shot trigger already fired) — a LATER sync
@@ -408,10 +409,10 @@ export async function runSync(
             // would sit unprocessed until tomorrow's batch or its backlog
             // sweep. Safe to call more than once a day: triggerDailyExtraction
             // only ever picks up events with processed_at still null.
-            await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+            await triggerDailyExtraction(service, integration.client_space_id, effectiveBatchDate);
           }
         } else if (eventsWritten > 0) {
-          await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+          await triggerDailyExtraction(service, integration.client_space_id, effectiveBatchDate);
         }
       }
     }
@@ -455,18 +456,18 @@ export async function runSync(
       })
       .eq("id", integration.id);
 
-    // A broken integration must not hang the rest of the project's batch —
-    // settle its membership (idempotent: a QStash-retried delivery of this
-    // same failure just finds itself already settled and no-ops) but never
+    // A broken integration must not hang the rest of the client space's
+    // batch — settle its membership (idempotent: an at-least-once-redelivered
+    // failure just finds itself already settled and no-ops) but never
     // trigger extraction on a failure path, batch or not — no new data.
     const settled = await settleBatchMembership(service, {
-      projectId: integration.project_id,
+      clientSpaceId: integration.client_space_id,
       integrationId: integration.id,
       batchDate: effectiveBatchDate,
       outcome: "failed",
     });
     if (settled.inBatch && settled.firedLlmJob) {
-      await triggerDailyExtraction(service, integration.project_id, effectiveBatchDate);
+      await triggerDailyExtraction(service, integration.client_space_id, effectiveBatchDate);
     }
 
     return { status: "failed", eventsFetched: 0, eventsWritten: 0, hasMore: false, error: message };
