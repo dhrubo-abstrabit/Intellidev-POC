@@ -34,9 +34,13 @@ export const googleDriveConfigSchema = z.object({
     .default([])
     .transform(dedupeStrings),
   initialLookbackDays: z.coerce.number().int().min(1).max(365).catch(30).default(30),
+  // Deliberately NOT exposed as a config-form field (see GOOGLE_DRIVE_CONFIG_FIELDS
+  // below) — enabled by default for everyone, with no UI to turn it off.
   extractText: z.coerce.boolean().catch(true).default(true),
-  maxTextFetchesPerRun: z.coerce.number().int().min(0).max(100).catch(25).default(25),
-  maxTextChars: z.coerce.number().int().min(500).max(50_000).catch(20_000).default(20_000),
+  // Also not exposed as a config-form field — no UI-imposed ceiling on how
+  // many documents get their text fetched, or how much of each is kept.
+  maxTextFetchesPerRun: z.coerce.number().int().min(0).catch(25).default(25),
+  maxTextChars: z.coerce.number().int().min(500).catch(20_000).default(20_000),
 });
 
 export type GoogleDriveConfig = z.infer<typeof googleDriveConfigSchema>;
@@ -56,31 +60,6 @@ export const GOOGLE_DRIVE_CONFIG_FIELDS: ConfigFieldSpec[] = [
     min: 1,
     max: 365,
     helpText: "How far back to backfill on the first sync.",
-  },
-  {
-    key: "extractText",
-    kind: "boolean",
-    label: "Extract document text",
-    defaultChecked: true,
-    helpText:
-      "Pulls the text of Google Docs/Slides/Sheets (and small plain-text files) into the synced data, not just file metadata. " +
-      "This sends document contents to the AI pipeline — leave off for metadata-only tracking.",
-  },
-  {
-    key: "maxTextFetchesPerRun",
-    kind: "number",
-    label: "Max text extractions per sync",
-    min: 0,
-    max: 100,
-    helpText: "Caps how many documents' text is fetched in a single sync run.",
-  },
-  {
-    key: "maxTextChars",
-    kind: "number",
-    label: "Max characters per document",
-    min: 500,
-    max: 50_000,
-    helpText: "Longer documents are truncated to this length.",
   },
 ];
 

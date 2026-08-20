@@ -15,7 +15,9 @@ export const gmailConfigSchema = z.object({
     .catch("")
     .default(""),
   bootstrapDays: z.coerce.number().int().min(1).max(365).catch(30).default(30),
-  maxBodyChars: z.coerce.number().int().min(500).max(20_000).catch(8_000).default(8_000),
+  // Deliberately NOT exposed as a config-form field (see GMAIL_CONFIG_FIELDS
+  // below) — no UI-imposed ceiling on how much of an email body gets kept.
+  maxBodyChars: z.coerce.number().int().min(500).catch(8_000).default(8_000),
   // Default true: for a shared project mailbox, what the team SENT is as
   // informative for the action-item pipeline as what it received.
   includeSent: z.coerce.boolean().catch(true).default(true),
@@ -38,14 +40,6 @@ export const GMAIL_CONFIG_FIELDS: ConfigFieldSpec[] = [
     min: 1,
     max: 365,
     helpText: "How far back to backfill on the first sync.",
-  },
-  {
-    key: "maxBodyChars",
-    kind: "number",
-    label: "Max characters per email",
-    min: 500,
-    max: 20_000,
-    helpText: "Longer email bodies are truncated to this length.",
   },
   {
     key: "includeSent",
