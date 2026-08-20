@@ -86,6 +86,8 @@ export class FargateRunner implements Runner {
       },
     })
 
+    // Deliberately omits the environment overrides: this line is logged, and the run token
+    // plus every provider key travel in that map. The command is the reproducible part.
     spec.onArgv?.([
       'aws',
       'ecs',

@@ -17,7 +17,10 @@ import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpRegistry } from './mcp/registry.js'
 import { toPublic, type McpAuthKind } from './mcp/types.js'
 import { verifyServer } from './mcp/verify.js'
+import websocket from '@fastify/websocket'
+import { AgentEvent } from '@intellidev/shared'
 import { Store, type TaskRow } from './store.js'
+import { RunTokenRegistry } from './runs/tokens.js'
 
 /**
  * The control plane, cut to what a UI needs to be useful: create a task, dispatch it, watch
@@ -29,6 +32,13 @@ import { Store, type TaskRow } from './store.js'
  */
 export interface ServerOptions {
   store?: Store
+  /**
+   * Per-run bearer tokens. Shared with dispatch, which mints one per run.
+   *
+   * Passed in rather than created here so the same registry serves the event socket and,
+   * from B3, the credential broker — one run token, one place that can revoke it.
+   */
+  tokens?: RunTokenRegistry
   dispatch: DispatchConfig
   /** The connected-server catalogue. Persisted, unlike tasks. */
   mcp: McpRegistry
@@ -80,7 +90,9 @@ const CreateTask = z.object({
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const store = opts.store ?? new Store()
+  const tokens = opts.tokens ?? new RunTokenRegistry()
   const app = Fastify({ logger: false })
+  await app.register(websocket)
   const oauth = new McpOAuth(opts.mcp)
   const login = new HarnessLogin(opts.accounts, opts.dispatch.image, opts.dispatch.workRoot)
   const publicDir =
@@ -428,6 +440,65 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         unsubscribe()
       })
       return reply
+    },
+  )
+
+  /**
+   * Where a run's events arrive.
+   *
+   * The adapter dials **out** to this, which is what makes the runtime a swap: nothing
+   * reaches into a running container, so Docker and Fargate need no different treatment and
+   * no inbound rule exists for a compromised run to abuse.
+   *
+   * Every frame is acknowledged by `seq`, and that ack is the contract: it means the event
+   * is durably stored and the run may stop holding it. Acknowledging before the append
+   * would turn a control-plane crash into a permanent hole in the log — which is the one
+   * thing the sequence numbers exist to prevent.
+   */
+  app.get<{ Params: { id: string }; Querystring: { token?: string } }>(
+    '/internal/runs/:id/events',
+    { websocket: true },
+    (connection, request) => {
+      const socket = connection as unknown as {
+        send(data: string): void
+        close(code?: number, reason?: string): void
+        on(event: string, listener: (...args: never[]) => void): void
+      }
+
+      // Authorise against the token's *own* run, never the id in the path. Trusting the
+      // path would let a valid token for run A write events into run B.
+      const authorisedRunId = tokens.verify(request.query.token ?? '')
+      if (!authorisedRunId) {
+        socket.close(4401, 'invalid or expired run token')
+        return
+      }
+      if (authorisedRunId !== request.params.id) {
+        socket.close(4403, 'token does not belong to this run')
+        return
+      }
+
+      socket.on('message', (raw: never) => {
+        let frame: { type?: string; event?: unknown }
+        try {
+          frame = JSON.parse(String(raw)) as { type?: string; event?: unknown }
+        } catch {
+          // Unparseable frames are dropped rather than fatal: killing the socket would make
+          // the run replay everything, which is a worse outcome than losing one bad frame.
+          return
+        }
+        if (frame.type !== 'event') return
+
+        const parsed = AgentEvent.safeParse(frame.event)
+        if (!parsed.success) return
+        // The event's own runId is authoritative and must match the authorised run.
+        if (parsed.data.runId !== authorisedRunId) return
+
+        // `appendEvent` already drops duplicate and out-of-order seqs, which is what makes
+        // a replay idempotent — the adapter re-sends on every reconnect by design.
+        store.appendEvent(parsed.data)
+        // Acked only after the append. See the note above.
+        socket.send(JSON.stringify({ type: 'ack', seq: parsed.data.seq }))
+      })
     },
   )
 

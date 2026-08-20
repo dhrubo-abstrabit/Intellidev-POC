@@ -4,6 +4,7 @@ import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { Store } from './store.js'
+import { RunTokenRegistry } from './runs/tokens.js'
 import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
@@ -88,9 +89,22 @@ const aws =
 // Owned here rather than reached for off the Fastify instance, because the reconciler and
 // the server operate on the same runs and that shared ownership should be visible.
 const store = new Store()
+// One registry shared by dispatch (which mints) and the event socket (which verifies), so
+// there is exactly one place a run's token can be revoked.
+const tokens = new RunTokenRegistry()
+
+/**
+ * Where a run reaches this control plane from outside the process.
+ *
+ * Set it explicitly for any deployment: a Fargate task cannot reach the host's loopback,
+ * so the default is only ever right for the local Docker path, where
+ * `containerReachableUrl` rewrites it to host.docker.internal.
+ */
+const publicUrl = process.env['INTELLIDEV_PUBLIC_URL'] ?? `http://127.0.0.1:${port}`
 
 const app = await buildServer({
   store,
+  tokens,
   dispatch: {
     mode,
     bundleRoot,
@@ -99,6 +113,8 @@ const app = await buildServer({
     // deployment sets it rather than inheriting a value that would make two projects
     // share one cache prefix.
     projectId: process.env['INTELLIDEV_PROJECT_ID'] ?? 'local',
+    publicUrl,
+    tokens,
     ...(aws ? { aws } : {}),
     workRoot,
     ...(Object.keys(models).length > 0 ? { models } : {}),
@@ -137,6 +153,7 @@ if (aws) {
     clusterName: aws.clusterName,
     queueUrl: aws.taskEventsQueueUrl,
     region: aws.region,
+    tokens,
     log: (message) => process.stderr.write(`${message}\n`),
   })
   reconciler.start()

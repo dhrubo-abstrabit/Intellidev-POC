@@ -19,6 +19,7 @@
     "@aws-sdk/client-sqs": "^3.1114.0",
     "@aws-sdk/client-ssm": "^3.1114.0",
     "@aws-sdk/s3-request-presigner": "^3.1114.0",
+    "@fastify/websocket": "^11.3.0",
     "@intellidev/adapter": "workspace:*",
     "@intellidev/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",

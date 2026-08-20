@@ -36,6 +36,8 @@ export interface ReconcilerOptions {
   /** How often the sweep runs. The queue is the fast path; this is the safety net. */
   readonly sweepIntervalMs?: number
   readonly log?: (message: string) => void
+  /** Revoked when a run settles here, exactly as on the dispatch path. */
+  readonly tokens?: { revoke(runId: string): void }
 }
 
 export interface SettledRun {
@@ -145,6 +147,7 @@ export class LifecycleReconciler {
       [],
       undefined,
       reason,
+      this.opts.tokens,
     )
     if (settled) this.log(`reconciler: settled ${run.id} from the queue — ${reason}`)
     return true
@@ -189,7 +192,18 @@ export class LifecycleReconciler {
           // whose task is unknown has therefore been over for a while, and no reason will
           // ever be available for it. Saying so is more useful than leaving it running.
           const reason = 'task no longer known to ECS; it stopped more than an hour ago'
-          if (settle(this.opts.store, run.id, run.taskId, 'failed', [], undefined, reason)) {
+          if (
+            settle(
+              this.opts.store,
+              run.id,
+              run.taskId,
+              'failed',
+              [],
+              undefined,
+              reason,
+              this.opts.tokens,
+            )
+          ) {
             settledRuns.push({ runId: run.id, reason, via: 'sweep' })
           }
           continue
@@ -218,6 +232,7 @@ export class LifecycleReconciler {
             [],
             undefined,
             reason,
+            this.opts.tokens,
           )
         ) {
           settledRuns.push({ runId: run.id, reason, via: 'sweep' })

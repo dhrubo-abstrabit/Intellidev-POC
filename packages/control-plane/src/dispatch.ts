@@ -18,6 +18,7 @@ import type { Runner } from '@intellidev/adapter'
 import type { AwsRuntimeConfig } from './aws/config.js'
 import { FargateRunner } from './runner/fargate.js'
 import { ArtifactStore } from './aws/artifacts.js'
+import type { RunTokenRegistry } from './runs/tokens.js'
 import type { HarnessAccounts } from './harness/accounts.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -70,6 +71,16 @@ export interface DispatchConfig {
    * resolved at boot.
    */
   projectId: string
+  /**
+   * Where a run reaches the control plane from *outside* this process.
+   *
+   * Was hardcoded to `http://127.0.0.1:4000` in the run spec, which is a resource address
+   * in application code — and wrong for every deployment. `containerReachableUrl` still
+   * rewrites it for Docker, because a container's localhost is not the host's.
+   */
+  publicUrl: string
+  /** Mints and revokes the one credential a run holds. */
+  tokens?: RunTokenRegistry
   /**
    * Resolved AWS configuration, required by `fargate` mode and unused otherwise.
    *
@@ -236,6 +247,20 @@ async function executeInDocker(args: {
   const remote = config.mode === 'fargate' ? await stageArtifacts(config, containerSpec) : null
 
   const runner: Runner = selectRunner(config)
+
+  /**
+   * The run's outbound event socket.
+   *
+   * Only when a token registry exists, so a caller that has not opted in keeps the previous
+   * behaviour exactly. The URL is rewritten for Docker, whose localhost is the container's
+   * own — the same reason MCP server URLs are rewritten a few lines below.
+   */
+  const eventChannel = config.tokens
+    ? {
+        token: config.tokens.mint(runId).token,
+        url: `${containerReachableUrl(config.publicUrl, config.mode).replace(/^http/, 'ws')}/internal/runs/${runId}/events`,
+      }
+    : undefined
   const tail = tailEvents(eventsPath, sink)
 
   try {
@@ -257,6 +282,12 @@ async function executeInDocker(args: {
             '/run/exchange/events.jsonl',
           ],
       env: {
+        ...(eventChannel
+          ? {
+              INTELLIDEV_EVENTS_URL: eventChannel.url,
+              INTELLIDEV_RUN_TOKEN: eventChannel.token,
+            }
+          : {}),
         ...(config.githubToken ? { INTELLIDEV_GITHUB_TOKEN: config.githubToken } : {}),
         // A bind-mounted origin is owned by the host uid, not the container's, so git
         // refuses it as "dubious ownership". Scoped to the local bind-mount case rather
@@ -314,6 +345,7 @@ async function executeInDocker(args: {
       result.timedOut
         ? `exceeded ${spec.limits.wallClockSec}s wall clock`
         : (result.reason ?? undefined),
+      config.tokens,
     )
   } finally {
     tail.stop()
@@ -519,6 +551,8 @@ export function settle(
   records: unknown[],
   prUrl?: string,
   failureReason?: string,
+  /** Revoked on settle: a token that outlives its run is a standing credential. */
+  tokens?: { revoke(runId: string): void },
 ): boolean {
   const existing = store.getRun(runId)
   // `isRunTerminal`, not `!== 'running'`. There are four non-terminal statuses — queued,
@@ -543,6 +577,7 @@ export function settle(
   // A finished run puts the task in review, not done: a human decides whether the PR is
   // acceptable, which is the whole reason the PR is the boundary.
   moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
+  tokens?.revoke(runId)
   return true
 }
 
@@ -666,8 +701,8 @@ function buildRunSpec(args: {
       tokensMax: 2_000_000,
       usdEstMax: 5,
     },
-    controlPlaneUrl: 'http://127.0.0.1:4000',
-    streamUrl: `ws://127.0.0.1:4000/runs/${run}/stream`,
+    controlPlaneUrl: config.publicUrl,
+    streamUrl: `${config.publicUrl.replace(/^http/, 'ws')}/runs/${run}/stream`,
     brokerSocket: join(config.workRoot, `${run}.broker.sock`),
   })
 }
