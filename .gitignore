@@ -25,3 +25,6 @@ coverage/
 
 # cdk synth output
 cdk.out/
+
+# local control-plane work root
+.intellidev-work/
