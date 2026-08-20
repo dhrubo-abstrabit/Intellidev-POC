@@ -221,3 +221,36 @@ describe('the queue path', () => {
     expect(store.getRun(runId)?.status).toBe('running')
   })
 })
+
+describe('every non-terminal status is sweepable', () => {
+  // The bug this covers was found by a live test, not by these tests: a task killed while
+  // still PROVISIONING leaves its run in `provisioning`, and an earlier guard of
+  // `status !== 'running'` made it permanently invisible to the reconciler.
+  for (const status of ['queued', 'provisioning', 'running'] as const) {
+    it(`settles a run left in ${status}`, async () => {
+      const { store, runId } = storeWithRun()
+      store.updateRun(runId, { status })
+      const settled = await reconciler({ store, tasks: [] }).instance.sweep()
+      expect(settled, `a ${status} run must not be invisible to the sweep`).toHaveLength(1)
+      expect(store.getRun(runId)?.status).toBe('failed')
+    })
+  }
+
+  it('leaves a parked run alone', async () => {
+    // Non-terminal, but waiting on a human rather than a container: finding no task for it
+    // is expected, not evidence of a death.
+    const { store, runId } = storeWithRun()
+    store.updateRun(runId, { status: 'parked' })
+    expect(await reconciler({ store, tasks: [] }).instance.sweep()).toEqual([])
+    expect(store.getRun(runId)?.status).toBe('parked')
+  })
+
+  for (const status of ['succeeded', 'failed', 'cancelled'] as const) {
+    it(`does not re-settle a ${status} run`, async () => {
+      const { store, runId } = storeWithRun()
+      store.updateRun(runId, { status })
+      expect(await reconciler({ store, tasks: [] }).instance.sweep()).toEqual([])
+      expect(store.getRun(runId)?.status).toBe(status)
+    })
+  }
+})

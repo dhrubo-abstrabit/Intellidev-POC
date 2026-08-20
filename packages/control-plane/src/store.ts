@@ -139,9 +139,20 @@ export class Store {
     return undefined
   }
 
-  /** Runs the platform still believes are live. What the reconciler sweeps. */
-  listRunningRuns(): RunRow[] {
-    return [...this.runs.values()].filter((run) => run.status === 'running')
+  /**
+   * Runs that should have a live task behind them. What the reconciler sweeps.
+   *
+   * Not just `running`: a task killed while still PROVISIONING leaves its run in
+   * `provisioning`, and filtering on `running` alone would make it invisible to the sweep
+   * for ever — the exact leak the reconciler exists to close.
+   *
+   * `parked` is excluded deliberately. It is non-terminal but intentionally paused, waiting
+   * on a human rather than on a container, so a sweep finding no task for it is expected
+   * rather than evidence of a death.
+   */
+  listUnsettledRuns(): RunRow[] {
+    const live: readonly RunStatus[] = ['queued', 'provisioning', 'running']
+    return [...this.runs.values()].filter((run) => live.includes(run.status))
   }
 
   listRuns(taskId?: string): RunRow[] {

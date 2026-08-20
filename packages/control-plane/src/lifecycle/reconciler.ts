@@ -158,7 +158,7 @@ export class LifecycleReconciler {
    */
   async sweep(): Promise<SettledRun[]> {
     const candidates = this.opts.store
-      .listRunningRuns()
+      .listUnsettledRuns()
       .filter((run) => run.handle?.startsWith('arn:aws:ecs:'))
     if (candidates.length === 0) return []
 

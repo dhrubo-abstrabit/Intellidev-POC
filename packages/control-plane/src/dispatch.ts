@@ -12,6 +12,7 @@ import {
   type StageRecord,
   type TaskStatus,
 } from '@intellidev/shared'
+import { isRunTerminal } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
 import type { Runner } from '@intellidev/adapter'
 import type { AwsRuntimeConfig } from './aws/config.js'
@@ -520,9 +521,13 @@ export function settle(
   failureReason?: string,
 ): boolean {
   const existing = store.getRun(runId)
-  if (existing && existing.status !== 'running') {
-    // Already terminal. Overwriting would replace a specific cause with whichever path was
-    // slowest — typically the reconciler's "task is gone", which says nothing useful.
+  // `isRunTerminal`, not `!== 'running'`. There are four non-terminal statuses — queued,
+  // provisioning, running, parked — and a run killed while its task was still PROVISIONING
+  // sits in `provisioning`. Guarding on `running` alone meant exactly the leak this
+  // mechanism exists to prevent: the reconciler would decline to settle it for ever.
+  if (existing && isRunTerminal(existing.status)) {
+    // Overwriting would replace a specific cause with whichever path was slowest —
+    // typically the reconciler's "task is gone", which says nothing useful.
     return false
   }
   const succeeded = outcome === 'succeeded'
