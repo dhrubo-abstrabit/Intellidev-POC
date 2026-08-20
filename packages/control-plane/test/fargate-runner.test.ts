@@ -177,6 +177,7 @@ describe('loadAwsConfig', () => {
           ['/intellidev/dev/runtime/run-container-name', 'adapter'],
           ['/intellidev/dev/network/public-subnet-ids', 'subnet-a,subnet-b'],
           ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
+          ['/intellidev/dev/artifacts/bucket', 'bkt'],
         ]),
     }
     const config = await loadAwsConfig({
@@ -186,5 +187,50 @@ describe('loadAwsConfig', () => {
     })
     expect(config.subnetIds).toEqual(['subnet-a', 'subnet-b'])
     expect(config.securityGroupIds).toEqual(['sg-1'])
+  })
+
+  const COMPLETE: Array<[string, string]> = [
+    ['/intellidev/dev/runtime/cluster-name', 'c'],
+    ['/intellidev/dev/runtime/run-task-definition-arn', 'arn:td'],
+    ['/intellidev/dev/runtime/run-container-name', 'adapter'],
+    ['/intellidev/dev/network/public-subnet-ids', 'subnet-a'],
+    ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
+    ['/intellidev/dev/artifacts/bucket', 'bkt'],
+  ]
+
+  it('collects bundles per project, so two projects cannot share one', async () => {
+    const client = {
+      send: async () =>
+        page([
+          ...COMPLETE,
+          ['/intellidev/dev/bundle/acme/key', 'bundles/acme/aa.tar.gz'],
+          ['/intellidev/dev/bundle/acme/digest', 'sha256:aa'],
+          ['/intellidev/dev/bundle/other/key', 'bundles/other/bb.tar.gz'],
+          ['/intellidev/dev/bundle/other/digest', 'sha256:bb'],
+        ]),
+    }
+    const config = await loadAwsConfig({ env: 'dev', region: 'r', client: client as never })
+    expect(config.bundles['acme']).toEqual({
+      key: 'bundles/acme/aa.tar.gz',
+      digest: 'sha256:aa',
+    })
+    expect(config.bundles['other']?.digest).toBe('sha256:bb')
+  })
+
+  it('rejects half a bundle reference', async () => {
+    // Worse than none: dispatch would build a spec naming an object with no digest to
+    // verify it against, and the run would extract whatever the URL served.
+    const client = {
+      send: async () => page([...COMPLETE, ['/intellidev/dev/bundle/acme/key', 'k']]),
+    }
+    await expect(
+      loadAwsConfig({ env: 'dev', region: 'r', client: client as never }),
+    ).rejects.toThrow(/incomplete/)
+  })
+
+  it('allows a project with no bundle yet, rather than blocking every other project', async () => {
+    const client = { send: async () => page(COMPLETE) }
+    const config = await loadAwsConfig({ env: 'dev', region: 'r', client: client as never })
+    expect(config.bundles).toEqual({})
   })
 })

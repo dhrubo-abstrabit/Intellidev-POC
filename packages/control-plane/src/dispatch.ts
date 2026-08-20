@@ -16,6 +16,7 @@ import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/a
 import type { Runner } from '@intellidev/adapter'
 import type { AwsRuntimeConfig } from './aws/config.js'
 import { FargateRunner } from './runner/fargate.js'
+import { ArtifactStore } from './aws/artifacts.js'
 import type { HarnessAccounts } from './harness/accounts.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -216,14 +217,22 @@ async function executeInDocker(args: {
   const eventsPath = join(exchange, 'events.jsonl')
 
   // Paths inside the container, which are not the host's.
-  const containerSpec = { ...spec, brokerSocket: '/run/intellidev/broker.sock' }
-  containerSpec.git = {
-    ...spec.git,
-    mirrorPath: '/cache/git',
-    worktreePath: `/work/${runId}`,
+  const containerSpec: RunSpec = {
+    ...spec,
+    brokerSocket: '/run/intellidev/broker.sock',
+    git: { ...spec.git, mirrorPath: '/cache/git', worktreePath: `/work/${runId}` },
   }
   await writeFile(specPath, JSON.stringify(containerSpec, null, 2))
   await writeFile(eventsPath, '')
+
+  /**
+   * On Fargate the spec and the bundle travel as S3 objects, not bind mounts.
+   *
+   * The bundle ref is rewritten to a presigned URL here rather than in the runner, because
+   * the digest that pins it belongs to the *spec* — the run must verify the bundle against
+   * what dispatch decided, not against whatever the URL happens to serve.
+   */
+  const remote = config.mode === 'fargate' ? await stageArtifacts(config, containerSpec) : null
 
   const runner: Runner = selectRunner(config)
   const tail = tailEvents(eventsPath, sink)
@@ -232,15 +241,20 @@ async function executeInDocker(args: {
     const started = await runner.start({
       runId,
       image: config.image,
-      args: [
-        'run',
-        '--spec',
-        '/run/exchange/spec.json',
-        '--bundle',
-        '/opt/project',
-        '--events',
-        '/run/exchange/events.jsonl',
-      ],
+      args: remote
+        ? // No --bundle: the adapter materialises it from the spec and verifies the digest
+          // before extracting. No --events either; there is no shared filesystem to tail,
+          // and C4 replaces the file with the adapter dialling out over a WebSocket.
+          ['run', '--spec', remote.specUrl]
+        : [
+            'run',
+            '--spec',
+            '/run/exchange/spec.json',
+            '--bundle',
+            '/opt/project',
+            '--events',
+            '/run/exchange/events.jsonl',
+          ],
       env: {
         ...(config.githubToken ? { INTELLIDEV_GITHUB_TOKEN: config.githubToken } : {}),
         // A bind-mounted origin is owned by the host uid, not the container's, so git
@@ -255,14 +269,20 @@ async function executeInDocker(args: {
         ...(config.harnessEnv ?? {}),
         ...(seat ? { INTELLIDEV_SEAT_MATERIAL: JSON.stringify({ [spec.harness]: seat }) } : {}),
       },
-      mounts: [
-        { source: exchange, target: '/run/exchange' },
-        { source: resolve(config.bundleRoot), target: '/opt/project', readOnly: true },
-        ...(config.extraMounts ?? []),
-      ],
-      // The local stand-in for the S3 cache: a named volume per project keeps the git
-      // mirror between runs.
-      cacheVolume: { name: `intellidev-cache-${spec.projectId}`, target: '/cache' },
+      // Fargate has none of this: the spec and bundle arrive over HTTPS, and C3 replaces
+      // the cache volume with an S3 prefix. Passing them would make FargateRunner throw.
+      ...(remote
+        ? {}
+        : {
+            mounts: [
+              { source: exchange, target: '/run/exchange' },
+              { source: resolve(config.bundleRoot), target: '/opt/project', readOnly: true },
+              ...(config.extraMounts ?? []),
+            ],
+            // The local stand-in for the S3 cache: a named volume per project keeps the git
+            // mirror between runs.
+            cacheVolume: { name: `intellidev-cache-${spec.projectId}`, target: '/cache' },
+          }),
       cpus: 2,
       memoryMb: 4096,
       timeoutSec: spec.limits.wallClockSec,
@@ -422,6 +442,40 @@ async function resolveMcpServers(task: TaskRow, mcp: McpAccess): Promise<Resolve
  * prevents — an optional server that silently fails to connect — is one where the agent
  * carries on and invents an answer.
  */
+/**
+ * Writes the spec to S3 and presigns what the run needs to read.
+ *
+ * Returns the spec URL, and mutates nothing the caller did not hand over: the bundle ref
+ * inside the spec is replaced *before* the spec is uploaded, so the object a run fetches
+ * already names the presigned bundle URL and the digest it must match.
+ */
+async function stageArtifacts(
+  config: DispatchConfig,
+  containerSpec: RunSpec,
+): Promise<{ specUrl: string; bundleDigest: string }> {
+  const aws = config.aws
+  if (!aws) throw new Error('fargate mode requires resolved AWS config')
+
+  const published = aws.bundles[containerSpec.projectId]
+  if (!published) {
+    // Naming the command is the difference between a two-minute fix and a hunt through S3.
+    throw new Error(
+      `no bundle published for project "${containerSpec.projectId}" in ${aws.env}. ` +
+        `Run: pnpm bundle:push --project ${containerSpec.projectId}`,
+    )
+  }
+
+  const store = new ArtifactStore({ bucket: aws.artifactBucket, region: aws.region })
+  const bundleUrl = await store.presignGet(published.key)
+
+  const withRemoteBundle: RunSpec = {
+    ...containerSpec,
+    bundle: { url: bundleUrl, digest: published.digest },
+  }
+  const { url: specUrl } = await store.putRunSpec(withRemoteBundle)
+  return { specUrl, bundleDigest: published.digest }
+}
+
 /**
  * Picks the runtime for this dispatch.
  *
