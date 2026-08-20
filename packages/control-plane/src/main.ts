@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
+import { loadAwsConfig } from './aws/config.js'
 import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
@@ -68,6 +69,20 @@ await mkdir(workRoot, { recursive: true })
 const mcp = await McpRegistry.open(join(workRoot, 'mcp-servers.json'))
 const accounts = await HarnessAccounts.open(join(workRoot, 'harness-accounts.json'))
 
+/**
+ * Fargate mode resolves every resource name from SSM before the server starts.
+ *
+ * Eagerly, not on first dispatch: a missing parameter should stop the process with a
+ * message naming the path, rather than failing one run halfway through with an SDK error.
+ */
+const aws =
+  mode === 'fargate'
+    ? await loadAwsConfig({
+        env: process.env['INTELLIDEV_ENV'] ?? 'dev',
+        region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'ap-south-1',
+      })
+    : undefined
+
 const app = await buildServer({
   dispatch: {
     mode,
@@ -77,6 +92,7 @@ const app = await buildServer({
     // deployment sets it rather than inheriting a value that would make two projects
     // share one cache prefix.
     projectId: process.env['INTELLIDEV_PROJECT_ID'] ?? 'local',
+    ...(aws ? { aws } : {}),
     workRoot,
     ...(Object.keys(models).length > 0 ? { models } : {}),
     ...(Object.keys(harnessEnv).length > 0 ? { harnessEnv } : {}),

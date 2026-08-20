@@ -13,6 +13,9 @@ import {
   type TaskStatus,
 } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
+import type { Runner } from '@intellidev/adapter'
+import type { AwsRuntimeConfig } from './aws/config.js'
+import { FargateRunner } from './runner/fargate.js'
 import type { HarnessAccounts } from './harness/accounts.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -47,7 +50,7 @@ interface ResolvedMcpServer {
  *
  * Both produce the same event stream, which is the point: the UI cannot tell them apart.
  */
-export type DispatchMode = 'inline' | 'docker'
+export type DispatchMode = 'inline' | 'docker' | 'fargate'
 
 export interface DispatchConfig {
   mode: DispatchMode
@@ -65,6 +68,13 @@ export interface DispatchConfig {
    * resolved at boot.
    */
   projectId: string
+  /**
+   * Resolved AWS configuration, required by `fargate` mode and unused otherwise.
+   *
+   * Passed in rather than read here so dispatch has no knowledge of SSM, regions or
+   * parameter paths — it receives names, it never forms them.
+   */
+  aws?: AwsRuntimeConfig
   /** Where mirrors and worktrees live on the host. */
   workRoot: string
   githubToken?: string
@@ -215,11 +225,11 @@ async function executeInDocker(args: {
   await writeFile(specPath, JSON.stringify(containerSpec, null, 2))
   await writeFile(eventsPath, '')
 
-  const runner = new DockerRunner()
+  const runner: Runner = selectRunner(config)
   const tail = tailEvents(eventsPath, sink)
 
   try {
-    const result = await runner.launch({
+    const started = await runner.start({
       runId,
       image: config.image,
       args: [
@@ -260,7 +270,13 @@ async function executeInDocker(args: {
       onArgv: (argv: readonly string[]) => process.stderr.write(`$ ${argv.join(' ')}\n\n`),
     })
 
-    store.updateRun(runId, { handle: result.handle })
+    // Recorded before awaiting the outcome, which is the whole reason `start` and the
+    // outcome are separate. On Fargate this handle is the task ARN — the only thing that
+    // can cancel the run or let the C5 reconciler settle it — and waiting until the run
+    // ended to store it would mean not having it during the window it is needed.
+    store.updateRun(runId, { handle: started.handle })
+
+    const result = await started.outcome
     // Give the tail a moment to drain what the container wrote as it exited.
     await new Promise((r) => setTimeout(r, 300))
 
@@ -272,7 +288,11 @@ async function executeInDocker(args: {
       outcome,
       store.getRun(runId)?.records ?? [],
       store.getRun(runId)?.prUrl,
-      result.timedOut ? `exceeded ${spec.limits.wallClockSec}s wall clock` : undefined,
+      // The runtime's own explanation wins when it has one: an ECS stopped reason says
+      // "OutOfMemoryError" where an exit code says only that it failed.
+      result.timedOut
+        ? `exceeded ${spec.limits.wallClockSec}s wall clock`
+        : (result.reason ?? undefined),
     )
   } finally {
     tail.stop()
@@ -402,6 +422,24 @@ async function resolveMcpServers(task: TaskRow, mcp: McpAccess): Promise<Resolve
  * prevents — an optional server that silently fails to connect — is one where the agent
  * carries on and invents an answer.
  */
+/**
+ * Picks the runtime for this dispatch.
+ *
+ * `DockerRunner` is not a fallback — it is the local loop, and the fastest way to reproduce
+ * a production failure. Both satisfy one interface, so nothing downstream branches on which
+ * one is in use.
+ */
+function selectRunner(config: DispatchConfig): Runner {
+  if (config.mode !== 'fargate') return new DockerRunner()
+  if (!config.aws) {
+    throw new Error(
+      'fargate mode needs resolved AWS config; set INTELLIDEV_ENV and check the ' +
+        'infrastructure is deployed (pnpm infra:verify)',
+    )
+  }
+  return new FargateRunner({ config: config.aws })
+}
+
 function containerReachableUrl(url: string, mode: DispatchMode): string {
   if (mode !== 'docker') return url
   return url.replace(/^(https?:\/\/)(127\.0\.0\.1|localhost)(?=[:/]|$)/, '$1host.docker.internal')

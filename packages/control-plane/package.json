@@ -9,9 +9,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "build": "echo \"served from source via tsx\"",
-    "dev": "tsx watch src/main.ts"
+    "dev": "tsx watch src/main.ts",
+    "prove-runner": "tsx scripts/prove-runner.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-ecs": "^3.1114.0",
+    "@aws-sdk/client-ssm": "^3.1114.0",
     "@intellidev/adapter": "workspace:*",
     "@intellidev/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
