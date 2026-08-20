@@ -1,10 +1,9 @@
 import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import type { StackProps } from 'aws-cdk-lib'
-import * as ecr from 'aws-cdk-lib/aws-ecr'
 import * as ecs from 'aws-cdk-lib/aws-ecs'
-import * as iam from 'aws-cdk-lib/aws-iam'
+import type * as iam from 'aws-cdk-lib/aws-iam'
 import * as ec2 from 'aws-cdk-lib/aws-ec2'
-import * as logs from 'aws-cdk-lib/aws-logs'
+import type * as logs from 'aws-cdk-lib/aws-logs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as ssm from 'aws-cdk-lib/aws-ssm'
 import type { Construct } from 'constructs'
@@ -15,8 +14,16 @@ export interface SmokeStackProps extends StackProps {
   readonly environment: EnvironmentConfig
   readonly vpc: ec2.IVpc
   readonly securityGroup: ec2.ISecurityGroup
-  /** So the execution role can be granted pull on exactly one repository. */
-  readonly runnerRepository: ecr.IRepository
+  /** Shared with real runs: one cluster, so there is one place to look for tasks. */
+  readonly cluster: ecs.ICluster
+  /** Shared with real runs, so the probe exercises the same pull-and-log permissions. */
+  readonly executionRole: iam.IRole
+  /**
+   * Shared too, and not merely for tidiness: a log group owned by this stack would make
+   * RuntimeStack's execution role policy reference a SmokeStack resource while SmokeStack
+   * referenced the role — a cycle CDK refuses to synth.
+   */
+  readonly logGroup: logs.ILogGroup
 }
 
 /**
@@ -29,24 +36,16 @@ export interface SmokeStackProps extends StackProps {
  * the network changes, which is worth more than the zero dollars it costs to leave here
  * (task definitions, clusters and log groups are all free when nothing is running).
  *
- * The ECS cluster lives here because it is the first thing that needs one; C1 registers
- * the real run task definition against this same cluster rather than creating a second.
+ * The cluster and the execution role now come from `RuntimeStack`, so the probe exercises
+ * the same pull-and-log permissions a real run does. A probe with its own role could pass
+ * while real runs failed on a permission it happened not to need.
  */
 export class SmokeStack extends Stack {
-  readonly cluster: ecs.Cluster
   readonly bucket: s3.Bucket
-  readonly executionRole: iam.Role
 
   constructor(scope: Construct, id: string, props: SmokeStackProps) {
     super(scope, id, props)
     const env = props.environment
-
-    this.cluster = new ecs.Cluster(this, 'Cluster', {
-      vpc: props.vpc,
-      clusterName: resourceName(env.name, 'runners'),
-      // Container Insights bills per metric; E2 decides observability deliberately.
-      containerInsightsV2: ecs.ContainerInsights.DISABLED,
-    })
 
     /**
      * A bucket purely so the smoke task has something real to read and write.
@@ -64,44 +63,11 @@ export class SmokeStack extends Stack {
       lifecycleRules: [{ expiration: Duration.days(1) }],
     })
 
-    const logGroup = new logs.LogGroup(this, 'SmokeLogs', {
-      logGroupName: `/intellidev/${env.name}/egress-smoke`,
-      retention: logs.RetentionDays.ONE_WEEK,
-      removalPolicy: RemovalPolicy.DESTROY,
-    })
-
-    /**
-     * The task execution role — the second of the three roles the plan calls for.
-     *
-     * It belongs to ECS, not to the run: it pulls the image and opens the log stream
-     * *before* any of our code exists. Deliberately not the managed
-     * `AmazonECSTaskExecutionRolePolicy`, which grants ECR pull on `*`; this can pull one
-     * repository and write to log groups under this environment's prefix, and nothing else.
-     *
-     * Shared rather than per-task-definition so C1's run task reuses it instead of minting
-     * a fourth role, and so there is one place to audit what ECS itself may do.
-     */
-    this.executionRole = new iam.Role(this, 'TaskExecutionRole', {
-      roleName: resourceName(env.name, 'task-execution'),
-      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
-      description: 'Pulls the golden image and opens log streams. Not the run identity.',
-    })
-    // GetAuthorizationToken cannot be resource-scoped: it mints a registry-wide token and
-    // AWS models it as an account-level action. The pull itself is scoped below.
-    this.executionRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['ecr:GetAuthorizationToken'],
-        resources: ['*'],
-      }),
-    )
-    props.runnerRepository.grantPull(this.executionRole)
-    logGroup.grantWrite(this.executionRole)
-
     const task = new ecs.FargateTaskDefinition(this, 'SmokeTask', {
       family: resourceName(env.name, 'egress-smoke'),
       cpu: 256,
       memoryLimitMiB: 512,
-      executionRole: this.executionRole,
+      executionRole: props.executionRole,
       // Must match the pushed image, or the task dies with an exec-format error that looks
       // nothing like an architecture mismatch.
       runtimePlatform: {
@@ -118,7 +84,7 @@ export class SmokeStack extends Stack {
       containerName: 'probe',
       // A public image, so this proves egress without depending on A3's ECR work.
       image: ecs.ContainerImage.fromRegistry('public.ecr.aws/docker/library/alpine:3.20'),
-      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'probe', logGroup }),
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'probe', logGroup: props.logGroup }),
       environment: {
         SMOKE_BUCKET: this.bucket.bucketName,
         AWS_DEFAULT_REGION: env.region,
@@ -127,15 +93,6 @@ export class SmokeStack extends Stack {
       command: [SMOKE_SCRIPT],
     })
 
-    new ssm.StringParameter(this, 'ExecutionRoleParam', {
-      parameterName: ssmPath(env.name, 'runtime', 'task-execution-role-arn'),
-      stringValue: this.executionRole.roleArn,
-      description: 'Role ECS assumes to pull the image and open log streams.',
-    })
-    new ssm.StringParameter(this, 'ClusterParam', {
-      parameterName: ssmPath(env.name, 'runtime', 'cluster-name'),
-      stringValue: this.cluster.clusterName,
-    })
     new ssm.StringParameter(this, 'SmokeTaskParam', {
       parameterName: ssmPath(env.name, 'smoke', 'task-definition-arn'),
       stringValue: task.taskDefinitionArn,

@@ -6,8 +6,12 @@ import { ssmPath } from '../lib/naming.js'
 const ACCOUNT = '111111111111'
 
 function templates() {
-  const { network, smoke } = buildApp({ env: 'dev', ambientAccount: ACCOUNT })
-  return { network: Template.fromStack(network), smoke: Template.fromStack(smoke) }
+  const { network, runtime, smoke } = buildApp({ env: 'dev', ambientAccount: ACCOUNT })
+  return {
+    network: Template.fromStack(network),
+    runtime: Template.fromStack(runtime),
+    smoke: Template.fromStack(smoke),
+  }
 }
 
 describe('reaching the internet without paying for idle', () => {
@@ -78,8 +82,11 @@ describe('the egress allowlist', () => {
 
 describe('the egress proof', () => {
   it('runs a real container, not a template assertion', () => {
-    const { smoke } = templates()
-    smoke.resourceCountIs('AWS::ECS::Cluster', 1)
+    const { runtime, smoke } = templates()
+    // One cluster, in the runtime stack, shared with real runs — so there is one place to
+    // look for tasks and the probe exercises the same permissions a run does.
+    runtime.resourceCountIs('AWS::ECS::Cluster', 1)
+    smoke.resourceCountIs('AWS::ECS::Cluster', 0)
     smoke.hasResourceProperties('AWS::ECS::TaskDefinition', {
       RequiresCompatibilities: ['FARGATE'],
       NetworkMode: 'awsvpc',
@@ -102,8 +109,11 @@ describe('the egress proof', () => {
     // registry-wide token and AWS models it as an account-level action, so it genuinely
     // cannot be scoped. Every *other* wildcard is a mistake, and this is what catches one.
     const UNSCOPEABLE = new Set(['ecr:GetAuthorizationToken'])
-    const { smoke } = templates()
-    const policies = smoke.findResources('AWS::IAM::Policy')
+    const { runtime, smoke } = templates()
+    const policies = {
+      ...runtime.findResources('AWS::IAM::Policy'),
+      ...smoke.findResources('AWS::IAM::Policy'),
+    }
 
     for (const policy of Object.values(policies)) {
       const statements = (policy['Properties']?.['PolicyDocument']?.['Statement'] ?? []) as Array<
@@ -129,22 +139,23 @@ describe('the egress proof', () => {
   })
 
   it('gives ECS a pull-and-log role that is not the run identity', () => {
-    // The plan calls for three separate roles. This is the execution role: it acts before
-    // any of our code exists, so it must not be able to do what a run can.
-    const { smoke } = templates()
-    const rendered = JSON.stringify(smoke.findResources('AWS::IAM::Policy'))
+    // The plan calls for three separate roles; this is the execution role, which acts
+    // before any of our code exists and so must not be able to do what a run can.
+    const { runtime } = templates()
+    const rendered = JSON.stringify(runtime.findResources('AWS::IAM::Policy'))
     expect(rendered).toContain('ecr:BatchGetImage')
     expect(rendered).toContain('logs:PutLogEvents')
-    // It has no business touching the probe's bucket data.
-    smoke.hasResourceProperties('AWS::IAM::Role', {
+    runtime.hasResourceProperties('AWS::IAM::Role', {
       Description: Match.stringLikeRegexp('Not the run identity'),
     })
   })
 
   it('publishes what the smoke script needs to SSM', () => {
-    const { smoke } = templates()
+    const { runtime, smoke } = templates()
+    runtime.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: ssmPath('dev', 'runtime', 'cluster-name'),
+    })
     for (const path of [
-      ssmPath('dev', 'runtime', 'cluster-name'),
       ssmPath('dev', 'smoke', 'task-definition-arn'),
       ssmPath('dev', 'smoke', 'bucket'),
     ]) {

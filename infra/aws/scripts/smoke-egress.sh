@@ -20,6 +20,8 @@ cluster=$(param "/intellidev/${env_name}/runtime/cluster-name")
 taskdef=$(param "/intellidev/${env_name}/smoke/task-definition-arn")
 subnets=$(param "/intellidev/${env_name}/network/public-subnet-ids")
 sg=$(param "/intellidev/${env_name}/network/run-task-security-group-id")
+# Shared with real runs, so a probe failure and a run failure are read the same way.
+log_group=$(param "/intellidev/${env_name}/runtime/log-group-name")
 
 # assignPublicIp=ENABLED is what replaces the NAT gateway. Without it the task has no route
 # to the internet at all, which is the failure this whole phase exists to avoid.
@@ -45,7 +47,7 @@ read -r exit_code stopped_reason < <(aws ecs describe-tasks \
 printf '\n--- container log ---\n'
 stream="probe/probe/${arn##*/}"
 aws logs get-log-events \
-  --log-group-name "/intellidev/${env_name}/egress-smoke" \
+  --log-group-name "$log_group" \
   --log-stream-name "$stream" \
   --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' || \
   printf '(no log stream yet: %s)\n' "$stream"
@@ -55,7 +57,7 @@ printf -- '--- end log ---\n\n'
 
 # A zero exit code alone is too weak: a shell that never ran the checks also exits zero.
 aws logs get-log-events \
-  --log-group-name "/intellidev/${env_name}/egress-smoke" \
+  --log-group-name "$log_group" \
   --log-stream-name "$stream" --query 'events[].message' --output text 2>/dev/null \
   | grep -q EGRESS_SMOKE_OK \
   || fail 'container exited 0 but never printed EGRESS_SMOKE_OK'

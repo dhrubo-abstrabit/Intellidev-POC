@@ -3,6 +3,7 @@ import { resolveEnvironment } from './config.js'
 import { NoNatGateways } from './no-nat-aspect.js'
 import { NetworkStack } from './network-stack.js'
 import { RegistryStack } from './registry-stack.js'
+import { RuntimeStack } from './runtime-stack.js'
 import { SmokeStack } from './smoke-stack.js'
 import { stackName } from './naming.js'
 import { applyTags } from './tags.js'
@@ -20,6 +21,7 @@ export interface BuiltApp {
   readonly app: App
   readonly network: NetworkStack
   readonly registry: RegistryStack
+  readonly runtime: RuntimeStack
   readonly smoke: SmokeStack
 }
 
@@ -59,17 +61,27 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     description: `Intellidev ${config.name} golden-image registry`,
   })
 
+  const runtime = new RuntimeStack(app, stackName(config.name, 'Runtime'), {
+    environment: config,
+    vpc: network.vpc,
+    runnerRepository: registry.repository,
+    env: { account, region: config.region },
+    description: `Intellidev ${config.name} run cluster, roles and task definition`,
+  })
+
   const smoke = new SmokeStack(app, stackName(config.name, 'Smoke'), {
     environment: config,
     vpc: network.vpc,
     securityGroup: network.runTaskSecurityGroup,
-    runnerRepository: registry.repository,
+    cluster: runtime.cluster,
+    executionRole: runtime.executionRole,
+    logGroup: runtime.logGroup,
     env: { account, region: config.region },
-    description: `Intellidev ${config.name} egress proof and ECS cluster`,
+    description: `Intellidev ${config.name} egress proof`,
   })
 
-  for (const stack of [network, registry, smoke]) applyTags(stack, config)
+  for (const stack of [network, registry, runtime, smoke]) applyTags(stack, config)
   Aspects.of(app).add(new NoNatGateways())
 
-  return { app, network, registry, smoke }
+  return { app, network, registry, runtime, smoke }
 }
