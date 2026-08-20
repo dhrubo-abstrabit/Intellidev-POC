@@ -31,6 +31,64 @@ export class LocalSpecProvider implements SpecProvider {
   }
 }
 
+/**
+ * Reads a spec from a presigned URL.
+ *
+ * How a Fargate run gets its spec: the control plane writes the spec to S3 at dispatch and
+ * presigns a GET for that one object. The run therefore holds no S3 permission at all —
+ * which matters because one task definition serves every run, so any S3 grant on the task
+ * role would be a grant over every other run's spec.
+ *
+ * Retries, because a 500 from S3 during a dispatch would otherwise waste the whole run;
+ * a 403 is not retried, since an expired or unauthorised URL will not become valid.
+ */
+export class UrlSpecProvider implements SpecProvider {
+  constructor(
+    private readonly opts: {
+      url: string
+      fetchImpl?: typeof fetch
+      maxAttempts?: number
+      timeoutMs?: number
+    },
+  ) {}
+
+  async load(): Promise<RunSpec> {
+    const impl = this.opts.fetchImpl ?? fetch
+    const maxAttempts = this.opts.maxAttempts ?? 3
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs ?? 30_000)
+      try {
+        const res = await impl(this.opts.url, { signal: controller.signal })
+        if (res.status === 403) {
+          throw new Error(
+            'spec fetch was refused (403): the presigned URL has expired or was not ' +
+              'authorised. This is a dispatch-latency problem, not a bad spec.',
+          )
+        }
+        if (!res.ok) throw new Error(`spec fetch failed: ${res.status}`)
+        // Parsed, not cast: failing here with a field name beats failing six stages later
+        // with `undefined`.
+        return RunSpec.parse(await res.json())
+      } catch (error) {
+        lastError = error
+        if (error instanceof Error && error.message.includes('403')) throw error
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)))
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    throw new Error(
+      `spec fetch failed after ${maxAttempts} attempts: ` +
+        (lastError instanceof Error ? lastError.message : String(lastError)),
+    )
+  }
+}
+
 /** Fetches the spec with the single-use RUN_TOKEN, as a real dispatch does. */
 export class ControlPlaneSpecProvider implements SpecProvider {
   constructor(

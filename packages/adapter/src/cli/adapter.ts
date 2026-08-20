@@ -3,7 +3,12 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runAdapter } from '../bootstrap/run.js'
-import { LocalCredentialProvider, LocalSpecProvider } from '../bootstrap/providers.js'
+import {
+  LocalCredentialProvider,
+  LocalSpecProvider,
+  UrlSpecProvider,
+} from '../bootstrap/providers.js'
+import { materialiseBundle } from '../bootstrap/bundle.js'
 import { consoleSink, fileSink, multiSink } from '../bootstrap/sinks.js'
 
 /**
@@ -28,11 +33,15 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     return args.command === 'run' ? 0 : 2
   }
   if (!args.spec) {
-    io.stderr('error: --spec <file> is required\n\n' + USAGE)
+    io.stderr('error: --spec <file|url> is required\n\n' + USAGE)
     return 2
   }
 
-  const spec = await new LocalSpecProvider(args.spec).load()
+  // A URL means a Fargate dispatch: the control plane wrote the spec to S3 and presigned a
+  // GET for that one object, so the run holds no S3 permission of its own.
+  const spec = /^https?:\/\//.test(args.spec)
+    ? await new UrlSpecProvider({ url: args.spec }).load()
+    : await new LocalSpecProvider(args.spec).load()
 
   // Sockets live in a temp dir locally: `/run` is not writable on a workstation, and
   // failing there would be a confusing first error.
@@ -40,7 +49,24 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
   const eventLog = args.events ?? join(runtimeDir, 'events.jsonl')
 
   io.stderr(`run ${spec.runId} · ${spec.harness} · ${spec.task.title}\n`)
-  io.stderr(`events → ${eventLog}\n\n`)
+  io.stderr(`events → ${eventLog}\n`)
+
+  /**
+   * Where the bundle comes from.
+   *
+   * `--bundle` names a directory that already exists, which is the local Docker path and
+   * stays exactly as it was. Without it the bundle is materialised from `spec.bundle` and
+   * **verified against its digest before extraction** — the difference between a read-only
+   * mount the host controls and an object fetched over the network.
+   */
+  const bundle = args.bundle
+    ? { root: args.bundle, source: 'flag' as const }
+    : await materialiseBundle({
+        ref: spec.bundle,
+        destDir: join(runtimeDir, 'bundle'),
+        onProgress: (message) => io.stderr(`${message}\n`),
+      })
+  io.stderr(`bundle → ${bundle.root} (${bundle.source})\n\n`)
 
   const result = await runAdapter({
     spec,
@@ -56,7 +82,7 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     paths: {
       brokerSocket: join(runtimeDir, 'broker.sock'),
       statePath: join(runtimeDir, 'state.json'),
-      ...(args.bundle ? { bundleRoot: args.bundle } : {}),
+      bundleRoot: bundle.root,
       home: join(runtimeDir, 'home'),
     },
     ...(args.dryRun ? { dryRun: true } : {}),
@@ -121,16 +147,18 @@ export function parseArgs(argv: readonly string[]): Args {
   return args
 }
 
-export const USAGE = `intellidev-adapter run --spec <file> [options]
+export const USAGE = `intellidev-adapter run --spec <file|url> [options]
 
-Run one task end to end using a local run spec.
+Run one task end to end from a run spec.
 
 Options:
-  --spec <file>     Run spec JSON (required)
-  --bundle <dir>    Project bundle: prompts/, skills/, context/  [default /opt/project]
-  --events <file>   Where to append the JSONL event log
-  --dry-run         Wire everything up and stop before running a model
-  -v, --verbose     Include every event on the console, deltas included
+  --spec <file|url>  Run spec JSON, or an https URL to fetch it from (required)
+  --bundle <dir>     Project bundle directory: prompts/, skills/, context/
+                     Omit it and the bundle is downloaded from the spec and verified
+                     against its digest before being extracted.
+  --events <file>    Where to append the JSONL event log
+  --dry-run          Wire everything up and stop before running a model
+  -v, --verbose      Include every event on the console, deltas included
 
 Environment:
   INTELLIDEV_GITHUB_TOKEN   Needed to push and open a PR
