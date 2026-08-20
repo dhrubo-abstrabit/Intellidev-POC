@@ -85,13 +85,34 @@ export class WebSocketEventSink {
   }
 
   /**
-   * Flushes what it can and stops reconnecting.
+   * Waits, briefly, for what has not been acknowledged — then closes regardless.
    *
-   * Returns once the socket is closed. It does not wait for outstanding acks: at this point
-   * the run is over, and C5's reconciler settles a run whose events never arrived, so
-   * blocking here would trade a bounded gap for an unbounded hang.
+   * An earlier version closed immediately, reasoning that C5's reconciler would settle the
+   * run anyway. That was wrong for the case that actually happens: a **short** run whose
+   * first connect attempt failed. The reconnect is still in backoff when the run ends, so
+   * closing at once discards the entire event log rather than the tail of it — observed on a
+   * real Fargate run, which streamed nothing at all while a warm one streamed everything.
+   *
+   * Bounded, so it cannot hang: after `graceMs` it closes and says how much it lost, because
+   * a silent loss is the thing worth avoiding rather than the loss itself.
    */
-  close(): void {
+  async close(graceMs = 5_000): Promise<void> {
+    const deadline = (this.opts.now ?? Date.now)() + graceMs
+
+    while (this.pendingCount() > 0 && (this.opts.now ?? Date.now)() < deadline) {
+      // Deliberately does not set `closed` yet: the reconnect loop is what will deliver
+      // these, and disabling it here would guarantee the loss this method exists to prevent.
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    const unflushed = this.pendingCount()
+    if (unflushed > 0) {
+      this.diag(
+        `event socket closing with ${unflushed} event(s) never acknowledged after ${graceMs}ms; ` +
+          'the run will be settled by the reconciler from its ECS stop reason',
+      )
+    }
+
     this.closed = true
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     try {

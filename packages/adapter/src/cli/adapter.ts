@@ -121,10 +121,9 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     ...(args.dryRun ? { dryRun: true } : {}),
   })
 
-  // Closed before reporting, so `run.finished` has a chance to ship. If it does not, C5's
-  // reconciler settles the run from the ECS stop reason instead — a bounded gap rather
-  // than an unbounded wait here.
-  liveSink?.close()
+  // Awaited, so a short run whose first connect attempt failed still gets its events out.
+  // Bounded inside `close`, so a dead control plane cannot hold the container open.
+  await liveSink?.close()
 
   io.stderr('\n')
   io.stdout(
