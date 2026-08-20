@@ -1,10 +1,13 @@
-import { RemovalPolicy, Size, Stack } from 'aws-cdk-lib'
+import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import type { StackProps } from 'aws-cdk-lib'
 import * as ec2 from 'aws-cdk-lib/aws-ec2'
 import * as ecr from 'aws-cdk-lib/aws-ecr'
 import * as ecs from 'aws-cdk-lib/aws-ecs'
 import * as iam from 'aws-cdk-lib/aws-iam'
+import * as events from 'aws-cdk-lib/aws-events'
+import * as targets from 'aws-cdk-lib/aws-events-targets'
 import * as logs from 'aws-cdk-lib/aws-logs'
+import * as sqs from 'aws-cdk-lib/aws-sqs'
 import * as ssm from 'aws-cdk-lib/aws-ssm'
 import type { Construct } from 'constructs'
 import type { EnvironmentConfig } from './config.js'
@@ -37,6 +40,7 @@ export class RuntimeStack extends Stack {
   readonly taskRole: iam.Role
   readonly taskDefinition: ecs.FargateTaskDefinition
   readonly logGroup: logs.LogGroup
+  readonly taskEvents: sqs.Queue
 
   constructor(scope: Construct, id: string, props: RuntimeStackProps) {
     super(scope, id, props)
@@ -122,8 +126,61 @@ export class RuntimeStack extends Stack {
       essential: true,
     })
 
+    /**
+     * How the control plane learns that a task ended when nothing told it.
+     *
+     * An OOM kill, a failed image pull or a Spot interruption reports nothing: the run sits
+     * `running` for ever, holding a seat and hiding cost, and the ECS task row is the only
+     * evidence. C1's poll is not enough either, because it lives in the process that
+     * dispatched the run and dies with a restart or a deploy.
+     *
+     * **A queue rather than a webhook.** The control plane has no public endpoint yet, and
+     * even once it has one a webhook would drop events during a rolling deploy — exactly
+     * when a task is most likely to be orphaned. A queue buffers while nothing is
+     * listening, redelivers on failure, and works with zero or many instances, which is
+     * what a stateless control plane requires.
+     */
+    const deadLetter = new sqs.Queue(this, 'TaskEventsDlq', {
+      queueName: resourceName(env.name, 'task-events-dlq'),
+      retentionPeriod: Duration.days(14),
+      enforceSSL: true,
+    })
+
+    this.taskEvents = new sqs.Queue(this, 'TaskEvents', {
+      queueName: resourceName(env.name, 'task-events'),
+      // Long enough for the consumer to look up the run and settle it, short enough that a
+      // crashed consumer returns the message quickly rather than stalling a run's outcome.
+      visibilityTimeout: Duration.seconds(60),
+      retentionPeriod: Duration.days(4),
+      enforceSSL: true,
+      deadLetterQueue: {
+        queue: deadLetter,
+        // Three attempts, then park it. A message that cannot be processed is a bug worth
+        // seeing in a DLQ rather than an infinite redelivery loop that looks like traffic.
+        maxReceiveCount: 3,
+      },
+    })
+
+    new events.Rule(this, 'TaskStateChange', {
+      ruleName: resourceName(env.name, 'task-state-change'),
+      description: 'Stopped-task reasons for runs, so a quiet death still settles the run.',
+      eventPattern: {
+        source: ['aws.ecs'],
+        detailType: ['ECS Task State Change'],
+        detail: {
+          // Scoped to this cluster: another cluster in the account is not ours to settle.
+          clusterArn: [this.cluster.clusterArn],
+          // Only terminal transitions. RUNNING and PENDING would be noise the consumer
+          // would have to filter anyway, and every one costs a queue request.
+          lastStatus: ['STOPPED'],
+        },
+      },
+      targets: [new targets.SqsQueue(this.taskEvents)],
+    })
+
     for (const [key, value] of [
       ['runtime/cluster-name', this.cluster.clusterName],
+      ['runtime/task-events-queue-url', this.taskEvents.queueUrl],
       ['runtime/run-task-definition-arn', this.taskDefinition.taskDefinitionArn],
       ['runtime/run-container-name', RUN_CONTAINER_NAME],
       ['runtime/task-execution-role-arn', this.executionRole.roleArn],

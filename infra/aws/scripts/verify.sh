@@ -154,6 +154,33 @@ for key_param in $(aws ssm get-parameters-by-path --path "/intellidev/${env_name
   ok "bundle for project $project matches its digest"
 done
 
+# --- C5: the lifecycle signal must be wired, or a quiet death leaks a run for ever ---
+queue_url=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/task-events-queue-url" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'runtime/task-events-queue-url is not in SSM'
+
+rule="intellidev-${env_name}-task-state-change"
+state=$(aws events describe-rule --name "$rule" --query 'State' --output text 2>/dev/null) \
+  || fail "EventBridge rule $rule does not exist"
+[ "$state" = "ENABLED" ] || fail "rule $rule is $state; a disabled rule leaks every run"
+
+# A rule with no target is the quiet failure here: it matches, fires, and delivers nowhere.
+target=$(aws events list-targets-by-rule --rule "$rule" --query 'Targets[0].Arn' --output text)
+case "$target" in
+  arn:aws:sqs:*:"${queue_url##*/}") ;;
+  *) fail "rule $rule targets $target, not the queue recorded in SSM (${queue_url##*/})" ;;
+esac
+ok "rule $rule → ${target##*:}"
+
+# The pattern is what keeps the queue from filling with PENDING and RUNNING transitions,
+# each of which costs a request and none of which settles anything.
+pattern=$(aws events describe-rule --name "$rule" --query 'EventPattern' --output text)
+printf '%s' "$pattern" | grep -q STOPPED || fail "rule $rule does not filter on STOPPED"
+printf '%s' "$pattern" | grep -q "$(aws ssm get-parameter \
+  --name "/intellidev/${env_name}/runtime/cluster-name" --query 'Parameter.Value' --output text)" \
+  || fail "rule $rule is not scoped to this environment's cluster"
+ok 'rule filters STOPPED transitions for this cluster only'
+
 # Region-wide, not just this VPC: a NAT gateway anywhere is a scale-to-zero regression.
 nats=$(aws ec2 describe-nat-gateways \
   --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text)
