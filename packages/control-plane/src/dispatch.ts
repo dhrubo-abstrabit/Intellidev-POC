@@ -53,6 +53,18 @@ export interface DispatchConfig {
   mode: DispatchMode
   bundleRoot: string
   image: string
+  /**
+   * Which project a run belongs to.
+   *
+   * Every scoped resource name derives from this: the cache prefix, secret names, the seat
+   * pool, log groups. It used to be the literal `'local'` inline in the run spec, which
+   * meant two projects would have silently shared one cache. It is configuration now, so
+   * `dev` and a real deployment differ by a value rather than by an edit.
+   *
+   * B1 replaces this with a row from the `projects` table; until then it is one value
+   * resolved at boot.
+   */
+  projectId: string
   /** Where mirrors and worktrees live on the host. */
   workRoot: string
   githubToken?: string
@@ -471,16 +483,16 @@ function buildRunSpec(args: {
   return RunSpec.parse({
     runId: run,
     taskId: task.id,
-    projectId: 'local',
+    projectId: config.projectId,
     manifestVersion: 1,
     manifest: {
       version: 1,
-      project: 'local',
+      project: config.projectId,
       repos: [{ url: task.repoUrl, defaultBranch: task.baseBranch }],
       harnesses: {
         default: task.harness,
         allowed: [task.harness],
-        seatPool: 'local',
+        seatPool: config.projectId,
         models: config.models?.[task.harness]
           ? { [task.harness]: { model: config.models[task.harness] } }
           : {},
@@ -531,7 +543,7 @@ function buildRunSpec(args: {
       mirrorPath: join(config.workRoot, 'cache'),
       worktreePath: join(config.workRoot, 'work', run),
     },
-    seat: { id: 'local', pool: 'local', provider: 'local' },
+    seat: { id: 'local', pool: config.projectId, provider: 'local' },
     limits: {
       wallClockSec: 1800,
       idleKillSec: 600,

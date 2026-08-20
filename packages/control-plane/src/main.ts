@@ -73,6 +73,10 @@ const app = await buildServer({
     mode,
     bundleRoot,
     image: process.env['INTELLIDEV_IMAGE'] ?? 'intellidev/runner:dev',
+    // The dev default. Every project-scoped resource name derives from this, so a real
+    // deployment sets it rather than inheriting a value that would make two projects
+    // share one cache prefix.
+    projectId: process.env['INTELLIDEV_PROJECT_ID'] ?? 'local',
     workRoot,
     ...(Object.keys(models).length > 0 ? { models } : {}),
     ...(Object.keys(harnessEnv).length > 0 ? { harnessEnv } : {}),
