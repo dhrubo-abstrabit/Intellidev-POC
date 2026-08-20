@@ -40,7 +40,7 @@ select is(
 
 -- 3. The three SECURITY DEFINER RLS helpers exist and are owned in a way
 --    that lets them bypass RLS on workspace_members (breaking the
---    self-referential recursion described in 20260803150400_tenancy.sql).
+--    self-referential recursion described in 20260820100400_tenancy.sql).
 select ok(
   (
     select count(*) = 3
@@ -98,11 +98,15 @@ select is(
 --    can return. Forgetting to add an enum value here today fails silently
 --    at INSERT time inside a sync job nobody is watching, rather than at
 --    build/deploy time — keep this literal array in sync with the ids
---    actually registered there.
+--    actually registered there. `gmail`/`google_drive`/`google_chat` are
+--    deliberately NOT listed: they merged into the single `google` connector
+--    (src/connectors/registry.ts), and getConnector() throws for them by
+--    design — their enum values only survive for historical rows. `clickup`
+--    is a declared-but-unregistered enum value, also deliberately absent.
 select is(
   (
     select coalesce(array_agg(missing order by missing), '{}'::text[])
-    from unnest(array['slack', 'mock', 'google_chat', 'google_drive', 'gmail']) as missing
+    from unnest(array['slack', 'mock', 'google']) as missing
     where missing::text not in (
       select enumlabel
       from pg_enum

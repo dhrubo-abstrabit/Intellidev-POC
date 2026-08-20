@@ -10,7 +10,7 @@
 -- low-level mechanism PostgREST uses per-request, just driven by hand.
 
 begin;
-select plan(6);
+select plan(7);
 
 -- Two users, minimal auth.users rows sufficient for the FK from public.users
 -- and for auth.uid() to resolve during impersonation below.
@@ -27,17 +27,29 @@ select is(
   'auth.users insert fans out to public.users via the mirror trigger'
 );
 
--- Workspaces created as postgres (bypasses RLS) so the fixture setup itself
--- isn't gated by the policies under test.
-insert into public.workspaces (id, name, slug, owner_id) values
-  ('c0000000-0000-0000-0000-00000000000c', 'Acme Technologies', 'acme-rls-test', 'a0000000-0000-0000-0000-00000000000a'),
-  ('d0000000-0000-0000-0000-00000000000d', 'Northwind Traders', 'northwind-rls-test', 'b0000000-0000-0000-0000-00000000000b');
+-- Tenants, workspaces, client spaces and projects created as postgres
+-- (bypasses RLS) so the fixture setup itself isn't gated by the policies
+-- under test. handle_new_tenant/handle_new_workspace still fire (they're
+-- AFTER INSERT triggers, unaffected by role) and populate tenant_admins/
+-- workspace_members for us, which is what the RLS checks below actually rely
+-- on.
+insert into public.tenants (id, name, slug, owner_id) values
+  ('90000000-0000-0000-0000-000000000009', 'Acme Corp', 'acme-rls-test', 'a0000000-0000-0000-0000-00000000000a'),
+  ('90000000-0000-0000-0000-00000000000f', 'Northwind Corp', 'northwind-rls-test', 'b0000000-0000-0000-0000-00000000000b');
 
--- Deliberately identical project name across both workspaces — a leak that
--- shows the wrong workspace's project would otherwise be easy to miss.
-insert into public.projects (id, workspace_id, name, slug) values
-  ('e0000000-0000-0000-0000-00000000000e', 'c0000000-0000-0000-0000-00000000000c', 'Internal Dashboard', 'internal-dashboard'),
-  ('f0000000-0000-0000-0000-00000000000f', 'd0000000-0000-0000-0000-00000000000d', 'Internal Dashboard', 'internal-dashboard');
+insert into public.workspaces (id, tenant_id, name, slug, owner_id) values
+  ('c0000000-0000-0000-0000-00000000000c', '90000000-0000-0000-0000-000000000009', 'Acme Technologies', 'acme-rls-test', 'a0000000-0000-0000-0000-00000000000a'),
+  ('d0000000-0000-0000-0000-00000000000d', '90000000-0000-0000-0000-00000000000f', 'Northwind Traders', 'northwind-rls-test', 'b0000000-0000-0000-0000-00000000000b');
+
+-- Deliberately identical name across both workspaces — a leak that shows the
+-- wrong workspace's client space or project would otherwise be easy to miss.
+insert into public.client_spaces (id, workspace_id, tenant_id, name, slug) values
+  ('10000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-00000000000c', '90000000-0000-0000-0000-000000000009', 'Internal Dashboard', 'internal-dashboard'),
+  ('20000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-00000000000d', '90000000-0000-0000-0000-00000000000f', 'Internal Dashboard', 'internal-dashboard');
+
+insert into public.projects (id, client_space_id, workspace_id, name, slug) values
+  ('e0000000-0000-0000-0000-00000000000e', '10000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-00000000000c', 'Internal Dashboard', 'internal-dashboard'),
+  ('f0000000-0000-0000-0000-00000000000f', '20000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-00000000000d', 'Internal Dashboard', 'internal-dashboard');
 
 -- --- Impersonate Alice ---
 select set_config('request.jwt.claim.sub', 'a0000000-0000-0000-0000-00000000000a', true);
@@ -52,6 +64,11 @@ select is(
   (select id::text from public.workspaces limit 1),
   'c0000000-0000-0000-0000-00000000000c',
   'the workspace Alice sees is Acme, not Northwind'
+);
+select is(
+  (select count(*)::int from public.client_spaces where id = '20000000-0000-0000-0000-000000000002'),
+  0,
+  'Alice cannot see Bob''s client space even though it shares her client space''s name'
 );
 select is(
   (select count(*)::int from public.projects where id = 'f0000000-0000-0000-0000-00000000000f'),
