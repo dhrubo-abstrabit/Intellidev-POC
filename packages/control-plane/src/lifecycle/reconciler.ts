@@ -61,12 +61,23 @@ export class LifecycleReconciler {
 
   /** Starts both mechanisms. Safe to call once; `stop()` unwinds it. */
   start(): void {
-    void this.consumeForever()
+    // `.catch` on every scheduled call, not `void`. `void` on a rejecting promise is an
+    // unhandled rejection, which Node treats as fatal — so one failed background task took
+    // the entire control plane with it. Defence in depth: each body also catches its own.
+    this.consumeForever().catch((error: unknown) => {
+      this.log(`reconciler: consumer stopped unexpectedly (${describe(error)})`)
+    })
     const interval = this.opts.sweepIntervalMs ?? 60_000
-    this.timer = setInterval(() => void this.sweep(), interval)
+    this.timer = setInterval(() => {
+      this.sweep().catch((error: unknown) => {
+        this.log(`reconciler: sweep failed (${describe(error)})`)
+      })
+    }, interval)
     // Sweeping immediately matters most right after a restart, which is precisely when
     // orphaned runs exist: the process that was observing them is gone.
-    void this.sweep()
+    this.sweep().catch((error: unknown) => {
+      this.log(`reconciler: first sweep failed (${describe(error)})`)
+    })
     this.log(
       `reconciler: watching ${this.opts.queueUrl.split('/').pop()}, sweeping every ${interval}ms`,
     )
@@ -160,9 +171,18 @@ export class LifecycleReconciler {
    * inferring from logs.
    */
   async sweep(): Promise<SettledRun[]> {
-    const candidates = (await this.opts.store.listUnsettledRuns()).filter((run) =>
-      run.handle?.startsWith('arn:aws:ecs:'),
-    )
+    let candidates
+    try {
+      candidates = (await this.opts.store.listUnsettledRuns()).filter((run) =>
+        run.handle?.startsWith('arn:aws:ecs:'),
+      )
+    } catch (error) {
+      // A store read failing is transient and expected — a DNS blip reaching the database
+      // was enough to take the whole control plane down before this, because the rejection
+      // escaped into `setInterval`. The next sweep retries; nothing is lost by skipping one.
+      this.log(`reconciler: could not list unsettled runs (${describe(error)}); will retry`)
+      return []
+    }
     if (candidates.length === 0) return []
 
     const settledRuns: SettledRun[] = []

@@ -88,11 +88,21 @@ export class PostgresStore implements Store {
     if (opts.crossInstanceFanOut) {
       this.notify = new NotifyListener({
         connectionString: opts.connectionString,
-        onRunChanged: (runId) => void this.drain(runId),
+        onRunChanged: (runId) => {
+          // `.catch`, not `void`: a rejected drain would be an unhandled rejection, and
+          // Node ends the process on those.
+          this.drain(runId).catch((error: unknown) => {
+            opts.onDiagnostic?.(`fan-out drain failed for ${runId}: ${String(error)}`)
+          })
+        },
         // Everything that happened while the connection was down was never delivered, and
         // only a re-read closes that gap.
         onReconnected: () => {
-          for (const runId of this.subscriptions.keys()) void this.drain(runId)
+          for (const runId of this.subscriptions.keys()) {
+            this.drain(runId).catch((error: unknown) => {
+              opts.onDiagnostic?.(`fan-out drain failed for ${runId}: ${String(error)}`)
+            })
+          }
         },
         ...(opts.onDiagnostic ? { onDiagnostic: opts.onDiagnostic } : {}),
         ...(opts.createNotifyClient ? { createClient: opts.createNotifyClient } : {}),
@@ -369,7 +379,9 @@ export class PostgresStore implements Store {
     this.subscriptions.set(runId, set)
 
     // Backfill immediately; every later delivery comes from a notification.
-    void this.drain(runId)
+    this.drain(runId).catch((error: unknown) => {
+      this.opts.onDiagnostic?.(`backfill failed for ${runId}: ${String(error)}`)
+    })
 
     return () => set.delete(subscription)
   }

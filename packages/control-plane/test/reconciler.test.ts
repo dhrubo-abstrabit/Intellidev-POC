@@ -254,3 +254,50 @@ describe('every non-terminal status is sweepable', () => {
     })
   }
 })
+
+describe('surviving a broken database', () => {
+  /** A store whose reads reject, as they do when DNS to the database blips. */
+  function brokenStore(): InMemoryStore {
+    const store = new InMemoryStore()
+    store.listUnsettledRuns = () =>
+      Promise.reject(new Error('getaddrinfo ENOTFOUND aws-0-ap-southeast-1.pooler.supabase.com'))
+    return store
+  }
+
+  it('does not reject when the store is unreachable', async () => {
+    // This took the whole control plane down: the rejection escaped `sweep` into
+    // `setInterval`, and Node ends the process on an unhandled rejection. A network blip
+    // must cost one skipped sweep, not the service.
+    const store = brokenStore()
+    await expect(reconciler({ store }).instance.sweep()).resolves.toEqual([])
+  })
+
+  it('says why it skipped, so an outage is visible rather than silent', async () => {
+    const messages: string[] = []
+    const instance = new LifecycleReconciler({
+      store: brokenStore(),
+      clusterName: 'c',
+      queueUrl: 'https://sqs/q',
+      region: 'ap-south-1',
+      ecs: { send: async () => ({ tasks: [] }) } as never,
+      sqs: { send: async () => ({ Messages: [] }) } as never,
+      log: (m) => messages.push(m),
+    })
+    await instance.sweep()
+    expect(messages.some((m) => /could not list unsettled runs/.test(m))).toBe(true)
+    expect(messages.some((m) => /ENOTFOUND/.test(m))).toBe(true)
+  })
+
+  it('recovers on the next sweep once the store is back', async () => {
+    const store = new InMemoryStore()
+    let failing = true
+    const real = store.listUnsettledRuns.bind(store)
+    store.listUnsettledRuns = () => (failing ? Promise.reject(new Error('ENOTFOUND')) : real())
+
+    const r = reconciler({ store })
+    expect(await r.instance.sweep()).toEqual([])
+    failing = false
+    // Nothing to settle, but it must complete rather than stay poisoned.
+    expect(await r.instance.sweep()).toEqual([])
+  })
+})
