@@ -54,6 +54,13 @@ import "server-only";
  * polyfill" for those two on a cold start: harmless, and much cheaper than
  * forcing the Skia binary into every function that parses a PDF.
  *
+ * Adding a THIRD call site needs one more step: `pdf.worker.mjs` is delivered
+ * per-route by `outputFileTracingIncludes` in next.config.ts (it is invisible to
+ * the tracer for the same reason, and unlike DOMMatrix it cannot be bundled —
+ * pdfjs needs a real file at that exact node_modules path). Add the new route to
+ * that map, or PDF parsing will work locally and fail once deployed with
+ * "Setting up fake worker failed".
+ *
  * Note `@napi-rs/canvas` is deliberately *not* in our own `dependencies`. It
  * arrives hoisted via `pdf-parse`'s exact pin, which keeps us on the same
  * version pdfjs was built against; declaring our own pin means keeping it in
