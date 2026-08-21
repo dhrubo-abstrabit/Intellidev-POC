@@ -2,16 +2,25 @@ import type { Database } from "@/lib/db/database.types";
 
 export type ConnectorId = Database["public"]["Enums"]["connector_provider"];
 
-/** The full OAuth token bundle for a connector, before encryption. Shape is
- * intentionally provider-specific — see lib/crypto/tokens.ts for why this is
- * one opaque JSON blob rather than typed columns. */
-export type ProviderTokenBundle = Record<string, unknown>;
-
+/**
+ * A connector's credentials, backed by a Nango connection (see
+ * NANGO_MIGRATION_LOG.md D-008/D-009). `connectionId` + `providerConfigKey`
+ * are what every JSON API call needs — they're passed straight to Nango's
+ * proxy (lib/nango/client.ts's nangoProxy), which injects the actual token
+ * itself. `getAccessToken()` is only for the handful of binary-download
+ * paths that deliberately bypass the proxy (D-004: Slack file downloads,
+ * Gmail attachment bytes, Drive export/download) — it's a closure rather
+ * than a field so a sync that downloads nothing never pays the extra Nango
+ * round-trip, and it MUST be memoized by the implementation, since
+ * services/attachments/run-extraction.ts loads credentials once and reuses
+ * them across every attachment in a run.
+ */
 export interface ConnectorCredentials {
-  tokens: ProviderTokenBundle;
+  connectionId: string;
+  providerConfigKey: string;
   externalAccountId: string;
   externalAccountLabel?: string;
-  accessTokenExpiresAt?: Date;
+  getAccessToken(): Promise<string>;
 }
 
 /** One page of newly-fetched provider data, plus the cursor to resume from
@@ -46,10 +55,10 @@ export interface FetchDeadline {
 export interface FetchContext {
   /** integrations.config, verbatim, as jsonb. THIS IS CLIENT-WRITABLE — the
    * `integrations` table grants `authenticated` a column-scoped UPDATE that
-   * includes `config` (see 20260803150600_integrations.sql), so any
-   * workspace owner/admin can PATCH it directly via PostgREST. Every
-   * connector MUST parse this with Zod and fall back to safe defaults; NEVER
-   * trust its shape, and never let a numeric field here be unbounded (it's a
+   * includes `config` (see the integrations migration), so any workspace
+   * owner/admin can PATCH it directly via PostgREST. Every connector MUST
+   * parse this with Zod and fall back to safe defaults; NEVER trust its
+   * shape, and never let a numeric field here be unbounded (it's a
    * quota-exhaustion / function-stall primitive otherwise). */
   config: Record<string, unknown>;
   deadline: FetchDeadline;
@@ -111,24 +120,31 @@ export interface DownloadedAttachment {
 
 /**
  * Every connector implements this. The sync engine (services/sync) only
- * ever calls these five methods — adding a new provider means one new
- * folder under connectors/ and one registry line, never a change to the
- * sync engine itself.
+ * ever calls fetchSince/normalize/downloadAttachment/validate — adding a
+ * new provider means one new folder under connectors/ and one registry
+ * line, never a change to the sync engine itself. OAuth (authorize/
+ * exchange/refresh) is Nango's job, not this interface's — see
+ * NANGO_MIGRATION_LOG.md D-009 for why that cut landed here.
  */
 export interface Connector<TCursor = unknown> {
   readonly id: ConnectorId;
   readonly displayName: string;
 
-  /** True for connectors with no OAuth handshake (e.g. the mock connector). */
-  readonly requiresOAuth: boolean;
+  /** The Nango integration id (`unique_key`) this connector authenticates
+   * through, e.g. "google" or "slack" — `undefined` for connectors with no
+   * OAuth grant at all (the mock connector). Drives both the Connect UI's
+   * `allowed_integrations` and the Integrations page's "is this connectable"
+   * check that `requiresOAuth` used to serve. */
+  readonly nangoProviderConfigKey?: string;
 
-  /** Build the provider's authorize URL. `state` is an opaque, signed,
-   * single-use token the callback route must verify before trusting the
-   * returned `code` — see lib/oauth/state.ts for the CSRF rationale. */
-  getAuthorizeUrl?(state: string): string;
-
-  /** Exchange an OAuth `code` for the provider's token bundle. */
-  exchangeCode?(code: string): Promise<ConnectorCredentials>;
+  /** Recovers what `exchangeCode` used to return before Nango: the
+   * provider's own stable account identifier (Google's `sub`, Slack's
+   * `team.id`) and a human-readable label. Needed because Nango assigns
+   * connection ids as random UUIDs the caller can't choose, so THIS is what
+   * the connect flow uses to look up (or create) the right
+   * connector_credentials row for a given (client space, provider, external
+   * account) — see D-008's scoped reuse. */
+  identify?(credentials: ConnectorCredentials): Promise<{ externalAccountId: string; externalAccountLabel?: string }>;
 
   /** Cheap liveness check — called after connect and periodically to flip
    * `integrations.status` between 'connected' and 'degraded'/'error'. */
@@ -166,20 +182,12 @@ export interface Connector<TCursor = unknown> {
     deadline: FetchDeadline,
   ): Promise<DownloadedAttachment | null>;
 
-  /** Revoke the token with the provider, where the provider supports it.
-   * Best-effort — the caller still deletes/updates local rows regardless of
-   * whether this succeeds. */
-  disconnect(credentials: ConnectorCredentials): Promise<void>;
-
-  /** Exchange a soon-to-expire access token for a fresh one. Omit entirely
-   * for providers whose tokens don't expire (Slack's classic bot tokens,
-   * mock) — services/sync/credentials.ts skips the whole refresh path when
-   * this is undefined. MUST return the COMPLETE bundle to re-seal, not a
-   * delta: Google's refresh response omits `refresh_token`, so an
-   * implementation must merge it forward from the input credentials or a
-   * refresh silently bricks the credential the next time it's needed. Throw
-   * ConnectorRefreshError({permanent: true}) on a provider-confirmed dead
-   * grant (e.g. `invalid_grant`), {permanent: false} on anything that might
-   * be transient (5xx, network). */
-  refreshTokens?(credentials: ConnectorCredentials): Promise<ConnectorCredentials>;
+  /** Revoke the connection with the provider, where the provider supports
+   * it, on top of Nango's own connection deletion — best-effort, since the
+   * caller (integrations/actions.ts) deletes the Nango connection and
+   * updates local rows regardless of whether this succeeds. Optional: most
+   * providers need nothing beyond Nango's own DELETE /connections; only
+   * implement this for a provider-specific revoke Nango doesn't already
+   * cover. */
+  disconnect?(credentials: ConnectorCredentials): Promise<void>;
 }

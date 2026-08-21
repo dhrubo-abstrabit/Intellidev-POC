@@ -71,14 +71,12 @@ export const googleChatConfigEntry: ConnectorConfigSchema<GoogleChatConfig> = {
   // in integrations.last_error.
   async resolve(config, { credentials }) {
     if (config.spaceIds.length === 0) return { ok: true };
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return { ok: false, error: "This integration has no access token on file — reconnect it." };
 
     const deadline = createDeadline(RESOLVE_BUDGET_MS);
     const inaccessible: string[] = [];
     for (const spaceName of config.spaceIds) {
       try {
-        await googleFetch<ChatSpace>(`https://chat.googleapis.com/v1/${spaceName}`, { accessToken, deadline, maxAttempts: 1 });
+        await googleFetch<ChatSpace>(`https://chat.googleapis.com/v1/${spaceName}`, { credentials, deadline, maxAttempts: 1 });
       } catch {
         inaccessible.push(spaceName);
       }

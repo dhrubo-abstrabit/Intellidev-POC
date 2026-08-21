@@ -1,5 +1,4 @@
 import "server-only";
-import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
@@ -73,11 +72,15 @@ interface DriveListResponse {
   files?: DriveFile[];
 }
 
-async function resolveSource(sourceId: string, accessToken: string, deadline: FetchDeadline): Promise<DriveFileResolveInfo | null> {
+async function resolveSource(
+  sourceId: string,
+  credentials: ConnectorCredentials,
+  deadline: FetchDeadline,
+): Promise<DriveFileResolveInfo | null> {
   try {
     return await googleFetch<DriveFileResolveInfo>(
       `${DRIVE_FILES_URL}/${sourceId}?supportsAllDrives=true&fields=${RESOLVE_FIELDS}`,
-      { accessToken, deadline, maxAttempts: 2 },
+      { credentials, deadline, maxAttempts: 2 },
     );
   } catch {
     return null;
@@ -141,21 +144,19 @@ async function extractTextForFile(
  * NOT registered in connectors/registry.ts anymore — the merged `google`
  * connector owns the OAuth handshake and delegates fetch/normalize here (see
  * connectors/google/index.ts), and also reuses this connector's `validate` as
- * its own liveness probe. `getAuthorizeUrl`/`exchangeCode` are gone with the
- * registration: there is no `api/oauth/google_drive/callback` route left for
- * them to redirect to.
+ * its own liveness probe. No OAuth methods or `disconnect` here at all:
+ * Nango owns the handshake now, and google/index.ts's own disconnect
+ * doesn't delegate to the sub-connectors, so an implementation here would
+ * just be dead code.
  */
 export const googleDriveConnector: Connector<GoogleDriveCursor> = {
   id: "google_drive",
   displayName: "Google Drive",
-  requiresOAuth: true,
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return false;
     try {
       await googleFetch(`https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)`, {
-        accessToken,
+        credentials,
         deadline: createDeadline(10_000),
         maxAttempts: 1,
       });
@@ -163,10 +164,6 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
     } catch {
       return false;
     }
-  },
-
-  async refreshTokens(credentials: ConnectorCredentials): Promise<ConnectorCredentials> {
-    return refreshGoogleTokens(credentials);
   },
 
   async fetchSince(
@@ -181,7 +178,10 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
       );
     }
     const config = parsedConfig.data;
-    const accessToken = credentials.tokens.access_token as string;
+    // Only extractTextForFile below needs a raw token (its fetchFileText
+    // call bypasses the proxy — see D-004); every other call in this
+    // function passes `credentials` straight through instead.
+    const accessToken = await credentials.getAccessToken();
 
     const driveCursor = pruneCursorSources(parseCursor(cursor), config.sources);
     const payloadsByProviderEventId = new Map<string, RawPayload>();
@@ -209,7 +209,7 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
       }
 
       if (Object.keys(sourceCursor.folders).length === 0 || isFolderSetStale(sourceCursor.folderSetRefreshedAt, Date.now())) {
-        const resolved = await resolveSource(sourceId, accessToken, context.deadline);
+        const resolved = await resolveSource(sourceId, credentials, context.deadline);
         if (!resolved || resolved.trashed || resolved.mimeType !== "application/vnd.google-apps.folder") {
           sourceCursor = { ...sourceCursor, unresolvedSince: nowIso };
           driveCursor.sources[sourceId] = sourceCursor;
@@ -219,7 +219,7 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
         const driveId = resolved.driveId ?? null;
         const isSharedDriveRoot = driveId === sourceId;
         try {
-          const walked = await walkDescendants(sourceId, resolved.name, { accessToken, deadline: context.deadline, driveId });
+          const walked = await walkDescendants(sourceId, resolved.name, { credentials, deadline: context.deadline, driveId });
           const { added } = diffFolderSet(sourceCursor.folders, walked.folders);
           const pendingBackfillFolderIds = [...new Set([...sourceCursor.pendingBackfillFolderIds, ...added])].slice(
             0,
@@ -271,7 +271,7 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
           for (const [key, value] of Object.entries(corporaParamsFor(sourceCursor.driveId))) url.searchParams.set(key, String(value));
           if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-          const res = await googleFetch<DriveListResponse>(url.toString(), { accessToken, deadline: context.deadline });
+          const res = await googleFetch<DriveListResponse>(url.toString(), { credentials, deadline: context.deadline });
           if (res.incompleteSearch) {
             console.warn(`[google_drive] incompleteSearch for source ${sourceId} — this run's results may be partial`);
           }
@@ -364,7 +364,7 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
               for (const [key, value] of Object.entries(corporaParamsFor(sourceCursor.driveId))) url.searchParams.set(key, String(value));
               if (backfillPageToken) url.searchParams.set("pageToken", backfillPageToken);
 
-              const res = await googleFetch<DriveListResponse>(url.toString(), { accessToken, deadline: context.deadline });
+              const res = await googleFetch<DriveListResponse>(url.toString(), { credentials, deadline: context.deadline });
               for (const file of res.files ?? []) {
                 const providerEventId = `${file.id}:${file.version}`;
                 if (payloadsByProviderEventId.has(providerEventId)) continue; // already seen via the incremental stream
@@ -422,9 +422,5 @@ export const googleDriveConnector: Connector<GoogleDriveCursor> = {
 
   normalize(raw: RawPayload): NormalizedEventDraft[] {
     return normalizeDriveEvent(raw);
-  },
-
-  async disconnect(credentials: ConnectorCredentials): Promise<void> {
-    await revokeGoogleToken(credentials).catch(() => {});
   },
 };

@@ -1,6 +1,6 @@
 import "server-only";
 import { googleFetch } from "@/connectors/google/client";
-import type { FetchDeadline } from "@/connectors/types";
+import type { ConnectorCredentials, FetchDeadline } from "@/connectors/types";
 
 const PEOPLE_API_BATCH_GET_URL = "https://people.googleapis.com/v1/people:batchGet";
 
@@ -45,7 +45,7 @@ function toPersonResourceName(senderName: string): string {
  */
 export async function resolveSenderNames(
   senderIds: string[],
-  options: { accessToken: string; deadline: FetchDeadline },
+  options: { credentials: ConnectorCredentials; deadline: FetchDeadline },
 ): Promise<Map<string, ResolvedPerson>> {
   const resolved = new Map<string, ResolvedPerson>();
   const uniqueIds = [...new Set(senderIds)].slice(0, MAX_LOOKUPS_PER_RUN);
@@ -57,7 +57,7 @@ export async function resolveSenderNames(
 
   try {
     const res = await googleFetch<BatchGetResponse>(url.toString(), {
-      accessToken: options.accessToken,
+      credentials: options.credentials,
       deadline: options.deadline,
       maxAttempts: 1,
     });

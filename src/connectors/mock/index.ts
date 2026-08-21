@@ -7,9 +7,9 @@ import type {
   RawPayload,
 } from "@/connectors/types";
 
-/** No OAuth grant, so `credentials.tokens` is always empty — present only to
- * satisfy the shared `ConnectorCredentials` shape the sync engine expects
- * every connector to accept. */
+/** No OAuth grant — these are dummy values present only to satisfy the
+ * shared `ConnectorCredentials` shape the sync engine expects every
+ * connector to accept. */
 const MOCK_EXTERNAL_ACCOUNT_ID = "mock-workspace";
 
 interface MockCursor {
@@ -28,13 +28,18 @@ const SAMPLE_MESSAGES = [
 const BATCH_SIZE = 5;
 
 export function mockCredentials(): ConnectorCredentials {
-  return { tokens: {}, externalAccountId: MOCK_EXTERNAL_ACCOUNT_ID, externalAccountLabel: "Mock workspace" };
+  return {
+    connectionId: "mock",
+    providerConfigKey: "mock",
+    externalAccountId: MOCK_EXTERNAL_ACCOUNT_ID,
+    externalAccountLabel: "Mock workspace",
+    getAccessToken: async () => "",
+  };
 }
 
 export const mockConnector: Connector<MockCursor> = {
   id: "mock",
   displayName: "Mock (sample data)",
-  requiresOAuth: false,
 
   async validate(): Promise<boolean> {
     return true;

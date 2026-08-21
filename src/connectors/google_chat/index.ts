@@ -1,5 +1,4 @@
 import "server-only";
-import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
@@ -113,23 +112,21 @@ function parseCursor(raw: unknown): GoogleChatCursor {
 /**
  * NOT registered in connectors/registry.ts anymore — the merged `google`
  * connector owns the OAuth handshake and delegates fetch/normalize here (see
- * connectors/google/index.ts). `getAuthorizeUrl`/`exchangeCode` are gone with
- * the registration: there is no `api/oauth/google_chat/callback` route left
- * for them to redirect to.
+ * connectors/google/index.ts). No OAuth methods or `disconnect` here at
+ * all: Nango owns the handshake now, and google/index.ts's own disconnect
+ * doesn't delegate to the sub-connectors, so an implementation here would
+ * just be dead code.
  */
 export const googleChatConnector: Connector<GoogleChatCursor> = {
   id: "google_chat",
   displayName: "Google Chat",
-  requiresOAuth: true,
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return false;
     try {
       // Cheapest call that proves both the token and the chat.spaces scope:
       // list at most one space owned/joined by the connected account.
       await googleFetch(`${CHAT_API_BASE}/spaces?pageSize=1&filter=spaceType = "SPACE"`, {
-        accessToken,
+        credentials,
         deadline: createDeadline(10_000),
         maxAttempts: 1,
       });
@@ -137,10 +134,6 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
     } catch {
       return false;
     }
-  },
-
-  async refreshTokens(credentials: ConnectorCredentials): Promise<ConnectorCredentials> {
-    return refreshGoogleTokens(credentials);
   },
 
   async fetchSince(
@@ -160,7 +153,6 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
     }
     const config = parsedConfig.data;
 
-    const accessToken = credentials.tokens.access_token as string;
     // Defensive re-parse rather than trusting the generic's static type:
     // integration_cursors.cursor is an untyped jsonb column at runtime, so a
     // corrupted or stale-shape value must degrade to "start over", not throw.
@@ -212,7 +204,7 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
           if (pageToken) url.searchParams.set("pageToken", pageToken);
 
           const res = await googleFetch<ChatMessagesResponse>(url.toString(), {
-            accessToken,
+            credentials,
             deadline: context.deadline,
           });
 
@@ -264,7 +256,7 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
         .map((sender) => sender.name);
 
       if (senderIds.length > 0) {
-        const resolved = await resolveSenderNames(senderIds, { accessToken, deadline: context.deadline });
+        const resolved = await resolveSenderNames(senderIds, { credentials, deadline: context.deadline });
         if (resolved.size > 0) {
           for (const raw of rawPayloads) {
             const sender = (raw.payload as { sender?: { name?: string } }).sender;
@@ -338,8 +330,7 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
     downloadRef: Record<string, unknown>,
     deadline: FetchDeadline,
   ): Promise<DownloadedAttachment | null> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken || deadline.expired()) return null;
+    if (deadline.expired()) return null;
 
     const kind = downloadRef.kind as string | undefined;
     let url: string | undefined;
@@ -354,12 +345,13 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
     if (!url) return null;
 
     try {
-      // Bypasses googleFetch deliberately — that helper does res.text() ->
-      // JSON.parse (see connectors/google/client.ts) and cannot carry a
-      // binary body. Single attempt only, same rationale as
-      // google_drive/text.ts's fetchFileText: retrying a slow single
-      // attachment would eat the budget meant for OTHER attachments in the
-      // same job run.
+      // Bypasses the proxy deliberately (see NANGO_MIGRATION_LOG.md D-004):
+      // this is a raw binary body, and googleFetch does res.text() ->
+      // JSON.parse (see connectors/google/client.ts) so it cannot carry
+      // one. Single attempt only, same rationale as google_drive/text.ts's
+      // fetchFileText: retrying a slow single attachment would eat the
+      // budget meant for OTHER attachments in the same job run.
+      const accessToken = await credentials.getAccessToken();
       const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
         console.warn(`[google_chat] attachment download failed: HTTP ${res.status}`);
@@ -371,9 +363,5 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
       console.warn("[google_chat] attachment download threw:", err);
       return null;
     }
-  },
-
-  async disconnect(credentials: ConnectorCredentials): Promise<void> {
-    await revokeGoogleToken(credentials).catch(() => {});
   },
 };

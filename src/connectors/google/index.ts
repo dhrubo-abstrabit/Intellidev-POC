@@ -1,7 +1,7 @@
 import "server-only";
-import { googleAuthorizeUrl, exchangeGoogleCode, refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
-import { GMAIL_SCOPES, DRIVE_SCOPES, CHAT_SCOPES } from "@/connectors/google/scopes";
-import { carveDeadline } from "@/connectors/deadline";
+import { googleFetch } from "@/connectors/google/client";
+import { IDENTITY_SCOPES, GMAIL_SCOPES, DRIVE_SCOPES, CHAT_SCOPES } from "@/connectors/google/scopes";
+import { createDeadline, carveDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
 import { gmailConnector } from "@/connectors/gmail";
 import { googleDriveConnector } from "@/connectors/google_drive";
@@ -19,11 +19,19 @@ import type {
   RawPayload,
 } from "@/connectors/types";
 
-/** Every scope the one combined grant carries. Deliberately the union of
- * what used to be three separate least-privilege consent screens — see
- * CLAUDE.md's "Google connector specifics" for the tradeoff this accepts
- * (one credential row now unlocks mail + files + chat together). */
-export const GOOGLE_ALL_SCOPES = [...GMAIL_SCOPES, ...DRIVE_SCOPES, ...CHAT_SCOPES];
+/** The scope list Nango's `google` integration must be configured with —
+ * the union of what used to be three separate least-privilege consent
+ * screens plus identity (needed for identify()'s userinfo call below) — see
+ * CLAUDE.md's "Google connector specifics" for the tradeoff this accepts:
+ * one credential now unlocks mail + files + chat together. No longer read
+ * by any OAuth code path here (Nango owns the handshake); kept as the
+ * source of truth for Nango's dashboard config. */
+export const GOOGLE_ALL_SCOPES = [...IDENTITY_SCOPES, ...GMAIL_SCOPES, ...DRIVE_SCOPES, ...CHAT_SCOPES];
+
+interface GoogleUserInfo {
+  sub?: string;
+  email?: string;
+}
 
 /** Don't even start a sub-service with less than this left on the parent
  * deadline: every sub-connector reserves 5–6s of its own budget for the
@@ -58,18 +66,23 @@ function serviceOf(payload: Record<string, unknown>): GoogleService | undefined 
 export const googleConnector: Connector<GoogleCursor> = {
   id: "google",
   displayName: "Google",
-  requiresOAuth: true,
+  nangoProviderConfigKey: "google",
 
-  getAuthorizeUrl(state: string): string {
-    return googleAuthorizeUrl({ provider: "google", scopes: GOOGLE_ALL_SCOPES, state });
-  },
-
-  async exchangeCode(code: string): Promise<ConnectorCredentials> {
-    // Requires ALL three scope sets up front, even for a user who only means
-    // to enable Gmail: Google never retro-upgrades an existing grant (see
-    // CLAUDE.md), so asking later would mean a disconnect + reconnect every
-    // time someone ticks a new service on.
-    return exchangeGoogleCode("google", code, GOOGLE_ALL_SCOPES);
+  /** Recovers what exchangeGoogleCode used to return by decoding the
+   * connected account's identity straight from Google, rather than an
+   * id_token this codebase no longer sees (Nango holds the raw token
+   * response). www.googleapis.com is the `google` integration's default
+   * base — no baseUrlOverride needed. */
+  async identify(credentials: ConnectorCredentials) {
+    const info = await googleFetch<GoogleUserInfo>("https://www.googleapis.com/oauth2/v3/userinfo", {
+      credentials,
+      deadline: createDeadline(10_000),
+      maxAttempts: 1,
+    });
+    if (!info.sub) {
+      throw new Error("Google userinfo call succeeded but returned no sub claim");
+    }
+    return { externalAccountId: info.sub, externalAccountLabel: info.email };
   },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
@@ -77,10 +90,6 @@ export const googleConnector: Connector<GoogleCursor> = {
     // per-service config to be meaningful — this only has to prove the
     // access token is alive, not that any particular sub-service is scoped.
     return googleDriveConnector.validate(credentials);
-  },
-
-  async refreshTokens(credentials: ConnectorCredentials): Promise<ConnectorCredentials> {
-    return refreshGoogleTokens(credentials);
   },
 
   async fetchSince(
@@ -202,6 +211,18 @@ export const googleConnector: Connector<GoogleCursor> = {
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {
-    await revokeGoogleToken(credentials).catch(() => {});
+    // Best-effort, direct (not proxied): Google's revoke endpoint reads the
+    // token from a query param rather than an Authorization header, which
+    // doesn't fit nangoProxy's job of injecting the token FOR the caller.
+    // The caller (integrations/actions.ts) deletes the Nango connection
+    // regardless of whether this succeeds. Prefers no particular token over
+    // another — Google revokes the whole grant (refresh + every derived
+    // access token) no matter which one is presented.
+    try {
+      const accessToken = await credentials.getAccessToken();
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(accessToken)}`, { method: "POST" });
+    } catch {
+      // swallow — best-effort
+    }
   },
 };

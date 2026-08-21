@@ -29,7 +29,12 @@ vi.mock("@/connectors/google_chat", () => ({
 
 import { googleConnector } from "./index";
 
-const credentials: ConnectorCredentials = { tokens: { access_token: "t" }, externalAccountId: "sub-1" };
+const credentials: ConnectorCredentials = {
+  connectionId: "conn-1",
+  providerConfigKey: "google",
+  externalAccountId: "sub-1",
+  getAccessToken: async () => "t",
+};
 
 function subResult(overrides: Partial<FetchResult<unknown>> = {}): FetchResult<unknown> {
   return { rawPayloads: [], nextCursor: { touched: true }, hasMore: false, ...overrides };

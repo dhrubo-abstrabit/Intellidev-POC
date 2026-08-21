@@ -79,8 +79,6 @@ export const googleDriveConfigEntry: ConnectorConfigSchema<GoogleDriveConfig> = 
   // typo'd id would silently produce zero events until noticed a day later.
   async resolve(config, { credentials }) {
     if (config.sources.length === 0) return { ok: true };
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return { ok: false, error: "This integration has no access token on file — reconnect it." };
 
     const deadline = createDeadline(RESOLVE_BUDGET_MS);
     const problems: string[] = [];
@@ -88,7 +86,7 @@ export const googleDriveConfigEntry: ConnectorConfigSchema<GoogleDriveConfig> = 
       try {
         const file = await googleFetch<DriveFileResolveResult>(
           `https://www.googleapis.com/drive/v3/files/${id}?supportsAllDrives=true&fields=${RESOLVE_FIELDS}`,
-          { accessToken, deadline, maxAttempts: 1 },
+          { credentials, deadline, maxAttempts: 1 },
         );
         if (file.trashed) {
           problems.push(`${id} (in trash)`);
@@ -99,7 +97,7 @@ export const googleDriveConfigEntry: ConnectorConfigSchema<GoogleDriveConfig> = 
         // Some shared drives don't resolve via files.get — fall back to
         // asking whether it's a shared drive at all before giving up.
         try {
-          await googleFetch(`https://www.googleapis.com/drive/v3/drives/${id}`, { accessToken, deadline, maxAttempts: 1 });
+          await googleFetch(`https://www.googleapis.com/drive/v3/drives/${id}`, { credentials, deadline, maxAttempts: 1 });
         } catch {
           problems.push(id);
         }
