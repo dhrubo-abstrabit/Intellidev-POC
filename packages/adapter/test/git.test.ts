@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, StageRecord, TaskBrief } from '@intellidev/shared'
@@ -553,5 +554,46 @@ describe('GitHubClient', () => {
         body: 'b',
       }),
     ).rejects.toThrow(/422/)
+  })
+})
+
+describe('resolving a base branch that is not there', () => {
+  it('says the repository is empty rather than "ambiguous argument"', async () => {
+    // The first thing a new project hits: a repository created in the UI and never pushed
+    // to. Git's own message reads like a syntax error.
+    const root = await mkdtemp(join(tmpdir(), 'empty-mirror-'))
+    const mirror = join(root, 'repo.git')
+    await mkdir(mirror, { recursive: true })
+    execFileSync('git', ['init', '--bare', '-q', mirror])
+
+    const repo = new RunRepo(
+      new GitRunner({ home: root, identity: { name: 'i', email: 'i@e' }, timeoutSec: 30 }),
+      { mirror, worktree: join(root, 'work') },
+    )
+    await expect(repo.resolve('main')).rejects.toThrow(/no branches at all/)
+    await expect(repo.resolve('main')).rejects.toThrow(/empty repository/)
+  })
+
+  it('lists the branches that do exist when the name is simply wrong', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mirror-'))
+    const source = join(root, 'src')
+    await mkdir(source, { recursive: true })
+    execFileSync('git', ['init', '-q', '-b', 'master', source])
+    await writeFile(join(source, 'README.md'), '# x\n')
+    execFileSync('git', ['add', '.'], { cwd: source })
+    execFileSync('git', ['-c', 'user.email=i@e', '-c', 'user.name=i', 'commit', '-qm', 'init'], {
+      cwd: source,
+    })
+
+    const mirror = join(root, 'repo.git')
+    execFileSync('git', ['clone', '--bare', '-q', source, mirror])
+
+    const repo = new RunRepo(
+      new GitRunner({ home: root, identity: { name: 'i', email: 'i@e' }, timeoutSec: 30 }),
+      { mirror, worktree: join(root, 'work') },
+    )
+    // The common real case: the field defaults to `main` and the repo uses `master`.
+    await expect(repo.resolve('main')).rejects.toThrow(/does not exist.*master/s)
+    await expect(repo.resolve('master')).resolves.toMatch(/^[0-9a-f]{40}$/)
   })
 })

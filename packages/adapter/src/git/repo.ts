@@ -68,10 +68,35 @@ export class RunRepo {
     return result.exitCode === 0
   }
 
-  /** Resolve a ref to a sha in the mirror. */
+  /**
+   * Resolve a ref to a sha in the mirror.
+   *
+   * On failure it says what the repository *does* have, because git's own message —
+   * `ambiguous argument 'main': unknown revision or path not in the working tree` — reads
+   * like a syntax error when the real cause is almost always one of two mundane things: the
+   * base branch is named something else, or the repository is empty because nobody has
+   * pushed to it yet. Both are a thirty-second fix once said plainly, and a long hunt
+   * otherwise. This is the first thing a new project hits.
+   */
   async resolve(ref: string): Promise<string> {
-    const result = await this.git.run(['rev-parse', ref], this.paths.mirror)
-    return result.stdout.trim()
+    const result = await this.git.tryRun(['rev-parse', ref], this.paths.mirror)
+    if (result.exitCode === 0) return result.stdout.trim()
+
+    const branches = await this.git
+      .tryRun(['for-each-ref', '--format=%(refname:short)', 'refs/heads'], this.paths.mirror)
+      .then((r) => (r.exitCode === 0 ? r.stdout.trim().split('\n').filter(Boolean) : []))
+      .catch(() => [] as string[])
+
+    if (branches.length === 0) {
+      throw new Error(
+        `the repository has no branches at all, so "${ref}" cannot exist. ` +
+          'It is almost certainly an empty repository — push an initial commit and try again.',
+      )
+    }
+    throw new Error(
+      `base branch "${ref}" does not exist. This repository has: ${branches.slice(0, 10).join(', ')}` +
+        `${branches.length > 10 ? `, and ${branches.length - 10} more` : ''}.`,
+    )
   }
 
   /**
