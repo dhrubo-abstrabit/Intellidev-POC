@@ -21,6 +21,7 @@ import websocket from '@fastify/websocket'
 import { AgentEvent } from '@intellidev/shared'
 import { InMemoryStore, type Store, type TaskRow } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
+import { ControlPlaneCredentialBroker, CredentialRefused } from './runs/credentials.js'
 
 /**
  * The control plane, cut to what a UI needs to be useful: create a task, dispatch it, watch
@@ -453,6 +454,76 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       })
       return reply
     },
+  )
+
+  /**
+   * The credential broker.
+   *
+   * Four endpoints, all authenticated by the run's own bearer and all scoped to the run that
+   * bearer resolves to. The run id is never read from the request body — taking it from
+   * there is exactly how one run ends up holding another's credentials.
+   *
+   * This is what lets a container hold nothing but its run token: B3's whole point.
+   */
+  const broker = new ControlPlaneCredentialBroker({
+    store,
+    tokens,
+    accounts: opts.accounts,
+    mcpToken: async (serverId) => {
+      const server = opts.mcp.get(serverId)
+      if (!server) return undefined
+      // Refreshed here because this is the only place that can: the container is headless
+      // and deliberately holds no refresh token. Reuses the same `oauth` the routes use, so
+      // there is one refresh path and D1's single-flight guard covers all of it.
+      return (await oauth.accessToken(server)) ?? undefined
+    },
+    ...(opts.dispatch.githubToken ? { githubToken: opts.dispatch.githubToken } : {}),
+    onGrant: (grant) => {
+      // Recorded, because a credential handed out with no trace is indistinguishable from
+      // one that leaked. The detail is a host, a harness or a server id — never a secret.
+      process.stderr.write(
+        `[broker] ${grant.granted ? 'granted' : 'refused'} ${grant.kind} ` +
+          `(${grant.detail}) to ${grant.runId}${grant.reason ? ` — ${grant.reason}` : ''}\n`,
+      )
+    },
+  })
+
+  /** Shared shape for the four broker routes, so authentication cannot be forgotten. */
+  const brokered = <T>(handler: (runId: string, body: Record<string, unknown>) => Promise<T>) => {
+    return async (
+      request: { headers: Record<string, unknown>; body?: unknown },
+      reply: { code(status: number): { send(payload: unknown): unknown } },
+    ) => {
+      try {
+        const runId = await broker.authenticate(String(request.headers['authorization'] ?? ''))
+        const body = (request.body ?? {}) as Record<string, unknown>
+        return await handler(runId, body)
+      } catch (error) {
+        if (error instanceof CredentialRefused) {
+          return reply.code(error.status).send({ error: error.message })
+        }
+        // Anything else is ours, not the run's; do not leak the internals to a container.
+        process.stderr.write(`[broker] internal error: ${String(error)}\n`)
+        return reply.code(500).send({ error: 'credential broker failed' })
+      }
+    }
+  }
+
+  app.post(
+    '/internal/creds/git',
+    brokered((runId, body) => broker.git(runId, String(body['host'] ?? ''))),
+  )
+  app.post(
+    '/internal/creds/seat',
+    brokered((runId, body) => broker.seat(runId, String(body['harness'] ?? ''))),
+  )
+  app.post(
+    '/internal/creds/mcp',
+    brokered((runId, body) => broker.mcp(runId, String(body['serverId'] ?? ''))),
+  )
+  app.post(
+    '/internal/creds/secrets',
+    brokered((runId, body) => broker.secrets(runId, body['stage'] as never)),
   )
 
   /**

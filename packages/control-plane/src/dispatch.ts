@@ -298,6 +298,18 @@ async function executeInDocker(args: {
             '--events',
             '/run/exchange/events.jsonl',
           ],
+      /**
+       * What a run is allowed to hold.
+       *
+       * **Only its own run token**, once a token registry exists. Everything else — the
+       * GitHub credential, every MCP token, the harness seat material — is fetched from the
+       * broker over HTTPS with that bearer. Before B3 they all travelled here, where the
+       * model-authored code in the container could read them and, on Fargate, where anyone
+       * with `ecs:DescribeTasks` could read them from the console.
+       *
+       * The fallbacks below only apply when there is no registry, which is the local
+       * develop-the-adapter path.
+       */
       env: {
         ...(eventChannel
           ? {
@@ -305,18 +317,30 @@ async function executeInDocker(args: {
               INTELLIDEV_RUN_TOKEN: eventChannel.token,
             }
           : {}),
-        ...(config.githubToken ? { INTELLIDEV_GITHUB_TOKEN: config.githubToken } : {}),
+        ...(eventChannel
+          ? {}
+          : config.githubToken
+            ? { INTELLIDEV_GITHUB_TOKEN: config.githubToken }
+            : {}),
         // A bind-mounted origin is owned by the host uid, not the container's, so git
         // refuses it as "dubious ownership". Scoped to the local bind-mount case rather
         // than baked into the image: a real run clones over HTTPS, where the check is a
         // genuine protection and should keep firing.
         ...(config.extraMounts?.length ? { INTELLIDEV_GIT_SAFE_DIRECTORY: '*' } : {}),
-        ...mcpTokenEnv(servers),
-        // The drivers spawn a harness with `{ ...process.env, ...req.env }`, so anything set
-        // on the container reaches it. That is how a provider key gets in without the adapter
-        // needing to know which providers exist.
-        ...(config.harnessEnv ?? {}),
-        ...(seat ? { INTELLIDEV_SEAT_MATERIAL: JSON.stringify({ [spec.harness]: seat }) } : {}),
+        // MCP tokens, provider keys and seat material are all broker-served now. They are
+        // still passed on the local path, where there is no broker to ask.
+        ...(eventChannel
+          ? {}
+          : {
+              ...mcpTokenEnv(servers),
+              // The drivers spawn a harness with `{ ...process.env, ...req.env }`, so
+              // anything set here reaches it — which is how a provider key got in without
+              // the adapter knowing which providers exist.
+              ...(config.harnessEnv ?? {}),
+              ...(seat
+                ? { INTELLIDEV_SEAT_MATERIAL: JSON.stringify({ [spec.harness]: seat }) }
+                : {}),
+            }),
       },
       // Fargate has none of this: the spec and bundle arrive over HTTPS, and C3 replaces
       // the cache volume with an S3 prefix. Passing them would make FargateRunner throw.
@@ -718,8 +742,12 @@ function buildRunSpec(args: {
       tokensMax: 2_000_000,
       usdEstMax: 5,
     },
-    controlPlaneUrl: config.publicUrl,
-    streamUrl: `${config.publicUrl.replace(/^http/, 'ws')}/runs/${run}/stream`,
+    // Rewritten for the runtime, exactly as the event socket URL is: a container's
+    // localhost is its own, so an unrewritten loopback address looks simply dead — and the
+    // broker being unreachable is the difference between an unauthenticated run and a
+    // working one.
+    controlPlaneUrl: containerReachableUrl(config.publicUrl, config.mode),
+    streamUrl: `${containerReachableUrl(config.publicUrl, config.mode).replace(/^http/, 'ws')}/runs/${run}/stream`,
     brokerSocket: join(config.workRoot, `${run}.broker.sock`),
   })
 }

@@ -8,6 +8,7 @@ import {
   LocalSpecProvider,
   UrlSpecProvider,
 } from '../bootstrap/providers.js'
+import { ControlPlaneProvider } from '../credentials/control-plane.js'
 import { materialiseBundle } from '../bootstrap/bundle.js'
 import { WebSocketEventSink } from '../bootstrap/ws-sink.js'
 import type { EventReplaySource } from '../bootstrap/run.js'
@@ -83,13 +84,37 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
   // process exiting and dropping whatever was still unacknowledged.
   let liveSink: WebSocketEventSink | undefined
 
+  /**
+   * Where credentials come from.
+   *
+   * With a run token, the control plane's broker — which is the point of B3: the container
+   * holds one bearer scoped to this run and *asks* for the rest, instead of carrying the
+   * GitHub token, every MCP token and the harness seat material in its environment where
+   * model-authored code can read them.
+   *
+   * Without one, the local provider, which reads the developer's own environment. Kept as a
+   * separate class rather than a flag so nothing about it can be reached by accident in a
+   * deployed run.
+   */
+  const credentials =
+    runToken && spec.controlPlaneUrl
+      ? new ControlPlaneProvider({
+          baseUrl: spec.controlPlaneUrl,
+          runId: spec.runId,
+          runAuth: runToken,
+        })
+      : new LocalCredentialProvider({
+          ...(io.env['INTELLIDEV_GITHUB_TOKEN']
+            ? { githubToken: io.env['INTELLIDEV_GITHUB_TOKEN'] }
+            : {}),
+        })
+  io.stderr(
+    `credentials → ${runToken && spec.controlPlaneUrl ? 'control-plane broker' : 'local environment'}\n`,
+  )
+
   const result = await runAdapter({
     spec,
-    credentials: new LocalCredentialProvider({
-      ...(io.env['INTELLIDEV_GITHUB_TOKEN']
-        ? { githubToken: io.env['INTELLIDEV_GITHUB_TOKEN'] }
-        : {}),
-    }),
+    credentials,
     sink: multiSink(
       consoleSink({ ...(args.verbose ? { verbose: true } : {}) }),
       fileSink(eventLog),
