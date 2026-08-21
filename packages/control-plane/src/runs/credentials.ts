@@ -2,6 +2,7 @@ import type { HarnessId, StageId } from '@intellidev/shared'
 import type { HarnessAccounts } from '../harness/accounts.js'
 import type { Store } from '../store/types.js'
 import type { RunTokenRegistry } from './tokens.js'
+import { AppNotInstalled, type GitHubApp } from '../github/app.js'
 
 /**
  * The credential broker, control-plane side.
@@ -38,7 +39,14 @@ export interface CredentialBrokerOptions {
   readonly accounts: HarnessAccounts
   /** Resolves an upstream MCP server's current token, refreshing if needed. */
   readonly mcpToken: (serverId: string) => Promise<string | undefined>
-  /** The control plane's own GitHub credential. Never leaves this process as-is. */
+  /**
+   * The GitHub App. Preferred over a token when configured.
+   *
+   * Its private key never leaves this process — a run receives a minted installation token
+   * scoped to its own repository, so a compromised run cannot mint more access.
+   */
+  readonly githubApp?: Pick<GitHubApp, 'tokenFor'>
+  /** A personal access token, for local development when no App is configured. */
   readonly githubToken?: string
   /** How long an answer claims to be valid. Short, because a run re-asks cheaply. */
   readonly ttlSeconds?: number
@@ -104,14 +112,41 @@ export class ControlPlaneCredentialBroker {
       )
     }
 
-    if (!this.opts.githubToken) {
-      this.record(runId, 'git', host, false, 'control plane holds no github token')
-      throw new CredentialRefused(404, 'the control plane has no GitHub credential configured')
+    /**
+     * The App first, and the token only as a fallback.
+     *
+     * An installation token is scoped to this one repository and expires in an hour; a PAT
+     * is scoped to everything the person who made it can reach and expires when they
+     * remember. `x-access-token` is the username for both, so nothing downstream changes.
+     */
+    const repo = repoPathOf(task.repoUrl)
+    if (this.opts.githubApp && repo) {
+      try {
+        const minted = await this.opts.githubApp.tokenFor(repo.owner, repo.repo)
+        this.record(runId, 'git', `${repo.owner}/${repo.repo} (app)`, true)
+        return { username: 'x-access-token', password: minted.token, expiresAt: minted.expiresAt }
+      } catch (error) {
+        if (error instanceof AppNotInstalled) {
+          // A 403 with the install link, not a 500: nothing is broken, the App simply has
+          // not been granted access to this repository yet.
+          this.record(runId, 'git', host, false, 'app not installed on this repository')
+          throw new CredentialRefused(403, error.message)
+        }
+        this.record(runId, 'git', host, false, `app token mint failed: ${describe(error)}`)
+        throw new CredentialRefused(404, `could not mint a GitHub token: ${describe(error)}`)
+      }
     }
 
-    this.record(runId, 'git', host, true)
-    // `x-access-token` works for both App installation tokens and PATs, so the shape does
-    // not change when the App key replaces the PAT.
+    if (!this.opts.githubToken) {
+      this.record(runId, 'git', host, false, 'no github app and no token configured')
+      throw new CredentialRefused(
+        404,
+        'the control plane has no GitHub credential: install the GitHub App, or set ' +
+          'INTELLIDEV_GITHUB_TOKEN for local development',
+      )
+    }
+
+    this.record(runId, 'git', host, true, 'via personal access token')
     return { username: 'x-access-token', password: this.opts.githubToken, expiresAt: this.expiry() }
   }
 
@@ -221,6 +256,27 @@ function hostOf(repoUrl: string): string | undefined {
     const scp = /^[^@]+@([^:]+):/.exec(repoUrl)
     return scp?.[1] ? normaliseHost(scp[1]) : undefined
   }
+}
+
+/** `owner` and `repo` from a repository URL, for scoping an installation token. */
+function repoPathOf(repoUrl: string): { owner: string; repo: string } | undefined {
+  const path = (() => {
+    try {
+      return new URL(repoUrl).pathname
+    } catch {
+      // `git@github.com:owner/repo.git`
+      return /^[^@]+@[^:]+:(.+)$/.exec(repoUrl)?.[1]
+    }
+  })()
+  const parts = (path ?? '')
+    .replace(/^\//, '')
+    .replace(/\.git$/, '')
+    .split('/')
+  return parts.length >= 2 && parts[0] && parts[1] ? { owner: parts[0], repo: parts[1] } : undefined
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function normaliseHost(host: string): string {

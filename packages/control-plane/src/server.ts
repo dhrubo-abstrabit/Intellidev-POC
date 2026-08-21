@@ -22,6 +22,7 @@ import { AgentEvent } from '@intellidev/shared'
 import { InMemoryStore, type Store, type TaskRow } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { ControlPlaneCredentialBroker, CredentialRefused } from './runs/credentials.js'
+import { gitHubAppFromEnv } from './github/app.js'
 
 /**
  * The control plane, cut to what a UI needs to be useful: create a task, dispatch it, watch
@@ -475,6 +476,10 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    *
    * This is what lets a container hold nothing but its run token: B3's whole point.
    */
+  // Configured from the environment, so a deployment gains the App by setting two
+  // variables rather than by a code change. Absent locally, where a PAT is enough.
+  const githubApp = gitHubAppFromEnv()
+
   const broker = new ControlPlaneCredentialBroker({
     store,
     tokens,
@@ -487,6 +492,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       // there is one refresh path and D1's single-flight guard covers all of it.
       return (await oauth.accessToken(server)) ?? undefined
     },
+    ...(githubApp ? { githubApp } : {}),
     ...(opts.dispatch.githubToken ? { githubToken: opts.dispatch.githubToken } : {}),
     onGrant: (grant) => {
       // Recorded, because a credential handed out with no trace is indistinguishable from
