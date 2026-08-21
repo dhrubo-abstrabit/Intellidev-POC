@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
+import { loadPdfParse } from "@/lib/pdf/load";
 import { createClient } from "@/lib/supabase/server";
 
 export async function updateProjectContext(
@@ -51,7 +52,7 @@ export async function extractFileText(formData: FormData): Promise<{ text: strin
   const buffer = Buffer.from(await file.arrayBuffer());
 
   if (name.endsWith(".pdf") || file.type === "application/pdf") {
-    const { PDFParse } = await import("pdf-parse");
+    const { PDFParse } = await loadPdfParse();
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();

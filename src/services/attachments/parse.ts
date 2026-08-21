@@ -1,5 +1,6 @@
 import "server-only";
 import { normalizeExtractedText, stripHtml } from "@/connectors/google_drive/text";
+import { loadPdfParse } from "@/lib/pdf/load";
 import type { AttachmentPlan } from "./extract";
 
 export type AttachmentParseOutcome =
@@ -30,7 +31,7 @@ export async function parseAttachmentText(plan: AttachmentPlan, bytes: Buffer, m
     let rawText: string;
     switch (plan.parser) {
       case "pdf": {
-        const { PDFParse } = await import("pdf-parse");
+        const { PDFParse } = await loadPdfParse();
         const parser = new PDFParse({ data: bytes });
         try {
           rawText = (await parser.getText()).text;
