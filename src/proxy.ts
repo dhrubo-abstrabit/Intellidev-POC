@@ -68,7 +68,8 @@ export const config = {
     // Everything except static assets and Next's own internals. Route
     // Handlers under /api/** still pass through here (for cookie refresh)
     // but are never redirected — they authenticate themselves (service role,
-    // QStash/Slack signature verification, or CRON_SECRET), not via cookies.
+    // Slack signature verification, or CRON_SECRET via withJobAuth), not via
+    // cookies.
     "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

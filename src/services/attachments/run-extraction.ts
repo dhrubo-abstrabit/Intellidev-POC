@@ -40,7 +40,7 @@ const MAX_ATTACHMENT_CHAIN_DEPTH = 5;
 
 type IntegrationRow = Pick<
   Database["public"]["Tables"]["integrations"]["Row"],
-  "id" | "workspace_id" | "project_id" | "provider" | "credential_id" | "config"
+  "id" | "workspace_id" | "client_space_id" | "provider" | "credential_id" | "config"
 >;
 
 type PendingAttachmentRow = Pick<
@@ -59,9 +59,9 @@ export interface RunAttachmentExtractionResult {
  * LLM job — the same handoff run-sync.ts used to do itself before attachment
  * processing existed, now owned by this job so extraction never fires before
  * this run's attachments have had a chance to be downloaded/parsed. */
-async function settleAndTrigger(service: ServiceClient, integration: Pick<IntegrationRow, "id" | "project_id">, batchDate: string): Promise<void> {
+async function settleAndTrigger(service: ServiceClient, integration: Pick<IntegrationRow, "id" | "client_space_id">, batchDate: string): Promise<void> {
   const settled = await settleBatchMembership(service, {
-    projectId: integration.project_id,
+    clientSpaceId: integration.client_space_id,
     integrationId: integration.id,
     batchDate,
     outcome: "succeeded",
@@ -78,12 +78,12 @@ async function settleAndTrigger(service: ServiceClient, integration: Pick<Integr
       // hands off to this job at all when it decided this run had something
       // worth extracting, and triggerDailyExtraction is idempotent
       // (processed_at-gated), so an extra call here is harmless.
-      await triggerDailyExtraction(service, integration.project_id, batchDate);
+      await triggerDailyExtraction(service, integration.client_space_id, batchDate);
     }
   } else {
     // Not part of any active batch (e.g. a manual "Sync Now" outside a batch
     // window) — same "no gate needed" reasoning as above.
-    await triggerDailyExtraction(service, integration.project_id, batchDate);
+    await triggerDailyExtraction(service, integration.client_space_id, batchDate);
   }
 }
 
@@ -106,7 +106,7 @@ export async function runAttachmentExtraction(
 
   const { data: integration } = await service
     .from("integrations")
-    .select("id, workspace_id, project_id, provider, credential_id, config")
+    .select("id, workspace_id, client_space_id, provider, credential_id, config")
     .eq("id", integrationId)
     .maybeSingle();
   if (!integration) {
@@ -251,8 +251,7 @@ async function processOne(
   }
 
   const storagePath = attachmentStoragePath({
-    workspaceId: integration.workspace_id,
-    projectId: integration.project_id,
+    clientSpaceId: integration.client_space_id,
     normalizedEventId: attachment.normalized_event_id,
     attachmentId: attachment.id,
   });

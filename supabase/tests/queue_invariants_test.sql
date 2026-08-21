@@ -1,5 +1,5 @@
 -- pgTAP invariants for the pgmq/pg_cron job queue (see
--- supabase/migrations/20260811100000_pgmq_pg_cron.sql). Run with
+-- supabase/migrations/20260820101500_pgmq_pg_cron.sql). Run with
 -- `supabase test db` (requires the local stack: `supabase start`).
 
 begin;
@@ -12,7 +12,8 @@ select plan(10);
 --    written (true on the local Docker image's own bootstrap, NOT true on
 --    a hosted project that predates pg_net being enabled by default — see
 --    20260811110000_pg_net_extension.sql), and nothing else here would
---    have caught that gap before it reached production.
+--    have caught that gap before it reached production. pg_net is now
+--    created in 20260820100100_extensions.sql, ahead of this migration.
 select ok(
   exists(select 1 from pg_extension where extname = 'pg_cron'),
   'pg_cron extension is installed'

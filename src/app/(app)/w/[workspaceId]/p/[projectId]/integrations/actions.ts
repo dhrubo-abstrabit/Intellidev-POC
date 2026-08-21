@@ -2,7 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { requireUser, assertProjectMembership } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { assertProjectScope } from "@/lib/scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { createOAuthState } from "@/lib/oauth/state";
 import { isOAuthProvider } from "@/lib/oauth/providers";
@@ -86,7 +87,7 @@ function parseGoogleFieldsFromFormData(formData: FormData): Record<string, unkno
  * Google Drive, Google Chat) — adding a new one needs no new action here. */
 export async function connectProvider(provider: string, workspaceId: string, projectId: string): Promise<void> {
   await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  await assertProjectScope(workspaceId, projectId);
 
   if (!isOAuthProvider(provider)) {
     throw new Error(`"${provider}" is not an OAuth-based connector.`);
@@ -98,13 +99,13 @@ export async function connectProvider(provider: string, workspaceId: string, pro
 
 export async function connectMock(workspaceId: string, projectId: string): Promise<{ message: string }> {
   const user = await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
   const { error } = await service.from("integrations").upsert(
     {
+      client_space_id: scope.clientSpaceId,
       workspace_id: workspaceId,
-      project_id: projectId,
       credential_id: null,
       provider: "mock",
       status: "connected",
@@ -112,7 +113,7 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
       connected_by: user.id,
       last_error: null,
     },
-    { onConflict: "project_id,provider,credential_id" },
+    { onConflict: "client_space_id,provider,credential_id" },
   );
   if (error) {
     throw new Error("Could not connect the mock integration.");
@@ -120,6 +121,7 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
 
   await service.from("audit_logs").insert({
     workspace_id: workspaceId,
+    client_space_id: scope.clientSpaceId,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",
@@ -135,16 +137,14 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
 
 export async function syncNow(workspaceId: string, projectId: string, integrationId: string): Promise<{ message: string }> {
   await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  await assertProjectScope(workspaceId, projectId);
 
-  // With JOB_BACKEND=qstash, this publishes to Upstash, which then calls our
-  // own /api/jobs/sync back over the public internet — that only actually
-  // delivers once NEXT_PUBLIC_APP_URL is reachable from Upstash (i.e.
-  // deployed, or tunneled). Against a bare `localhost` dev server, Upstash
-  // rejects the publish outright ("endpoint resolves to a loopback
-  // address"), so this is caught and surfaced as a normal thrown error
-  // rather than an unhandled QstashError. JOB_BACKEND=pgmq has no such
-  // restriction — see src/lib/queue/index.ts.
+  // Publishes onto pgmq, which pg_cron's dispatcher drains every few seconds
+  // and delivers to /api/jobs/sync as a net.http_post — see
+  // src/lib/queue/index.ts and the pgmq/pg_cron migration. Any enqueue
+  // failure (e.g. the local Postgres image not having pgmq's Vault secrets
+  // seeded — see supabase/local-dispatch-secrets.sql) is caught and surfaced
+  // as a normal thrown error rather than an unhandled rejection.
   try {
     await enqueueJob("/api/jobs/sync", { integrationId, trigger: "manual" });
   } catch (err) {
@@ -162,14 +162,14 @@ export async function disconnectIntegration(
   integrationId: string,
 ): Promise<{ message: string }> {
   const user = await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
   const { data: integration } = await service
     .from("integrations")
     .select("id, provider, credential_id")
     .eq("id", integrationId)
-    .eq("project_id", projectId)
+    .eq("client_space_id", scope.clientSpaceId)
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (!integration) {
@@ -221,6 +221,7 @@ export async function disconnectIntegration(
 
   await service.from("audit_logs").insert({
     workspace_id: workspaceId,
+    client_space_id: scope.clientSpaceId,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",
@@ -251,14 +252,14 @@ export async function saveIntegrationConfig(
   formData: FormData,
 ): Promise<SaveIntegrationConfigResult> {
   const user = await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
   const { data: integration } = await service
     .from("integrations")
-    .select("id, workspace_id, project_id, provider, credential_id, status, config")
+    .select("id, workspace_id, client_space_id, provider, credential_id, status, config")
     .eq("id", integrationId)
-    .eq("project_id", projectId)
+    .eq("client_space_id", scope.clientSpaceId)
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (!integration) {
@@ -362,6 +363,7 @@ export async function saveIntegrationConfig(
 
   await service.from("audit_logs").insert({
     workspace_id: workspaceId,
+    client_space_id: integration.client_space_id,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",

@@ -1,6 +1,7 @@
 "use server";
 
-import { requireUser, assertProjectMembership } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { assertProjectScope } from "@/lib/scope";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 
@@ -31,15 +32,14 @@ export async function getAttachmentPreviewUrl(
   attachmentId: string,
 ): Promise<{ url: string }> {
   await requireUser();
-  await assertProjectMembership(workspaceId, projectId);
+  const scope = await assertProjectScope(workspaceId, projectId);
 
   const supabase = await createClient();
   const { data: attachment } = await supabase
     .from("event_attachments")
     .select("storage_path, status")
     .eq("id", attachmentId)
-    .eq("workspace_id", workspaceId)
-    .eq("project_id", projectId)
+    .eq("client_space_id", scope.clientSpaceId)
     .maybeSingle();
   if (!attachment) throw new Error("Attachment not found.");
   if (!attachment.storage_path) throw new Error("This attachment hasn't been downloaded yet.");

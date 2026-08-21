@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { ChevronDownIcon } from "lucide-react";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "@/components/ui/collapsible";
 import { ProviderBadge } from "@/components/items/provider-badge";
 import { PriorityBadge, StatusBadge } from "@/components/items/status-badge";
 import { AttachmentRow } from "@/components/items/attachment-row";
@@ -14,6 +16,15 @@ import { extractActionItemsForDay } from "./actions";
 import type { DayActionPoint, DayEvent } from "./types";
 
 type Focus = { kind: "event" | "item"; id: string } | null;
+
+// Gmail and Drive bodies routinely run to thousands of characters (even after
+// normalize.ts's own clamp) and dominate the message list's height — every
+// other provider's body is short enough that hiding it by default would just
+// cost an extra click for no space savings.
+function isLongBodyProvider(provider: DayEvent["provider"], service: DayEvent["service"]): boolean {
+  if (provider === "gmail" || provider === "google_drive") return true;
+  return provider === "google" && (service === "gmail" || service === "drive");
+}
 
 /**
  * The two-column message <-> action-point panel, and the only client
@@ -85,50 +96,92 @@ export function DayLinkage({
           {events.length === 0 ? (
             <p className="text-sm text-muted-foreground">No messages for this day and connector.</p>
           ) : (
-            events.map((event) => (
-              // A <div role="button">, not a real <button> — AttachmentRow's
-              // own Preview control is a real <button>, and nesting a
-              // <button> inside a <button> is invalid HTML that browsers
-              // silently mangle (the inner control loses its click). Keyboard
-              // activation (Enter/Space) is wired by hand to keep the same
-              // affordance a native button gave for free.
-              <div
-                key={event.id}
-                role="button"
-                tabIndex={0}
-                data-testid={`event-${event.id}`}
-                onClick={() => toggle({ kind: "event", id: event.id })}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter" && e.key !== " ") return;
-                  e.preventDefault();
-                  toggle({ kind: "event", id: event.id });
-                }}
-                className={cn(
-                  "w-full cursor-pointer rounded-lg bg-muted/30 p-2.5 text-left text-sm ring-1 ring-foreground/10 transition-all",
-                  eventClass(event.id),
-                )}
-              >
+            events.map((event) => {
+              const collapsible = isLongBodyProvider(event.provider, event.service);
+              const hasBody = Boolean(event.body) || event.attachments.length > 0;
+
+              const header = (
                 <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1.5">
                     <ProviderBadge provider={event.provider} service={event.service} />
                     {projectTimeLabel(event.occurredAt, timezone)}
                   </span>
-                  {!event.processed ? (
-                    <span className="text-muted-foreground/70">Not yet processed</span>
-                  ) : null}
+                  <span className="flex items-center gap-1.5">
+                    {!event.processed ? (
+                      <span className="text-muted-foreground/70">Not yet processed</span>
+                    ) : null}
+                    {collapsible && hasBody ? (
+                      <CollapsibleTrigger
+                        aria-label="Toggle message body"
+                        data-testid={`toggle-body-${event.id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className="flex size-5 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <ChevronDownIcon className="size-3.5 transition-transform group-data-panel-open:rotate-180" />
+                      </CollapsibleTrigger>
+                    ) : null}
+                  </span>
                 </div>
+              );
+
+              const actorLine = (
                 <p className="mt-1 font-medium text-foreground">
                   {event.actorDisplay ?? event.actor ?? "Unknown"}
                   {event.title ? <span className="text-muted-foreground"> · {event.title}</span> : null}
                 </p>
-                {event.body ? (
-                  <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p>
-                ) : null}
-                {event.attachments.map((attachment) => (
-                  <AttachmentRow key={attachment.id} attachment={attachment} workspaceId={workspaceId} projectId={projectId} />
-                ))}
-              </div>
-            ))
+              );
+
+              const body = (
+                <>
+                  {event.body ? (
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">{event.body}</p>
+                  ) : null}
+                  {event.attachments.map((attachment) => (
+                    <AttachmentRow key={attachment.id} attachment={attachment} workspaceId={workspaceId} projectId={projectId} />
+                  ))}
+                </>
+              );
+
+              return (
+                // A <div role="button">, not a real <button> — AttachmentRow's
+                // own Preview control is a real <button>, and nesting a
+                // <button> inside a <button> is invalid HTML that browsers
+                // silently mangle (the inner control loses its click). Keyboard
+                // activation (Enter/Space) is wired by hand to keep the same
+                // affordance a native button gave for free.
+                <div
+                  key={event.id}
+                  role="button"
+                  tabIndex={0}
+                  data-testid={`event-${event.id}`}
+                  onClick={() => toggle({ kind: "event", id: event.id })}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    toggle({ kind: "event", id: event.id });
+                  }}
+                  className={cn(
+                    "w-full cursor-pointer rounded-lg bg-muted/30 p-2.5 text-left text-sm ring-1 ring-foreground/10 transition-all",
+                    eventClass(event.id),
+                  )}
+                >
+                  {collapsible ? (
+                    <Collapsible defaultOpen={false}>
+                      {header}
+                      {actorLine}
+                      {hasBody ? <CollapsiblePanel>{body}</CollapsiblePanel> : null}
+                    </Collapsible>
+                  ) : (
+                    <>
+                      {header}
+                      {actorLine}
+                      {body}
+                    </>
+                  )}
+                </div>
+              );
+            })
           )}
         </CardContent>
       </Card>

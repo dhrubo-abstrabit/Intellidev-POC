@@ -2,8 +2,10 @@ import Link from "next/link";
 import { PlusIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { notFound } from "next/navigation";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
+import { resolveProjectScope } from "@/lib/scope";
 
 export default async function ProjectOverviewPage({
   params,
@@ -11,13 +13,22 @@ export default async function ProjectOverviewPage({
   params: Promise<{ workspaceId: string; projectId: string }>;
 }) {
   const { workspaceId, projectId } = await params;
+
+  // Integrations key on client_space_id now, not project_id — action_items
+  // still carries project_id directly, so only the integrations query below
+  // needs the resolved scope.
+  const scope = await resolveProjectScope(workspaceId, projectId);
+  if (!scope) {
+    notFound();
+  }
+
   const supabase = await createClient();
 
   const [{ data: integrations }, { count: pendingCount }] = await Promise.all([
     supabase
       .from("integrations")
       .select("id, provider, status, last_sync_succeeded_at")
-      .eq("project_id", projectId),
+      .eq("client_space_id", scope.clientSpaceId),
     supabase
       .from("action_items")
       .select("id", { count: "exact", head: true })

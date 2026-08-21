@@ -29,7 +29,8 @@ async function handler(request: NextRequest) {
   }
 
   const result = await runSync(body.integrationId, body.trigger ?? "schedule", body.chainDepth ?? 0, body.batchDate);
-  // A non-2xx tells QStash to retry per the message's retry policy — only
+  // A non-2xx tells withJobAuth to fail_job (which pg_cron's dispatcher then
+  // redelivers with backoff — see the pgmq/pg_cron migration) — only
   // "failed" (an actual error) should trigger that; "skipped" (another sync
   // already in flight) is a legitimate no-op.
   return NextResponse.json(result, { status: result.status === "failed" ? 500 : 200 });

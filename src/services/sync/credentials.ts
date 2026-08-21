@@ -9,7 +9,7 @@ import type { Database } from "@/lib/db/database.types";
 type ServiceClient = ReturnType<typeof createServiceClient>;
 export type IntegrationRow = Pick<
   Database["public"]["Tables"]["integrations"]["Row"],
-  "id" | "workspace_id" | "project_id" | "provider" | "credential_id"
+  "id" | "workspace_id" | "client_space_id" | "provider" | "credential_id"
 >;
 
 // How much runway before an access token's real expiry we treat it as

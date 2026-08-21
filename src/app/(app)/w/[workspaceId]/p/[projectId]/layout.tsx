@@ -13,7 +13,10 @@ export default async function ProjectLayout({
 
   // RLS scopes `projects` to the caller's workspaces, so a projectId from
   // another tenant (or a mismatched workspaceId in the URL) comes back empty
-  // rather than needing a separate ownership check.
+  // rather than needing a separate ownership check. `projects` itself is
+  // unaffected by the 4-level rescope — it still carries id/name/workspace_id
+  // directly; only child tables (integrations, events, ...) moved to
+  // client_space_id (see src/lib/scope.ts for where that matters).
   const { data: project } = await supabase
     .from("projects")
     .select("id, name")

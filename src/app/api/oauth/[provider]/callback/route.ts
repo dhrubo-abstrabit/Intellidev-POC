@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
+import { resolveProjectScope } from "@/lib/scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { verifyOAuthState } from "@/lib/oauth/state";
 import { isOAuthProvider } from "@/lib/oauth/providers";
@@ -62,19 +62,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const user = await requireUser();
 
-  // The user-scoped client enforces `is_workspace_member` via RLS on the
-  // `projects` select policy — a forged/stale state token pointing at a
-  // workspace this user isn't in legitimately comes back empty here.
-  const supabase = await createClient();
-  const { data: project } = await supabase
-    .from("projects")
-    .select("id, workspace_id")
-    .eq("id", projectId)
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
-  if (!project) {
+  // resolveProjectScope's user-scoped lookup enforces `current_project_ids()`
+  // via RLS on the `projects` select policy — a forged/stale state token
+  // pointing at a workspace this user isn't in legitimately comes back empty
+  // here. Also resolves clientSpaceId, which every write below now scopes to
+  // instead of projectId — connector_credentials, integrations and every
+  // downstream data table key on client_space_id, not project_id (see
+  // supabase/migrations/20260820100600_client_spaces.sql).
+  const scope = await resolveProjectScope(workspaceId, projectId);
+  if (!scope) {
     return NextResponse.redirect(`${origin}/w/${workspaceId}?error=project_not_found`);
   }
+  const { clientSpaceId } = scope;
 
   const connector = getConnector(provider);
 
@@ -92,11 +91,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // binding in sealTokens is keyed on credentialId, and blindly upserting a
   // fresh id into a row an old (e.g. disconnected) `integrations` row still
   // references by credential_id would try to change a primary key a live
-  // foreign key still points at — Postgres rejects that outright.
+  // foreign key still points at — Postgres rejects that outright. Scoped to
+  // client_space_id, not workspace_id: connector_credentials'
+  // unique(client_space_id, provider, external_account_id) is the actual
+  // uniqueness boundary now (see 20260820100800_integrations.sql) — under the
+  // old workspace-scoped grant, one Slack team backed every project in a
+  // workspace from one row; each project's client space now needs its own
+  // grant, so reuse only applies within this one client space.
   const { data: existingCredential } = await service
     .from("connector_credentials")
     .select("id")
-    .eq("workspace_id", workspaceId)
+    .eq("client_space_id", clientSpaceId)
     .eq("provider", provider)
     .eq("external_account_id", credentials.externalAccountId)
     .maybeSingle();
@@ -104,6 +109,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const credentialId = existingCredential?.id ?? uuidv7();
   const sealed = sealTokens(credentials.tokens, workspaceId, credentialId);
   const credentialFields = {
+    client_space_id: clientSpaceId,
     workspace_id: workspaceId,
     provider,
     external_account_id: credentials.externalAccountId,
@@ -147,8 +153,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // disconnect+reconnect. The column default `'{}'` covers a fresh insert.
   const { error: integrationError } = await service.from("integrations").upsert(
     {
+      client_space_id: clientSpaceId,
       workspace_id: workspaceId,
-      project_id: projectId,
       credential_id: upsertedCredential.id,
       provider,
       status: initialStatus,
@@ -156,7 +162,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       connected_by: user.id,
       last_error: isValid ? null : "Post-connect validation failed",
     },
-    { onConflict: "project_id,provider,credential_id" },
+    { onConflict: "client_space_id,provider,credential_id" },
   );
 
   if (integrationError) {
@@ -167,6 +173,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   await service.from("audit_logs").insert({
     workspace_id: workspaceId,
+    client_space_id: clientSpaceId,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",

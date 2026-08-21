@@ -3,10 +3,9 @@ import { createServiceClient } from "@/lib/supabase/service";
 import type { Json } from "@/lib/db/database.types";
 
 /**
- * pgmq-backed counterpart to src/lib/queue/qstash.ts's publishJob — same job
- * semantics (at-least-once delivery, retries with backoff, a bounded number
- * of attempts before dead-lettering), different transport. See
- * supabase/migrations/20260811100000_pgmq_pg_cron.sql for the Postgres side
+ * The job queue transport: at-least-once delivery, retries with backoff, a
+ * bounded number of attempts before dead-lettering. See
+ * supabase/migrations/20260820101500_pgmq_pg_cron.sql for the Postgres side
  * (the `jobs` queue, and pg_cron's dispatch_jobs() which reads it and calls
  * the job routes over HTTP).
  *

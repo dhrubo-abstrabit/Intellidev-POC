@@ -10,14 +10,15 @@ const ATTACHMENTS_BUCKET = "attachments";
 
 /** Path convention documented on the migration's bucket comment — keeping
  * the builder here (not duplicated at each call site) is what makes that
- * comment stay true. */
+ * comment stay true. `{client_space_id}/{normalized_event_id}/{attachment_id}`
+ * per 20260820101000_events.sql — attachments key on client_space_id now,
+ * not workspace_id/project_id. */
 export function attachmentStoragePath(params: {
-  workspaceId: string;
-  projectId: string;
+  clientSpaceId: string;
   normalizedEventId: string;
   attachmentId: string;
 }): string {
-  return `${params.workspaceId}/${params.projectId}/${params.normalizedEventId}/${params.attachmentId}`;
+  return `${params.clientSpaceId}/${params.normalizedEventId}/${params.attachmentId}`;
 }
 
 export async function uploadAttachmentBytes(

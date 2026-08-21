@@ -4,19 +4,17 @@ import { runSync } from "./run-sync";
 
 /**
  * Exercises the real fetch -> raw_events -> normalize -> normalized_events
- * -> cursor pipeline against the cloud Supabase project (vitest.integration.config.ts
- * loads .env.local, which points here — see CLAUDE.md), using the mock
- * connector so it needs no network access and no live OAuth grant. Calls
- * runSync() directly rather than through a queue round-trip, so it's
- * agnostic to JOB_BACKEND — driving the actual queue (either QStash, whose
- * callback can't reach a bare `localhost` dev server, or pgmq, which can —
- * see src/lib/queue/index.ts) is exercised manually, not by this test.
+ * -> cursor pipeline against the real local Supabase instance (see
+ * vitest.integration.config.ts), using the mock connector so it needs no
+ * network access and no live OAuth grant. Calls runSync() directly rather
+ * than through a queue round-trip — driving the actual pgmq/pg_cron queue
+ * (src/lib/queue/index.ts) is exercised manually, not by this test.
  */
 describe("runSync (mock connector, real local DB)", () => {
   const service = createServiceClient();
   let userId: string;
-  let workspaceId: string;
-  let projectId: string;
+  let tenantId: string;
+  let clientSpaceId: string;
   let integrationId: string;
 
   beforeAll(async () => {
@@ -29,27 +27,47 @@ describe("runSync (mock connector, real local DB)", () => {
     if (authError || !authUser.user) throw new Error(`Failed to create test user: ${authError?.message}`);
     userId = authUser.user.id;
 
-    const { data: workspace, error: workspaceError } = await service
-      .from("workspaces")
+    // Full 4-level chain: a workspace can't exist without a tenant above it,
+    // and an integration can't exist without a client space above it (see
+    // src/lib/scope.ts). handle_new_tenant/handle_new_workspace populate
+    // tenant_admins/workspace_members atomically, so no separate membership
+    // insert is needed here.
+    const { data: tenant, error: tenantError } = await service
+      .from("tenants")
       .insert({ name: "Sync Integration Test", slug: `sync-itest-${Date.now()}`, owner_id: userId })
       .select("id")
       .single();
+    if (tenantError || !tenant) throw new Error(`Failed to create test tenant: ${tenantError?.message}`);
+    tenantId = tenant.id;
+
+    const { data: workspace, error: workspaceError } = await service
+      .from("workspaces")
+      .insert({ tenant_id: tenantId, name: "Sync Integration Test", slug: `sync-itest-${Date.now()}`, owner_id: userId })
+      .select("id")
+      .single();
     if (workspaceError || !workspace) throw new Error(`Failed to create test workspace: ${workspaceError?.message}`);
-    workspaceId = workspace.id;
+    const workspaceId = workspace.id;
+
+    const { data: clientSpace, error: clientSpaceError } = await service
+      .from("client_spaces")
+      .insert({ workspace_id: workspaceId, tenant_id: tenantId, name: "Test Client Space", slug: "test-client-space" })
+      .select("id")
+      .single();
+    if (clientSpaceError || !clientSpace) throw new Error(`Failed to create test client space: ${clientSpaceError?.message}`);
+    clientSpaceId = clientSpace.id;
 
     const { data: project, error: projectError } = await service
       .from("projects")
-      .insert({ workspace_id: workspaceId, name: "Test Project", slug: "test-project", created_by: userId })
+      .insert({ client_space_id: clientSpaceId, workspace_id: workspaceId, name: "Test Project", slug: "test-project", created_by: userId })
       .select("id")
       .single();
     if (projectError || !project) throw new Error(`Failed to create test project: ${projectError?.message}`);
-    projectId = project.id;
 
     const { data: integration, error: integrationError } = await service
       .from("integrations")
       .insert({
+        client_space_id: clientSpaceId,
         workspace_id: workspaceId,
-        project_id: projectId,
         provider: "mock",
         status: "connected",
         display_name: "Mock (sample data)",
@@ -62,9 +80,11 @@ describe("runSync (mock connector, real local DB)", () => {
   });
 
   afterAll(async () => {
-    // Cascades through workspace_members, projects, integrations, sync_jobs,
-    // raw_events, normalized_events, integration_cursors.
-    await service.from("workspaces").delete().eq("id", workspaceId);
+    // Deleting the tenant cascades through workspaces, client_spaces,
+    // projects, integrations, sync_jobs, raw_events, normalized_events,
+    // integration_cursors, event_attachments, and tenant_admins/
+    // workspace_members.
+    await service.from("tenants").delete().eq("id", tenantId);
     await service.auth.admin.deleteUser(userId);
   });
 
@@ -170,8 +190,8 @@ describe("runSync (mock connector, real local DB)", () => {
   });
 
   it("re-running fetchSince with the SAME cursor is a safe no-op (idempotent re-delivery)", async () => {
-    // Simulate a QStash at-least-once redelivery by resetting the cursor
-    // back to what it was before the second run, then re-running.
+    // Simulate an at-least-once redelivery by resetting the cursor back to
+    // what it was before the second run, then re-running.
     await service
       .from("integration_cursors")
       .update({ cursor: { seq: 5 } })

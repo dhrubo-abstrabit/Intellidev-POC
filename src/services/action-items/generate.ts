@@ -72,14 +72,16 @@ type UnprocessedEventRow = Pick<
 >;
 
 /** Pages through every unprocessed event whose occurred_at falls on `date`
- * in the project's own timezone. utcWindowForDay bounds the query loosely
- * (a UTC day either side of the nominal date, to guarantee it contains the
- * whole local day at any offset); projectDayKey then buckets precisely —
- * see src/lib/date/project-day.ts's own doc comment for why this two-step
- * shape is necessary (PostgREST can't express the timezone conversion). */
+ * in the client space's own timezone. utcWindowForDay bounds the query
+ * loosely (a UTC day either side of the nominal date, to guarantee it
+ * contains the whole local day at any offset); projectDayKey then buckets
+ * precisely — see src/lib/date/project-day.ts's own doc comment for why this
+ * two-step shape is necessary (PostgREST can't express the timezone
+ * conversion). Events key on client_space_id, not project_id — see
+ * supabase/migrations/20260820101000_events.sql. */
 async function fetchUnprocessedEventsForDay(
   service: ServiceClient,
-  projectId: string,
+  clientSpaceId: string,
   date: string,
   timezone: string,
 ): Promise<UnprocessedEventRow[]> {
@@ -90,7 +92,7 @@ async function fetchUnprocessedEventsForDay(
     const { data, error } = await service
       .from("normalized_events")
       .select("id, type, actor_display, actor, title, body, occurred_at")
-      .eq("project_id", projectId)
+      .eq("client_space_id", clientSpaceId)
       .is("processed_at", null)
       .gte("occurred_at", gte)
       .lt("occurred_at", lt)
@@ -147,26 +149,37 @@ interface LoadedContext {
   eventIds: string[];
 }
 
-async function loadContext(
-  service: ServiceClient,
-  project: Pick<Database["public"]["Tables"]["projects"]["Row"], "id" | "name" | "description" | "timezone">,
-  date: string,
-): Promise<LoadedContext | null> {
-  const eventRows = await fetchUnprocessedEventsForDay(service, project.id, date, project.timezone);
+interface ClientSpaceProjectContext {
+  clientSpaceId: string;
+  timezone: string;
+  /** The client space's sole project (see generateActionItems' doc comment)
+   * — only its name/description feed the prompt, exactly as when `projects`
+   * carried its own timezone directly. */
+  project: Pick<Database["public"]["Tables"]["projects"]["Row"], "id" | "name" | "description">;
+}
+
+async function loadContext(service: ServiceClient, ctx: ClientSpaceProjectContext, date: string): Promise<LoadedContext | null> {
+  const { clientSpaceId, timezone, project } = ctx;
+  const eventRows = await fetchUnprocessedEventsForDay(service, clientSpaceId, date, timezone);
   if (eventRows.length === 0) return null;
 
   const attachmentsByEvent = await fetchExtractedAttachments(service, eventRows.map((e) => e.id));
 
+  // Scoped to the client space, not the project: action_items'
+  // action_items_open_dedupe_uniq is (client_space_id, dedupe_hash), and
+  // events (hence candidate items) are client-space scoped too — an item
+  // tagged to no project (project_id null) is just as much "already open for
+  // this client" as one tagged to this project.
   const { data: openItems } = await service
     .from("action_items")
     .select("id, title, kind, priority")
-    .eq("project_id", project.id)
+    .eq("client_space_id", clientSpaceId)
     .in("status", ["pending", "in_progress"]);
 
   const { data: recentSummaries } = await service
     .from("daily_summaries")
     .select("summary_date, summary")
-    .eq("project_id", project.id)
+    .eq("client_space_id", clientSpaceId)
     .order("summary_date", { ascending: false })
     .limit(3);
 
@@ -179,7 +192,7 @@ async function loadContext(
 
   return {
     base: {
-      project: { id: project.id, name: project.name, description: project.description, timezone: project.timezone },
+      project: { id: project.id, name: project.name, description: project.description, timezone },
       openActionItems,
       recentSummaries: (recentSummaries ?? []).map((s) => ({ date: s.summary_date, summary: s.summary })),
     },
@@ -214,32 +227,50 @@ interface ResolvedItem {
 }
 
 /**
- * Generates (or refines) action items for one project from whatever
+ * Generates (or refines) action items for one client space from whatever
  * normalized_events, across every connector, occurred on `date` in the
- * project's own timezone and haven't been through the model yet. Safe to
- * call repeatedly: events are marked processed_at regardless of whether
+ * client space's own timezone and haven't been through the model yet. Safe
+ * to call repeatedly: events are marked processed_at regardless of whether
  * they produced an item, and items merge onto existing open rows rather
  * than duplicating (see normalizedTitleHash and the consolidation pass
  * above it).
+ *
+ * Runs per CLIENT SPACE, not per project — events, credentials, sync jobs
+ * and daily summaries all key on client_space_id now (see
+ * supabase/migrations/20260820100600_client_spaces.sql). This app
+ * provisions exactly one project per client space (see createProject in
+ * src/app/(app)/w/[workspaceId]/actions.ts), so every created/merged item is
+ * still tagged with that project's id below — that's what keeps Task
+ * Management's per-project `.eq("project_id", ...)` filter working
+ * unchanged.
  *
  * `date` is required and must be computed by the caller at enqueue time
  * (src/services/sync/run-sync.ts / batch.ts) — defaulting to "today" here
  * would be wrong for a job enqueued right before local midnight and
  * executed a few seconds into the next day.
  */
-export async function generateActionItems(projectId: string, date: string): Promise<GenerateActionItemsResult> {
+export async function generateActionItems(clientSpaceId: string, date: string): Promise<GenerateActionItemsResult> {
   const service = createServiceClient();
+
+  const { data: clientSpace } = await service
+    .from("client_spaces")
+    .select("id, workspace_id, timezone")
+    .eq("id", clientSpaceId)
+    .maybeSingle();
+  if (!clientSpace) {
+    return { status: "failed", itemsCreated: 0, itemsMerged: 0, error: "Client space not found" };
+  }
 
   const { data: project } = await service
     .from("projects")
-    .select("id, workspace_id, name, description, timezone")
-    .eq("id", projectId)
+    .select("id, name, description")
+    .eq("client_space_id", clientSpaceId)
     .maybeSingle();
   if (!project) {
-    return { status: "failed", itemsCreated: 0, itemsMerged: 0, error: "Project not found" };
+    return { status: "failed", itemsCreated: 0, itemsMerged: 0, error: "Project not found for this client space" };
   }
 
-  const loaded = await loadContext(service, project, date);
+  const loaded = await loadContext(service, { clientSpaceId, timezone: clientSpace.timezone, project }, date);
   if (!loaded) {
     return { status: "skipped", itemsCreated: 0, itemsMerged: 0 };
   }
@@ -248,8 +279,8 @@ export async function generateActionItems(projectId: string, date: string): Prom
   const { data: run, error: runError } = await service
     .from("llm_runs")
     .insert({
-      workspace_id: project.workspace_id,
-      project_id: project.id,
+      workspace_id: clientSpace.workspace_id,
+      client_space_id: clientSpaceId,
       kind: "action_items",
       status: "running",
       model: "claude-haiku-4-5",
@@ -326,11 +357,14 @@ export async function generateActionItems(projectId: string, date: string): Prom
 
     const validEventIds = new Set(eventIds);
     const candidateHashes = resolvedItems.map((item) => normalizedTitleHash(item.title));
+    // Scoped to the client space: action_items_open_dedupe_uniq is
+    // (client_space_id, dedupe_hash), not (project_id, dedupe_hash) — see
+    // supabase/migrations/20260820101100_ai.sql.
     const { data: existingOpen } = candidateHashes.length
       ? await service
           .from("action_items")
           .select("id, dedupe_hash")
-          .eq("project_id", project.id)
+          .eq("client_space_id", clientSpaceId)
           .in("status", ["pending", "in_progress"])
           .in("dedupe_hash", candidateHashes)
       : { data: [] as { id: string; dedupe_hash: string }[] };
@@ -366,7 +400,7 @@ export async function generateActionItems(projectId: string, date: string): Prom
           ...sourceEventIds.map((eventId) => ({
             action_item_id: existingId,
             normalized_event_id: eventId,
-            workspace_id: project.workspace_id,
+            client_space_id: clientSpaceId,
           })),
         );
         continue;
@@ -375,7 +409,11 @@ export async function generateActionItems(projectId: string, date: string): Prom
       const newId = uuidv7();
       const { error: insertError } = await service.from("action_items").insert({
         id: newId,
-        workspace_id: project.workspace_id,
+        workspace_id: clientSpace.workspace_id,
+        client_space_id: clientSpaceId,
+        // Always tagged to this client space's sole project (see this
+        // function's doc comment) — not left null — so Task Management's
+        // per-project filter keeps finding these items unchanged.
         project_id: project.id,
         llm_run_id: run.id,
         kind: item.kind,
@@ -389,17 +427,17 @@ export async function generateActionItems(projectId: string, date: string): Prom
       });
 
       if (insertError) {
-        // action_items_open_dedupe_uniq (project_id, dedupe_hash) rejected
-        // this insert — another row with the same hash exists that our
-        // existingByHash snapshot didn't know about (a genuine concurrent
-        // writer, since same-run duplicates are already caught by the
-        // existingByHash check above). Fall through to updating that row
+        // action_items_open_dedupe_uniq (client_space_id, dedupe_hash)
+        // rejected this insert — another row with the same hash exists that
+        // our existingByHash snapshot didn't know about (a genuine
+        // concurrent writer, since same-run duplicates are already caught by
+        // the existingByHash check above). Fall through to updating that row
         // instead of silently losing this item.
         if (insertError.code !== "23505") throw new Error(`action_items insert failed: ${insertError.message}`);
         const { data: conflictRow } = await service
           .from("action_items")
           .select("id")
-          .eq("project_id", project.id)
+          .eq("client_space_id", clientSpaceId)
           .eq("dedupe_hash", hash)
           .in("status", ["pending", "in_progress"])
           .maybeSingle();
@@ -421,7 +459,7 @@ export async function generateActionItems(projectId: string, date: string): Prom
           ...sourceEventIds.map((eventId) => ({
             action_item_id: conflictRow.id,
             normalized_event_id: eventId,
-            workspace_id: project.workspace_id,
+            client_space_id: clientSpaceId,
           })),
         );
         continue;
@@ -433,7 +471,7 @@ export async function generateActionItems(projectId: string, date: string): Prom
         ...sourceEventIds.map((eventId) => ({
           action_item_id: newId,
           normalized_event_id: eventId,
-          workspace_id: project.workspace_id,
+          client_space_id: clientSpaceId,
         })),
       );
     }
