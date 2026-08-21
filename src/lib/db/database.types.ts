@@ -350,13 +350,15 @@ export type Database = {
           external_account_id: string
           external_account_label: string | null
           id: string
+          nango_connection_id: string | null
+          nango_provider_config_key: string | null
           provider: Database["public"]["Enums"]["connector_provider"]
           refresh_failed_at: string | null
           refresh_failure_count: number
           revoked_at: string | null
           secret_alg: string
-          secret_ciphertext: string
-          secret_iv: string
+          secret_ciphertext: string | null
+          secret_iv: string | null
           secret_key_version: number
           updated_at: string
           workspace_id: string
@@ -369,13 +371,15 @@ export type Database = {
           external_account_id: string
           external_account_label?: string | null
           id?: string
+          nango_connection_id?: string | null
+          nango_provider_config_key?: string | null
           provider: Database["public"]["Enums"]["connector_provider"]
           refresh_failed_at?: string | null
           refresh_failure_count?: number
           revoked_at?: string | null
           secret_alg?: string
-          secret_ciphertext: string
-          secret_iv: string
+          secret_ciphertext?: string | null
+          secret_iv?: string | null
           secret_key_version?: number
           updated_at?: string
           workspace_id: string
@@ -388,13 +392,15 @@ export type Database = {
           external_account_id?: string
           external_account_label?: string | null
           id?: string
+          nango_connection_id?: string | null
+          nango_provider_config_key?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"]
           refresh_failed_at?: string | null
           refresh_failure_count?: number
           revoked_at?: string | null
           secret_alg?: string
-          secret_ciphertext?: string
-          secret_iv?: string
+          secret_ciphertext?: string | null
+          secret_iv?: string | null
           secret_key_version?: number
           updated_at?: string
           workspace_id?: string
