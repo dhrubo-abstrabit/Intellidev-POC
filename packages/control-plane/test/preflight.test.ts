@@ -105,3 +105,17 @@ describe('an unreachable repository', () => {
     expect(result.problem).toMatch(/<redacted>/)
   })
 })
+
+describe('the pr stage', () => {
+  // Regression for a run that reported `succeeded` while leaving nothing behind: it
+  // committed into a worktree whose mirror is the container's own ephemeral storage, and
+  // the local template had no push stage. The commit sha was real and unreachable.
+  it('classifies origins that can take a pull request', async () => {
+    const { hasRemoteOrigin } = await import('../src/dispatch.js')
+    expect(hasRemoteOrigin('https://github.com/acme/widget.git')).toBe(true)
+    expect(hasRemoteOrigin('git@github.com:acme/widget.git')).toBe(true)
+    // A local origin has no GitHub to open one against, which is why the stage is skipped.
+    expect(hasRemoteOrigin('file:///tmp/origin.git')).toBe(false)
+    expect(hasRemoteOrigin('/tmp/origin.git')).toBe(false)
+  })
+})

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS, canTransitionTask, isRunTerminal } from './ids.js'
+import {
+  DEFAULT_HARNESS,
+  TASK_STATUS_TRANSITIONS,
+  canTransitionTask,
+  isRunTerminal,
+} from './ids.js'
 import { ProjectManifest, renderBranchName, slugify } from './manifest.js'
 import { DEFAULT_STAGE_TEMPLATE, StageTemplate } from './stages.js'
 import { attachmentInStage, blockingAttachments, resolveSkills } from './tools.js'
@@ -220,5 +225,39 @@ describe('skills and attachments', () => {
     ])
     expect(blocking).toHaveLength(1)
     expect(blocking[0]?.health).toBe('needs_reauth')
+  })
+})
+
+describe('a dispatched task can reach a terminal state', () => {
+  it('allows dispatched → in_review without passing through running', () => {
+    // A run's outcome is authoritative, and it can finish without a `run.started` event
+    // ever being recorded. A database blip losing that one write left a task stuck on
+    // `dispatched` for ever while its run said `succeeded` — the board lying.
+    expect(canTransitionTask('dispatched', 'in_review')).toBe(true)
+  })
+
+  it('still refuses the transitions that would let a client invent progress', () => {
+    expect(canTransitionTask('not_started', 'in_review')).toBe(false)
+    expect(canTransitionTask('not_started', 'running')).toBe(false)
+    expect(canTransitionTask('done', 'running')).toBe(false)
+  })
+
+  it('leaves every non-terminal task status a route to a terminal one', () => {
+    // The invariant behind the bug: if any non-terminal status has no path to a terminal
+    // one, a run finishing there strands its task permanently.
+    for (const from of [
+      'not_started',
+      'dispatched',
+      'waiting_capacity',
+      'running',
+      'blocked',
+    ] as const) {
+      const reachable = TASK_STATUS_TRANSITIONS[from]
+      const canFinish =
+        reachable.includes('failed') ||
+        reachable.includes('in_review') ||
+        reachable.some((next) => TASK_STATUS_TRANSITIONS[next].includes('failed'))
+      expect(canFinish, `${from} cannot reach a terminal status`).toBe(true)
+    }
   })
 })

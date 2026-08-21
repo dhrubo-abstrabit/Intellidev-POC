@@ -666,6 +666,18 @@ async function moveTask(store: Store, taskId: string, status: TaskStatus): Promi
   }
 }
 
+/**
+ * Whether the origin is something a pull request can be opened against.
+ *
+ * The template's comment always said "a `file://` origin has no GitHub to open one
+ * against", but the condition was never actually applied — so a real GitHub remote got the
+ * local template too, and stopped at a commit nobody could reach.
+ */
+export function hasRemoteOrigin(repoUrl: string): boolean {
+  if (repoUrl.startsWith('file:') || repoUrl.startsWith('/')) return false
+  return /^https?:\/\//.test(repoUrl) || /^[^@\s]+@[^:\s]+:/.test(repoUrl)
+}
+
 function buildRunSpec(args: {
   task: TaskRow
   run: string
@@ -691,6 +703,13 @@ function buildRunSpec(args: {
       // No `pr` stage: a `file://` origin has no GitHub to open one against. The commit
       // stage is what makes the run's work outlive the container, so it is not optional.
       { id: 'commit', kind: 'builtin', action: 'git.commit' },
+      // Pushes and opens a pull request — and pushing is the point. Without it a run
+      // commits into a worktree whose mirror is the container's own ephemeral storage, so
+      // a "succeeded" run leaves nothing behind at all. That was true of every Fargate run
+      // until now: the commit sha was real and unreachable.
+      ...(hasRemoteOrigin(task.repoUrl)
+        ? [{ id: 'pr' as const, kind: 'builtin' as const, action: 'github.open_pr' as const }]
+        : []),
     ],
   })
 

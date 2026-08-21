@@ -75,7 +75,11 @@ export type RunOutcome = z.infer<typeof RunOutcome>
  */
 export const TASK_STATUS_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   not_started: ['dispatched', 'blocked'],
-  dispatched: ['running', 'waiting_capacity', 'failed', 'not_started'],
+  // `in_review` is reachable directly, not only through `running`. A run's outcome is
+  // authoritative, and it can finish without a `run.started` event ever being *recorded* —
+  // a database blip losing that one write left a task stuck on `dispatched` for ever while
+  // its run said `succeeded`. The board must be able to tell the truth.
+  dispatched: ['running', 'in_review', 'waiting_capacity', 'failed', 'not_started'],
   waiting_capacity: ['dispatched', 'running', 'failed', 'not_started'],
   running: ['in_review', 'failed', 'blocked', 'waiting_capacity'],
   in_review: ['done', 'running', 'failed'],
