@@ -19,6 +19,7 @@ import type { AwsRuntimeConfig } from './aws/config.js'
 import { FargateRunner } from './runner/fargate.js'
 import { ArtifactStore } from './aws/artifacts.js'
 import type { RunTokenRegistry } from './runs/tokens.js'
+import { preflightRepo } from './runs/preflight.js'
 import type { HarnessAccounts } from './harness/accounts.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -106,6 +107,9 @@ export interface DispatchConfig {
   extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>
 }
 
+/** A dispatch refused before anything was created. Becomes a 400, not a failed run. */
+export class DispatchRefused extends Error {}
+
 export async function dispatchTask(args: {
   store: Store
   task: TaskRow
@@ -114,6 +118,25 @@ export async function dispatchTask(args: {
   accounts: HarnessAccounts
 }): Promise<{ runId: string }> {
   const { store, task, config, mcp, accounts } = args
+
+  /**
+   * Refuse before spending anything.
+   *
+   * An empty repository or a wrong base branch used to cost a whole dispatch to discover —
+   * an ECS task, a 387 MB image pull, thirty seconds — and the answer arrived as a git error
+   * in a container log rather than on the board. `git ls-remote` answers it in under a
+   * second, so it is checked here, where refusing is free.
+   */
+  const preflight = await preflightRepo({
+    repoUrl: task.repoUrl,
+    baseBranch: task.baseBranch,
+    ...(config.githubToken ? { githubToken: config.githubToken } : {}),
+  })
+  if (!preflight.ok) {
+    // Thrown rather than recorded as a failed run: nothing was dispatched, so there is no
+    // run to explain — and the caller turns this into a 400 the UI shows on the form.
+    throw new DispatchRefused(preflight.problem ?? 'the repository cannot be used')
+  }
 
   const branch = renderBranchName('feat/{{task.slug}}-{{task.id}}', {
     taskId: task.id.replace(/^task_/, ''),

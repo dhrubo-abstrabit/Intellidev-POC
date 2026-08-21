@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { HarnessId } from '@intellidev/shared'
 import { z } from 'zod'
-import { dispatchTask, type DispatchConfig } from './dispatch.js'
+import { dispatchTask, DispatchRefused, type DispatchConfig } from './dispatch.js'
 import {
   HARNESS_AUTH,
   readCredentialFile,
@@ -264,13 +264,23 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (task.status !== 'not_started' && task.status !== 'failed') {
       return reply.code(409).send({ error: `task is ${task.status}` })
     }
-    const { runId } = await dispatchTask({
-      store,
-      task,
-      config: opts.dispatch,
-      mcp: { registry: opts.mcp, oauth },
-      accounts: opts.accounts,
-    })
+    let runId: string
+    try {
+      ;({ runId } = await dispatchTask({
+        store,
+        task,
+        config: opts.dispatch,
+        mcp: { registry: opts.mcp, oauth },
+        accounts: opts.accounts,
+      }))
+    } catch (error) {
+      // A refusal means nothing was created, so it is a 400 on the form rather than a run
+      // that appears on the board only to fail. The task stays dispatchable.
+      if (error instanceof DispatchRefused) {
+        return reply.code(400).send({ error: error.message })
+      }
+      throw error
+    }
     // 202: the run has started, not finished. The UI follows the event stream from here.
     return reply.code(202).send({ runId })
   })
