@@ -140,7 +140,7 @@ export async function runAttachmentExtraction(
         ? Math.min(Math.floor(maxAttachmentsPerRunRaw), MAX_ATTACHMENTS_PER_RUN_CEILING)
         : DEFAULT_MAX_ATTACHMENTS_PER_RUN;
 
-    const credentials = await loadCredentials(service, integration, connector);
+    const credentials = await loadCredentials(service, integration);
 
     const { data: pending, error: pendingError } = await service
       .from("event_attachments")

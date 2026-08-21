@@ -3,9 +3,8 @@ import { createHash } from "node:crypto";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getConnector } from "@/connectors/registry";
 import { createDeadline } from "@/connectors/deadline";
-import { ConnectorAuthError } from "@/connectors/errors";
 import { loadCredentials } from "@/services/sync/credentials";
-import { toBytea } from "@/lib/crypto/tokens";
+import { toBytea } from "@/lib/db/bytea";
 import { uuidv7 } from "@/lib/db/uuid";
 import { enqueueJob } from "@/lib/queue";
 import { projectToday } from "@/lib/date/project-day";
@@ -131,7 +130,7 @@ export async function runSync(
 
   try {
     const connector = getConnector(integration.provider);
-    const credentials = await loadCredentials(service, integration, connector);
+    const credentials = await loadCredentials(service, integration);
 
     const { data: cursorRow } = await service
       .from("integration_cursors")
@@ -434,17 +433,11 @@ export async function runSync(
       .update({ status: "failed", finished_at: nowIso, error_message: message })
       .eq("id", job.id);
 
-    if (err instanceof ConnectorAuthError && integration.credential_id) {
-      // The provider rejected our current access token. Clear its expiry so
-      // services/sync/credentials.ts's needsRefresh() treats it as "unknown,
-      // must refresh" on the next run — a single 401 isn't proof the grant
-      // itself is gone, so revoked_at is deliberately left untouched.
-      await service
-        .from("connector_credentials")
-        .update({ access_token_expires_at: null })
-        .eq("id", integration.credential_id)
-        .eq("workspace_id", integration.workspace_id);
-    }
+    // A ConnectorAuthError (the provider, or Nango on its behalf, rejected
+    // our credentials) needs no local write here — Nango owns refresh and
+    // revocation state entirely now (see connectors/errors.ts). It just
+    // falls through to the normal degraded/error status + backoff path
+    // below, same as any other failure.
 
     await service
       .from("integrations")

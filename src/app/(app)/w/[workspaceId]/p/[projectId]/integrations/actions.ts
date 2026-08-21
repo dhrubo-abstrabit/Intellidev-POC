@@ -1,20 +1,21 @@
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { assertProjectScope } from "@/lib/scope";
 import { createServiceClient } from "@/lib/supabase/service";
-import { createOAuthState } from "@/lib/oauth/state";
-import { isOAuthProvider } from "@/lib/oauth/providers";
 import { getConnector } from "@/connectors/registry";
 import { mockCredentials } from "@/connectors/mock";
-import { openTokens, fromBytea } from "@/lib/crypto/tokens";
+import { createConnectSession } from "@/lib/nango/sessions";
+import { getNangoConnection, listConnectionsByTags, deleteNangoConnection } from "@/lib/nango/connections";
+import { uuidv7 } from "@/lib/db/uuid";
 import { enqueueJob } from "@/lib/queue";
 import { loadCredentials } from "@/services/sync/credentials";
 import { getConfigSchema, isConfigScoped, scopeFingerprint } from "@/lib/db/schemas/integration-config";
 import type { ConfigFieldSpec } from "@/lib/db/schemas/integration-config";
 import { GOOGLE_CONFIG_SECTIONS } from "@/connectors/google/config";
+import { GOOGLE_ALL_SCOPES } from "@/connectors/google";
+import type { ConnectorCredentials, ConnectorId } from "@/connectors/types";
 import type { Database, Json } from "@/lib/db/database.types";
 
 export interface SaveIntegrationConfigResult {
@@ -80,21 +81,352 @@ function parseGoogleFieldsFromFormData(formData: FormData): Record<string, unkno
   return raw;
 }
 
-/** Kept as a redirecting action (not the toast/AsyncButton pattern the rest
- * of this file uses) because redirect() only reliably triggers a real
- * navigation when the action is invoked via a form submit — see
- * ConnectProviderButton. Generic over every OAuth connector (Slack, Gmail,
- * Google Drive, Google Chat) — adding a new one needs no new action here. */
-export async function connectProvider(provider: string, workspaceId: string, projectId: string): Promise<void> {
-  await requireUser();
-  await assertProjectScope(workspaceId, projectId);
+/** Whether `provider` is a connector that authenticates through Nango —
+ * replaces the old lib/oauth/providers.ts allow-list (deleted along with
+ * the rest of lib/oauth/* — see NANGO_MIGRATION_LOG.md). Narrows to
+ * ConnectorId so callers can pass straight into getConnector(). */
+function isNangoConnector(provider: string): provider is ConnectorId {
+  try {
+    return Boolean(getConnector(provider as ConnectorId).nangoProviderConfigKey);
+  } catch {
+    return false; // unknown id, or a retired gmail/google_drive/google_chat row
+  }
+}
 
-  if (!isOAuthProvider(provider)) {
+/** Required scopes per provider, keyed by how each provider's granted-scope
+ * string is delimited (Google: space, Slack: comma) — used to verify a
+ * connection actually got everything it asked for, since Nango's
+ * GET /connections response has no `granted_scopes` field and a user can
+ * deselect individual scopes on Google's consent screen even under a
+ * union-of-scopes request. Replaces exchangeGoogleCode's old MISSING_SCOPES
+ * check. */
+const REQUIRED_SCOPES: Partial<Record<ConnectorId, { scopes: string[]; separator: string }>> = {
+  google: { scopes: GOOGLE_ALL_SCOPES, separator: " " },
+};
+
+// Google canonicalizes the short OpenID-alias scopes it was granted into
+// their long googleapis.com form inside the token response's `scope` field —
+// "openid" comes back literal, but "email"/"profile" (as requested via
+// scopes.ts's IDENTITY_SCOPES) come back as
+// "https://www.googleapis.com/auth/userinfo.email"/"...userinfo.profile".
+// Confirmed directly against a real live grant whose id_token DID carry
+// email/profile claims despite the raw scope string never containing the
+// literal words "email"/"profile" — without this map, missingScopes flags a
+// fully-granted connection as missing permissions on every real Google
+// connect. See NANGO_MIGRATION_LOG.md D-027.
+const GOOGLE_GRANTED_SCOPE_ALIASES: Record<string, string> = {
+  "https://www.googleapis.com/auth/userinfo.email": "email",
+  "https://www.googleapis.com/auth/userinfo.profile": "profile",
+};
+
+function missingScopes(provider: ConnectorId, grantedScopeString: string | undefined): string[] {
+  const required = REQUIRED_SCOPES[provider];
+  if (!required) return [];
+  const granted = new Set<string>();
+  for (const raw of (grantedScopeString ?? "")
+    .split(required.separator)
+    .map((s) => s.trim())
+    .filter(Boolean)) {
+    granted.add(raw);
+    if (provider === "google" && raw in GOOGLE_GRANTED_SCOPE_ALIASES) {
+      granted.add(GOOGLE_GRANTED_SCOPE_ALIASES[raw]);
+    }
+  }
+  return required.scopes.filter((s) => !granted.has(s));
+}
+
+/**
+ * Shared by both finalizeConnection (the client-driven happy path) and
+ * reconcileConnections (the fallback for a Connect UI session whose
+ * `connect` event never reached us — see D-011: free self-hosted Nango has
+ * no webhooks). Does the actual identify -> scope-check -> upsert-credential
+ * -> validate -> upsert-integration work; callers are responsible for
+ * confirming the connectionId is legitimately this client space's BEFORE
+ * calling this.
+ *
+ * Scoped to `clientSpaceId`, not `projectId`: connector_credentials and
+ * integrations both key on client_space_id now (see
+ * supabase/migrations/20260820100600_client_spaces.sql /
+ * 20260820100800_integrations.sql) — a project has no data of its own to
+ * scope a connection to. `projectId` is threaded through only so the
+ * `audit_logs` row can record which project's Integrations page the
+ * connect happened from.
+ */
+async function finalizeConnectionCore(
+  workspaceId: string,
+  clientSpaceId: string,
+  projectId: string,
+  provider: ConnectorId,
+  connectionId: string,
+  providerConfigKey: string,
+  userId: string,
+): Promise<{ message: string }> {
+  const connector = getConnector(provider);
+
+  let cachedAccessToken: string | undefined;
+  const placeholderCredentials: ConnectorCredentials = {
+    connectionId,
+    providerConfigKey,
+    externalAccountId: "",
+    async getAccessToken() {
+      if (cachedAccessToken) return cachedAccessToken;
+      const connection = await getNangoConnection(connectionId, providerConfigKey);
+      cachedAccessToken = connection.accessToken;
+      return cachedAccessToken;
+    },
+  };
+
+  let identity: { externalAccountId: string; externalAccountLabel?: string };
+  try {
+    identity = connector.identify
+      ? await connector.identify(placeholderCredentials)
+      : { externalAccountId: connectionId };
+  } catch (err) {
+    throw new Error(`Could not identify the connected account: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (REQUIRED_SCOPES[provider]) {
+    // A failure to even READ the connection back is swallowed — identify()
+    // above already proved the connection works, so this non-essential
+    // second read must not fail the whole connect. A genuine scope
+    // mismatch (once the read succeeds) DOES throw, outside this catch.
+    const connection = await getNangoConnection(connectionId, providerConfigKey).catch(() => null);
+    if (connection) {
+      const missing = missingScopes(provider, connection.raw.scope as string | undefined);
+      if (missing.length > 0) {
+        throw new Error(
+          `Not all requested permissions were granted (missing: ${missing.join(", ")}). Disconnect and reconnect to approve the full list.`,
+        );
+      }
+    }
+  }
+
+  const service = createServiceClient();
+
+  // Reconnecting the SAME external account reuses that row's existing id —
+  // scoped to client_space_id, not workspace_id: connector_credentials'
+  // unique(client_space_id, provider, external_account_id) is the actual
+  // uniqueness boundary now (see 20260820100800_integrations.sql) — under
+  // the pre-4-level design one Slack team backed every project in a
+  // workspace from one row; each project's client space now needs its own
+  // grant, so reuse only applies within this one client space.
+  const { data: existingCredential } = await service
+    .from("connector_credentials")
+    .select("id")
+    .eq("client_space_id", clientSpaceId)
+    .eq("provider", provider)
+    .eq("external_account_id", identity.externalAccountId)
+    .maybeSingle();
+
+  const credentialId = existingCredential?.id ?? uuidv7();
+  const credentialFields = {
+    client_space_id: clientSpaceId,
+    workspace_id: workspaceId,
+    provider,
+    external_account_id: identity.externalAccountId,
+    external_account_label: identity.externalAccountLabel,
+    nango_connection_id: connectionId,
+    nango_provider_config_key: providerConfigKey,
+    revoked_at: null,
+    created_by: userId,
+  };
+
+  const { data: upsertedCredential, error: credentialError } = existingCredential
+    ? await service.from("connector_credentials").update(credentialFields).eq("id", credentialId).select("id").single()
+    : await service
+        .from("connector_credentials")
+        .insert({ id: credentialId, ...credentialFields })
+        .select("id")
+        .single();
+
+  if (credentialError || !upsertedCredential) {
+    throw new Error("Connected, but saving the credential failed. Please try again.");
+  }
+
+  const finalCredentials: ConnectorCredentials = { ...placeholderCredentials, externalAccountId: identity.externalAccountId };
+  const isValid = await connector.validate(finalCredentials);
+
+  // Google connectors land "pending", not "connected": they need a scope
+  // (Chat space ids, a Drive folder/drive URL) the user hasn't supplied yet,
+  // and syncing before that would just be a no-op every cron tick. Slack
+  // needs no such scoping, so it goes straight to "connected" as before.
+  const initialStatus = !isValid ? "error" : provider === "slack" ? "connected" : "pending";
+
+  // Deliberately omit `config` from this upsert: PostgREST only updates the
+  // keys present in the payload, so leaving it out preserves a previously
+  // saved scope (Chat space ids, Drive sources, Gmail query) across a
+  // disconnect+reconnect. The column default `'{}'` covers a fresh insert.
+  const { error: integrationError } = await service.from("integrations").upsert(
+    {
+      client_space_id: clientSpaceId,
+      workspace_id: workspaceId,
+      credential_id: upsertedCredential.id,
+      provider,
+      status: initialStatus,
+      display_name: identity.externalAccountLabel ?? connector.displayName,
+      connected_by: userId,
+      last_error: isValid ? null : "Post-connect validation failed",
+    },
+    { onConflict: "client_space_id,provider,credential_id" },
+  );
+
+  if (integrationError) {
+    throw new Error("Connected, but saving the integration failed. Please try again.");
+  }
+
+  await service.from("audit_logs").insert({
+    workspace_id: workspaceId,
+    client_space_id: clientSpaceId,
+    project_id: projectId,
+    actor_user_id: userId,
+    actor_type: "user",
+    action: "integration.connected",
+    target_type: "integration",
+    target_id: upsertedCredential.id,
+    metadata: { provider },
+  });
+
+  // Deliberately NOT calling revalidatePath here — this core is shared with
+  // reconcileConnections, which runs directly inside IntegrationsPage's
+  // render (not from a client-triggered action), and Next.js forbids
+  // revalidatePath during render ("used during render which is
+  // unsupported"). The render path doesn't need it anyway: it finalizes
+  // BEFORE the page's own integrations query runs in the same request, so
+  // that query already sees the fresh row. finalizeConnection (the
+  // client-invoked action) revalidates itself, after calling this.
+  return {
+    message: isValid ? `${connector.displayName} connected.` : `${connector.displayName} connected, but failed its post-connect check.`,
+  };
+}
+
+/**
+ * Mints a short-lived Nango Connect session token for the client-side
+ * Connect UI (see ConnectProviderButton) — replaces the old
+ * redirect-to-authorize-URL flow entirely. Tagged by client_space_id (not
+ * project_id): a connection belongs to the client space, and
+ * finalizeConnection/reconcileConnections need to find it again later
+ * without trusting a client-reported connection id — Nango assigns
+ * connection ids as random UUIDs the caller can't choose.
+ */
+export async function createIntegrationConnectSession(
+  workspaceId: string,
+  projectId: string,
+  provider: string,
+): Promise<{ sessionToken: string }> {
+  const user = await requireUser();
+  const scope = await assertProjectScope(workspaceId, projectId);
+
+  if (!isNangoConnector(provider)) {
+    throw new Error(`"${provider}" is not an OAuth-based connector.`);
+  }
+  const connector = getConnector(provider);
+
+  const session = await createConnectSession({
+    tags: {
+      workspace_id: workspaceId,
+      client_space_id: scope.clientSpaceId,
+      provider,
+      end_user_id: user.id,
+      ...(user.email ? { end_user_email: user.email } : {}),
+    },
+    allowedIntegrations: [connector.nangoProviderConfigKey!],
+  });
+  return { sessionToken: session.token };
+}
+
+/**
+ * Called from the client once the Connect UI reports a successful
+ * `connect` event. Does NOT trust the client-reported connectionId at face
+ * value — verifies it actually appears in Nango's own tag-filtered
+ * connection list for this client space first (D-011: this
+ * reconciliation-by-tags is the whole reason sessions are tagged above).
+ */
+export async function finalizeConnection(
+  workspaceId: string,
+  projectId: string,
+  provider: string,
+  connectionId: string,
+  providerConfigKey: string,
+): Promise<{ message: string }> {
+  const user = await requireUser();
+  const scope = await assertProjectScope(workspaceId, projectId);
+
+  if (!isNangoConnector(provider)) {
     throw new Error(`"${provider}" is not an OAuth-based connector.`);
   }
 
-  const state = createOAuthState(provider, workspaceId, projectId);
-  redirect(getConnector(provider).getAuthorizeUrl!(state));
+  const owned = await listConnectionsByTags({
+    workspace_id: workspaceId,
+    client_space_id: scope.clientSpaceId,
+    provider,
+  }).catch(() => []);
+  if (!owned.some((c) => c.connectionId === connectionId)) {
+    throw new Error("This connection could not be verified. Please try connecting again.");
+  }
+
+  const result = await finalizeConnectionCore(
+    workspaceId,
+    scope.clientSpaceId,
+    projectId,
+    provider,
+    connectionId,
+    providerConfigKey,
+    user.id,
+  );
+  // Called from a genuine client-triggered Server Action (not during
+  // render), so revalidatePath is valid here — see finalizeConnectionCore's
+  // own comment for why it doesn't call this itself.
+  revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  return result;
+}
+
+/**
+ * Sweeps Nango connections tagged for this client space and finalizes any
+ * that have no local connector_credentials row yet — the fallback for a
+ * Connect UI session that succeeded on Nango's side but whose `connect`
+ * event never reached finalizeConnection (tab closed mid-flow, a network
+ * blip). Run on integrations-page load. Best-effort per connection: one
+ * orphan failing to finalize must not block the others.
+ */
+export async function reconcileConnections(workspaceId: string, projectId: string): Promise<void> {
+  const user = await requireUser();
+  const scope = await assertProjectScope(workspaceId, projectId);
+
+  const connections = await listConnectionsByTags({
+    workspace_id: workspaceId,
+    client_space_id: scope.clientSpaceId,
+  }).catch(() => []);
+  if (connections.length === 0) return;
+
+  const service = createServiceClient();
+  for (const conn of connections) {
+    const { data: existing } = await service
+      .from("connector_credentials")
+      .select("id")
+      .eq("nango_connection_id", conn.connectionId)
+      .maybeSingle();
+    if (existing) continue;
+
+    if (!isNangoConnector(conn.providerConfigKey)) continue;
+
+    // providerConfigKey doubles as our internal connector id here — true
+    // for both connectors that exist today (google, slack), since Nango's
+    // integration unique_key and this app's ConnectorId happen to be the
+    // same string for each. Would need the session's own `provider` tag
+    // read back instead if a future connector's Nango key ever diverges
+    // from its connector id.
+    await finalizeConnectionCore(
+      workspaceId,
+      scope.clientSpaceId,
+      projectId,
+      conn.providerConfigKey,
+      conn.connectionId,
+      conn.providerConfigKey,
+      user.id,
+    ).catch((err) => {
+      console.warn(`[reconcileConnections] failed to finalize orphaned connection ${conn.connectionId}:`, err);
+    });
+  }
 }
 
 export async function connectMock(workspaceId: string, projectId: string): Promise<{ message: string }> {
@@ -102,20 +434,50 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
   const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
-  const { error } = await service.from("integrations").upsert(
-    {
-      client_space_id: scope.clientSpaceId,
-      workspace_id: workspaceId,
-      credential_id: null,
-      provider: "mock",
-      status: "connected",
-      display_name: "Mock (sample data)",
-      connected_by: user.id,
-      last_error: null,
-    },
-    { onConflict: "client_space_id,provider,credential_id" },
-  );
-  if (error) {
+
+  // NOT an upsert with onConflict: "client_space_id,provider,credential_id"
+  // — that constraint is a standard (non-partial) unique index, and
+  // standard unique indexes treat every NULL as distinct from every other
+  // NULL, so it can never actually detect a conflict on mock's permanently-
+  // null credential_id (see the migration adding
+  // integrations_client_space_provider_no_credential_idx, a partial index
+  // that DOES cover this case, added specifically because that gap let a
+  // double-click create two "connected" mock rows). PostgREST's upsert
+  // helper can't target a partial index through `onConflict`, so this is a
+  // plain select-then-insert-or-update instead, with the insert's
+  // unique-violation caught as "someone else won the race" rather than
+  // surfaced as an error — same idiom as createWorkspace's slug retry and
+  // settleBatchMembership's compare-and-swap.
+  const { data: existing } = await service
+    .from("integrations")
+    .select("id")
+    .eq("client_space_id", scope.clientSpaceId)
+    .eq("provider", "mock")
+    .is("credential_id", null)
+    .maybeSingle();
+
+  const fields = {
+    status: "connected" as const,
+    display_name: "Mock (sample data)",
+    connected_by: user.id,
+    last_error: null,
+  };
+
+  const { error } = existing
+    ? await service.from("integrations").update(fields).eq("id", existing.id)
+    : await service.from("integrations").insert({
+        client_space_id: scope.clientSpaceId,
+        workspace_id: workspaceId,
+        credential_id: null,
+        provider: "mock",
+        ...fields,
+      });
+
+  // 23505 (unique_violation) here means a concurrent call already inserted
+  // the row between the select above and this insert — that's the mock
+  // integration ending up connected, exactly what this call wanted, so it's
+  // a success, not an error.
+  if (error && error.code !== "23505") {
     throw new Error("Could not connect the mock integration.");
   }
 
@@ -179,42 +541,54 @@ export async function disconnectIntegration(
   if (integration.credential_id) {
     const { data: credentialRow } = await service
       .from("connector_credentials")
-      .select("id, secret_ciphertext, secret_iv, secret_key_version, secret_alg")
+      .select("id, nango_connection_id, nango_provider_config_key")
       .eq("id", integration.credential_id)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
 
-    if (credentialRow) {
-      // openTokens throws on an auth-tag mismatch (tampered/corrupt
-      // ciphertext) — a security event per its own doc comment, not
-      // routine control flow, but the disconnect itself must still
-      // succeed: a credential that can't be decrypted anymore still needs
-      // to be revocable from the UI, and the raw crypto error message
-      // shouldn't reach the client (Server Action errors forward
-      // `.message` verbatim, unlike page-render errors).
+    if (credentialRow?.nango_connection_id && credentialRow.nango_provider_config_key) {
+      // Best-effort, in order: a provider-specific revoke on top of Nango's
+      // own connection deletion (see Connector.disconnect's doc comment —
+      // most providers need nothing beyond Nango's own delete; only kept
+      // where a provider needs an explicit extra revoke call).
       try {
-        const tokens = openTokens(
-          {
-            ciphertext: fromBytea(credentialRow.secret_ciphertext as unknown as string),
-            iv: fromBytea(credentialRow.secret_iv as unknown as string),
-            keyVersion: credentialRow.secret_key_version,
-            alg: credentialRow.secret_alg as "aes-256-gcm",
-          },
-          workspaceId,
-          credentialRow.id,
-        );
-        const connector = getConnector(integration.provider);
-        await connector.disconnect({ tokens, externalAccountId: "" }).catch(() => {});
+        if (isNangoConnector(integration.provider)) {
+          const connector = getConnector(integration.provider);
+          let cachedAccessToken: string | undefined;
+          await connector
+            .disconnect?.({
+              connectionId: credentialRow.nango_connection_id,
+              providerConfigKey: credentialRow.nango_provider_config_key,
+              externalAccountId: "",
+              async getAccessToken() {
+                if (cachedAccessToken) return cachedAccessToken;
+                const connection = await getNangoConnection(
+                  credentialRow.nango_connection_id!,
+                  credentialRow.nango_provider_config_key!,
+                );
+                cachedAccessToken = connection.accessToken;
+                return cachedAccessToken;
+              },
+            })
+            .catch(() => {});
+        }
       } catch (err) {
-        console.error(`Failed to decrypt/revoke credential ${credentialRow.id} with provider:`, err);
+        console.error(`Failed to run provider-specific revoke for credential ${credentialRow.id}:`, err);
       }
-      await service
-        .from("connector_credentials")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("id", credentialRow.id);
+
+      await deleteNangoConnection(credentialRow.nango_connection_id, credentialRow.nango_provider_config_key).catch((err) => {
+        console.error(`Failed to delete Nango connection for credential ${credentialRow.id}:`, err);
+      });
+    }
+    // A credential row with no nango_connection_id at all is a pre-Nango
+    // row nobody reconnected — nothing to revoke with the provider or with
+    // Nango; it's still marked revoked below so it stops being offered.
+
+    if (credentialRow) {
+      await service.from("connector_credentials").update({ revoked_at: new Date().toISOString() }).eq("id", credentialRow.id);
     }
   } else if (integration.provider === "mock") {
-    await getConnector("mock").disconnect(mockCredentials());
+    await getConnector("mock").disconnect?.(mockCredentials());
   }
 
   await service.from("integrations").update({ status: "disconnected" }).eq("id", integration.id);
@@ -286,10 +660,9 @@ export async function saveIntegrationConfig(
   }
 
   if (entry.resolve) {
-    const connector = getConnector(integration.provider);
     let credentials;
     try {
-      credentials = await loadCredentials(service, integration, connector);
+      credentials = await loadCredentials(service, integration);
     } catch (err) {
       return { error: `Could not load this integration's credentials: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -309,8 +682,8 @@ export async function saveIntegrationConfig(
 
   const nowConfigured = isConfigScoped(entry, parsed.data);
   const update: Database["public"]["Tables"]["integrations"]["Update"] = { config: parsed.data as Json };
-  // Google connectors land "pending" straight out of OAuth (see
-  // api/oauth/[provider]/callback) until a scope is supplied — flip to
+  // Google connectors land "pending" straight out of connect (see
+  // finalizeConnection above) until a scope is supplied — flip to
   // "connected" the moment that happens so the cron actually picks it up.
   if (integration.status === "pending" && nowConfigured) {
     update.status = "connected";
