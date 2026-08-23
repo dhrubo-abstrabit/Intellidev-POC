@@ -54,12 +54,31 @@ import "server-only";
  * polyfill" for those two on a cold start: harmless, and much cheaper than
  * forcing the Skia binary into every function that parses a PDF.
  *
- * Adding a THIRD call site needs one more step: `pdf.worker.mjs` is delivered
- * per-route by `outputFileTracingIncludes` in next.config.ts (it is invisible to
- * the tracer for the same reason, and unlike DOMMatrix it cannot be bundled —
- * pdfjs needs a real file at that exact node_modules path). Add the new route to
- * that map, or PDF parsing will work locally and fail once deployed with
- * "Setting up fake worker failed".
+ * ## The worker-file gap
+ *
+ * `outputFileTracingIncludes` in next.config.ts fixes the tracing half of that
+ * problem — it force-copies `pdf.worker.mjs` to the exact `node_modules` path
+ * pdfjs computes at runtime, so its own `await import(this.workerSrc)` finds a
+ * real file there and succeeds. But that call is still reached through the same
+ * kind of tracer-invisible indirection as the `@napi-rs/canvas` require above
+ * (`workerSrc` is read back through a class getter, not a literal specifier at
+ * the call site — see `pdfjs-dist/legacy/build/pdf.mjs`'s `PDFWorker
+ * .#mainThreadWorkerMessageHandler` / `_setupFakeWorkerGlobal`), so relying on
+ * it alone means every new call site has to remember to extend that map (the
+ * paragraph this replaced used to warn exactly that), and the outcome still
+ * depends on the tracer's behavior being reproduced correctly on every build.
+ *
+ * pdfjs provides an escape hatch: if `globalThis.pdfjsWorker.WorkerMessageHandler`
+ * is already set, `_setupFakeWorkerGlobal` returns it directly and never reaches
+ * the dynamic import at all. `pdf.worker.mjs` sets this on itself at module end
+ * whenever it does get loaded — so importing it here, through a literal
+ * specifier our own bundler *can* see (same trick as `@napi-rs/canvas/geometry.js`
+ * above, just still externalized rather than inlined, since `pdfjs-dist` — unlike
+ * `@napi-rs/canvas` — is in `serverExternalPackages`), does the same
+ * self-registration ourselves, before pdfjs ever looks. That makes the fragile
+ * computed-specifier import unreachable regardless of call site, on top of
+ * `outputFileTracingIncludes` still guaranteeing the file is physically present.
+ * Belt and suspenders, not a replacement: keep both.
  *
  * Note `@napi-rs/canvas` is deliberately *not* in our own `dependencies`. It
  * arrives hoisted via `pdf-parse`'s exact pin, which keeps us on the same
@@ -70,6 +89,10 @@ export async function loadPdfParse() {
   if (!globalThis.DOMMatrix) {
     const { DOMMatrix } = await import("@napi-rs/canvas/geometry.js");
     globalThis.DOMMatrix = DOMMatrix;
+  }
+  if (!globalThis.pdfjsWorker) {
+    const { WorkerMessageHandler } = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    globalThis.pdfjsWorker = { WorkerMessageHandler };
   }
   return import("pdf-parse");
 }
