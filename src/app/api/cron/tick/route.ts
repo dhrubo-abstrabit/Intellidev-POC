@@ -7,6 +7,13 @@ import { projectToday } from "@/lib/date/project-day";
 import { seedBatchForClientSpace, markMemberEnqueueFailed, triggerDailyExtraction } from "@/services/sync/batch";
 
 export const runtime = "nodejs";
+// dispatch_daily_tick() waits up to 70s for this route (see the pgmq/pg_cron
+// migration) — 60s is the ceiling on the Hobby plan. Without this export the
+// route falls back to the platform default (10s) while fanning out one
+// batch-seed plus one enqueue per due integration, and dispatch_daily_tick()
+// writes nothing to job_dispatches, so a truncated run would leave no record
+// at all that it happened.
+export const maxDuration = 60;
 
 // How long to wait for every member of a day's batch to report a terminal
 // outcome before the batch-timeout job force-fires extraction anyway (see

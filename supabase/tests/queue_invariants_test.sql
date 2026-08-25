@@ -88,11 +88,13 @@ select is(
   'job_dispatches has no grants to anon or authenticated'
 );
 
--- 7 & 8. The three schedules exist with the expected cadence, and
---    daily_tick starts deactivated (see the migration's header comment on
---    why: Vercel Cron's own daily tick is still live until the prod cutover
---    flips this on and removes vercel.json's `crons` block in the same
---    deploy).
+-- 7 & 8. The three schedules exist with the expected cadence. daily_tick is
+--    created inactive by 20260820101500_pgmq_pg_cron.sql (so it couldn't
+--    double-fire alongside Vercel Cron, which owned the daily tick at the
+--    time) and re-activated by 20260820102300_enable_daily_tick.sql, once
+--    Vercel Cron was confirmed gone (vercel.json has been `{}` since
+--    5bcf4c8) and api/cron/tick had its own maxDuration set. By the time
+--    this test runs against a fully-migrated database, it should be active.
 select is(
   (select schedule from cron.job where jobname = 'job_dispatch'),
   '5 seconds',
@@ -100,8 +102,8 @@ select is(
 );
 select is(
   (select active from cron.job where jobname = 'daily_tick'),
-  false,
-  'daily_tick is created inactive'
+  true,
+  'daily_tick is active'
 );
 
 select * from finish();
