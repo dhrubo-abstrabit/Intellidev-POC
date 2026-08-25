@@ -33,6 +33,9 @@ interface ConnectProviderButtonProps {
     connectionId: string,
     providerConfigKey: string,
   ) => Promise<{ message: string }>;
+  /** Fired (not awaited by the UI) when the Connect UI closes without a
+   * `connect` event ever reaching us — see the `close` handler below. */
+  reconcileConnections: (workspaceId: string, projectId: string) => Promise<{ message: string; reconciledCount: number }>;
 }
 
 /**
@@ -48,6 +51,7 @@ export function ConnectProviderButton({
   projectId,
   createConnectSession,
   finalizeConnection,
+  reconcileConnections,
 }: ConnectProviderButtonProps) {
   const [isPending, setIsPending] = useState(false);
   const router = useRouter();
@@ -61,13 +65,16 @@ export function ConnectProviderButton({
     // Self-hosted Nango must override both URLs — the SDK's built-in
     // defaults point at Nango Cloud.
     const nango = new Nango({ host: NANGO_HOST });
+    // Local to this one popup's lifecycle, not component state — a fresh
+    // handleClick call gets a fresh closure, so there's no cross-click state
+    // to reset.
+    let connected = false;
     const connect = nango.openConnectUI({
       baseURL: NANGO_CONNECT_URL,
       apiURL: NANGO_HOST,
       onEvent: (event) => {
-        if (event.type === "close") {
-          setIsPending(false);
-        } else if (event.type === "connect") {
+        if (event.type === "connect") {
+          connected = true;
           const { connectionId, providerConfigKey } = event.payload;
           toast
             .promise(finalizeConnection(workspaceId, projectId, provider, connectionId, providerConfigKey), {
@@ -83,6 +90,29 @@ export function ConnectProviderButton({
               setIsPending(false);
               router.refresh();
             });
+        } else if (event.type === "error") {
+          toast.add({ title: event.payload.errorMessage, type: "error" });
+          setIsPending(false);
+        } else if (event.type === "close") {
+          setIsPending(false);
+          // No `connect` event ever reached us. Either the user backed out
+          // (the common case — reconcileConnections below finds nothing and
+          // stays silent) or the grant actually succeeded on Nango's side
+          // but the tab/network dropped before the event arrived — free
+          // self-hosted Nango has no webhooks, so this is the only place
+          // (besides a manual "Check for connections" click) that can catch
+          // that. Fire-and-forget and best-effort: a failure here is not
+          // something the user did, so it must not surface as an error.
+          if (!connected) {
+            reconcileConnections(workspaceId, projectId)
+              .then((result) => {
+                if (result.reconciledCount > 0) {
+                  toast.add({ title: result.message, type: "success" });
+                  router.refresh();
+                }
+              })
+              .catch(() => {});
+          }
         }
       },
     });

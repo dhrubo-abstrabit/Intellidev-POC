@@ -287,13 +287,12 @@ async function finalizeConnectionCore(
   });
 
   // Deliberately NOT calling revalidatePath here — this core is shared with
-  // reconcileConnections, which runs directly inside IntegrationsPage's
-  // render (not from a client-triggered action), and Next.js forbids
-  // revalidatePath during render ("used during render which is
-  // unsupported"). The render path doesn't need it anyway: it finalizes
-  // BEFORE the page's own integrations query runs in the same request, so
-  // that query already sees the fresh row. finalizeConnection (the
-  // client-invoked action) revalidates itself, after calling this.
+  // reconcileConnections, which now also calls it (after finalizing
+  // everything it found), so a caller invoking this in a loop doesn't
+  // revalidate once per orphan. Every caller of this core is a genuine
+  // client-triggered Server Action now (see reconcileConnections' own doc
+  // comment — it moved off the render path), so revalidatePath is safe
+  // everywhere; it's just each caller's job to call it once, not this core's.
   return {
     message: isValid ? `${connector.displayName} connected.` : `${connector.displayName} connected, but failed its post-connect check.`,
   };
@@ -380,15 +379,34 @@ export async function finalizeConnection(
   return result;
 }
 
+export interface ReconcileConnectionsResult {
+  message: string;
+  reconciledCount: number;
+}
+
 /**
  * Sweeps Nango connections tagged for this client space and finalizes any
  * that have no local connector_credentials row yet — the fallback for a
  * Connect UI session that succeeded on Nango's side but whose `connect`
  * event never reached finalizeConnection (tab closed mid-flow, a network
- * blip). Run on integrations-page load. Best-effort per connection: one
- * orphan failing to finalize must not block the others.
+ * blip). Best-effort per connection: one orphan failing to finalize must not
+ * block the others.
+ *
+ * NOT run automatically on every Integrations page render anymore — that
+ * made an uncached, un-timed-out Nango HTTP call (plus a DB round trip per
+ * connection) part of every page load, for a check that almost always finds
+ * nothing. Two callers cover the cases that matter instead: ConnectUI's
+ * `close` event without a preceding `connect` (see ConnectProviderButton —
+ * the exact moment an orphan can be created, caught for free, client-side),
+ * and a manual "Check for connections" button for the rarer whole-browser-
+ * crashed case. Both are genuine client-triggered Server Action calls now
+ * (never during render), so — unlike the old render-path version — this is
+ * free to call revalidatePath itself.
  */
-export async function reconcileConnections(workspaceId: string, projectId: string): Promise<void> {
+export async function reconcileConnections(
+  workspaceId: string,
+  projectId: string,
+): Promise<ReconcileConnectionsResult> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
 
@@ -396,17 +414,27 @@ export async function reconcileConnections(workspaceId: string, projectId: strin
     workspace_id: workspaceId,
     client_space_id: scope.clientSpaceId,
   }).catch(() => []);
-  if (connections.length === 0) return;
+  if (connections.length === 0) {
+    return { message: "No new connections found.", reconciledCount: 0 };
+  }
 
   const service = createServiceClient();
-  for (const conn of connections) {
-    const { data: existing } = await service
-      .from("connector_credentials")
-      .select("id")
-      .eq("nango_connection_id", conn.connectionId)
-      .maybeSingle();
-    if (existing) continue;
 
+  // One query for every candidate's existence, not one per connection in a
+  // loop — the partial unique index on nango_connection_id (see
+  // 20260820102000_nango_credentials.sql) already covers this lookup.
+  const { data: existingRows } = await service
+    .from("connector_credentials")
+    .select("nango_connection_id")
+    .in(
+      "nango_connection_id",
+      connections.map((c) => c.connectionId),
+    );
+  const alreadyLocal = new Set((existingRows ?? []).map((r) => r.nango_connection_id));
+
+  let reconciledCount = 0;
+  for (const conn of connections) {
+    if (alreadyLocal.has(conn.connectionId)) continue;
     if (!isNangoConnector(conn.providerConfigKey)) continue;
 
     // providerConfigKey doubles as our internal connector id here — true
@@ -423,10 +451,26 @@ export async function reconcileConnections(workspaceId: string, projectId: strin
       conn.connectionId,
       conn.providerConfigKey,
       user.id,
-    ).catch((err) => {
-      console.warn(`[reconcileConnections] failed to finalize orphaned connection ${conn.connectionId}:`, err);
-    });
+    )
+      .then(() => {
+        reconciledCount += 1;
+      })
+      .catch((err) => {
+        console.warn(`[reconcileConnections] failed to finalize orphaned connection ${conn.connectionId}:`, err);
+      });
   }
+
+  if (reconciledCount > 0) {
+    revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  }
+
+  return {
+    message:
+      reconciledCount > 0
+        ? `Found and connected ${reconciledCount} integration${reconciledCount === 1 ? "" : "s"}.`
+        : "No new connections found.",
+    reconciledCount,
+  };
 }
 
 export async function connectMock(workspaceId: string, projectId: string): Promise<{ message: string }> {

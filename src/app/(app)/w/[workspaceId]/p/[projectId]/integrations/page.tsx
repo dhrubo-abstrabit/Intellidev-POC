@@ -80,14 +80,6 @@ export default async function IntegrationsPage({
     notFound();
   }
 
-  // Sweeps for a Connect UI session that succeeded on Nango's side but
-  // whose `connect` event never reached finalizeConnection (tab closed
-  // mid-flow, a network blip — see reconcileConnections' own doc comment).
-  // Must run BEFORE the integrations query below, in the same request, so a
-  // freshly-reconciled row is already visible on this render — and must
-  // NOT call revalidatePath itself, which Next.js forbids during render.
-  await reconcileConnections(workspaceId, projectId);
-
   const supabase = await createClient();
 
   const { data: integrations } = await supabase
@@ -108,6 +100,13 @@ export default async function IntegrationsPage({
   );
   const availableConnectors = listConnectors().filter(
     (c) => !activeProviders.has(c.id),
+  );
+  // Only a Nango-backed provider can have an orphaned connection (one that
+  // exists on Nango's side with no local row yet — see reconcileConnections'
+  // doc comment) — an available `mock` slot has nothing for the sweep to
+  // find, so don't show the button when it's the only thing available.
+  const hasNangoAvailable = availableConnectors.some(
+    (c) => c.nangoProviderConfigKey,
   );
 
   return (
@@ -292,7 +291,24 @@ export default async function IntegrationsPage({
 
       {availableConnectors.length > 0 ? (
         <section>
-          <h2 className="mb-4 text-base font-semibold">Available</h2>
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold">Available</h2>
+            {/* Covers the case reconcileConnections' event-driven trigger
+              can't: the whole browser closed or crashed mid-flow, not just
+              the Connect UI popup (see ConnectProviderButton's `close`
+              handler and reconcileConnections' own doc comment). */}
+            {hasNangoAvailable ? (
+              <AsyncButton
+                action={reconcileConnections.bind(null, workspaceId, projectId)}
+                loadingMessage="Checking…"
+                size="sm"
+                variant="outline"
+                data-testid="check-connections"
+              >
+                Check for connections
+              </AsyncButton>
+            ) : null}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {availableConnectors.map((connector) => (
               <Card key={connector.id}>
@@ -309,6 +325,7 @@ export default async function IntegrationsPage({
                       projectId={projectId}
                       createConnectSession={createIntegrationConnectSession}
                       finalizeConnection={finalizeConnection}
+                      reconcileConnections={reconcileConnections}
                     />
                   ) : connector.id === "mock" ? (
                     <AsyncButton
