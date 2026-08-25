@@ -155,8 +155,12 @@ max_indexes = 5
 [auth]
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
-# in emails.
-site_url = "http://localhost:3000"
+# in emails. This file is shared between `supabase start` (local) and
+# `supabase config push` (cloud project) — set to the real production URL so
+# password-reset/magic-link emails sent by the live app carry the right
+# domain; local sign-in still works via additional_redirect_urls below,
+# which is the actual redirect allow-list.
+site_url = "https://intellidev-poc.vercel.app"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
@@ -169,6 +173,14 @@ additional_redirect_urls = [
   "http://localhost:3000/**",
   "http://127.0.0.1:3000/**",
   "https://intellidev-poc.vercel.app/**",
+  # Pre-existing on the cloud project (not added by this file originally) —
+  # restored here after `supabase config push` overwrote the remote list
+  # wholesale with this array. Keep them in sync going forward: this file is
+  # the source of truth for what config push sends, so an entry added only
+  # via the dashboard will get silently dropped on the next push otherwise.
+  "https://snaking-skintight-lumping.ngrok-free.dev/**",
+  "https://intellidev-hblc6h3cc-dhrubobs-abstrabit.vercel.app/**",
+  "https://intellidev-hcknelcae-dhrubobs-abstrabit.vercel.app/**",
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
@@ -343,23 +355,33 @@ skip_nonce_check = false
 # If enabled, it will allow the user to successfully authenticate when the provider does not return an email address.
 email_optional = false
 
-# Google OAuth. Disabled by default so `supabase start` never depends on an
-# env var that doesn't exist yet — flip `enabled = true` and set
-# GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET in .env.local once you
-# have a GCP OAuth client (Console -> APIs & Services -> Credentials ->
-# OAuth client ID -> Web application; authorized redirect URI is
+# Google OAuth, enabled — needs GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+# set (in .env.local for `supabase start`; already live in Vercel/prod). GCP
+# console: APIs & Services -> Credentials -> OAuth client ID -> Web
+# application; authorized redirect URI is
 # http://127.0.0.1:54321/auth/v1/callback for local, or
-# https://<project-ref>.supabase.co/auth/v1/callback for the cloud project).
+# https://<project-ref>.supabase.co/auth/v1/callback for the cloud project.
 [auth.external.google]
 enabled = true
 client_id = "env(GOOGLE_OAUTH_CLIENT_ID)"
 secret = "env(GOOGLE_OAUTH_CLIENT_SECRET)"
 redirect_uri = ""
 url = ""
-# Google's redirect flow through the local Auth container hits a nonce
-# mismatch unless this is on — the config file's own Apple provider comment
-# flags the same local-dev quirk for Google specifically.
-skip_nonce_check = true
+# Was `true`, on the belief that Google's redirect flow through the local
+# Auth container hits a nonce mismatch without it — citing the Apple
+# provider comment below as evidence. That comment is generic Supabase CLI
+# boilerplate stamped on every [auth.external.*] block (confirmed: it exists
+# only inside the CLI's own binaries, not written for this project), and this
+# app's browser sign-in goes through authorization-code + PKCE via
+# @supabase/ssr, which Supabase's docs describe as avoiding ID-token nonce
+# issues entirely (the check this disables only matters for mobile SDKs
+# using signInWithIdToken). The mismatch was also never actually observed
+# here: this was set to `true` before auth.external.google.enabled was ever
+# flipped to `true`, i.e. before Google sign-in had been exercised even once.
+# Skipping it weakens replay protection on every Google sign-in for no
+# demonstrated benefit — if a real nonce failure shows up, re-enable this as
+# a short-lived, documented workaround, not a standing default.
+skip_nonce_check = false
 
 # Allow Solana wallet holders to sign in to your project via the Sign in with Solana (SIWS, EIP-4361) standard.
 # You can configure "web3" rate limit in the [auth.rate_limit] section and set up [auth.captcha] if self-hosting.
