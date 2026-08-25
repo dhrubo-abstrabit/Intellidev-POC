@@ -26,7 +26,12 @@ export interface GitHubAppOptions {
   readonly appId: string
   /** PEM private key. Never logged, never returned, never sent anywhere but GitHub. */
   readonly privateKey: string
-  /** The App's slug, used to build the install link the UI shows. */
+  /**
+   * The App's slug, used to build the install link an error message offers.
+   *
+   * Optional because GitHub reports it: `GET /app` returns it, so it is discovered on first
+   * use rather than being one more thing to copy correctly. Supplying it just skips a call.
+   */
   readonly slug?: string
   readonly apiBase?: string
   readonly fetchImpl?: typeof fetch
@@ -63,17 +68,47 @@ export class GitHubApp {
   /** Keyed by `owner/repo`, because tokens are scoped per repository. */
   private readonly tokens = new Map<string, CachedToken>()
   private readonly installations = new Map<string, number>()
+  private discoveredSlug: string | undefined
+  private slugLookupFailed = false
 
   constructor(private readonly opts: GitHubAppOptions) {
     this.apiBase = opts.apiBase ?? 'https://api.github.com'
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
 
-  /** Where a human goes to grant access. Shown by the UI when a repo is not covered. */
+  /**
+   * Where a human goes to grant access, if the slug is known yet.
+   *
+   * Synchronous, so it is whatever has been discovered so far — `installUrl()` is only ever
+   * used to enrich an error, and an error must not depend on another network call
+   * succeeding.
+   */
   get installUrl(): string | undefined {
-    return this.opts.slug
-      ? `https://github.com/apps/${this.opts.slug}/installations/new`
-      : undefined
+    const slug = this.opts.slug ?? this.discoveredSlug
+    return slug ? `https://github.com/apps/${slug}/installations/new` : undefined
+  }
+
+  /**
+   * Asks GitHub what this App is called.
+   *
+   * Cached for the process lifetime: an App's slug changes only if it is renamed, and the
+   * only cost of a stale one is a wrong link in an error message. Failures are swallowed —
+   * losing the link is not worth failing a run over.
+   */
+  private async discoverSlug(): Promise<void> {
+    if (this.opts.slug || this.discoveredSlug || this.slugLookupFailed) return
+    try {
+      const res = await this.fetchImpl(`${this.apiBase}/app`, { headers: this.appHeaders() })
+      if (!res.ok) {
+        this.slugLookupFailed = true
+        return
+      }
+      const body = (await res.json()) as { slug?: string }
+      if (body.slug) this.discoveredSlug = body.slug
+      else this.slugLookupFailed = true
+    } catch {
+      this.slugLookupFailed = true
+    }
   }
 
   /**
@@ -117,8 +152,10 @@ export class GitHubApp {
 
     if (res.status === 404) {
       // Not installed, or installed without this repository selected. Both mean the same
-      // thing to the caller and have the same fix.
+      // thing to the caller and have the same fix — so spend one call learning the slug,
+      // because the install link is the most useful part of this message.
       this.installations.delete(key)
+      await this.discoverSlug()
       throw new AppNotInstalled(owner, repo, this.installUrl)
     }
     if (!res.ok) {

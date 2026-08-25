@@ -133,6 +133,44 @@ describe('when the App is not installed', () => {
   })
 })
 
+describe('the install link', () => {
+  it('is discovered from GitHub when no slug was configured', async () => {
+    // One less thing to copy correctly: GitHub reports the slug, so a 404 can still offer
+    // the link that fixes it.
+    const gh = fakeGitHub([{ status: 404 }, { status: 200, body: { slug: 'intellidev-bot' } }])
+    const instance = new GitHubApp({
+      appId: '4711566',
+      privateKey: PEM,
+      fetchImpl: gh.fetchImpl,
+      now: () => 1_700_000_000_000,
+    })
+    await expect(instance.tokenFor('acme', 'widget')).rejects.toThrow(
+      /github\.com\/apps\/intellidev-bot\/installations\/new/,
+    )
+  })
+
+  it('still reports the real problem when the slug cannot be discovered', async () => {
+    // Losing the link is not worth failing differently over.
+    const gh = fakeGitHub([{ status: 404 }, { status: 500 }])
+    const instance = new GitHubApp({
+      appId: '1',
+      privateKey: PEM,
+      fetchImpl: gh.fetchImpl,
+      now: () => 1_700_000_000_000,
+    })
+    await expect(instance.tokenFor('acme', 'widget')).rejects.toThrow(
+      /is not installed on acme\/widget/,
+    )
+  })
+
+  it('skips the lookup when a slug was given', async () => {
+    const gh = fakeGitHub([{ status: 404 }])
+    await expect(app(gh.fetchImpl).tokenFor('acme', 'widget')).rejects.toThrow(AppNotInstalled)
+    // Only the installation lookup; no call to /app.
+    expect(gh.seen).toHaveLength(1)
+  })
+})
+
 describe('configuration from the environment', () => {
   it('is absent unless both the id and the key are set', () => {
     expect(gitHubAppFromEnv({})).toBeUndefined()
