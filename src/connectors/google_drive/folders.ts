@@ -2,7 +2,7 @@ import "server-only";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
 import { buildFolderQuery, chunkParents, corporaParamsFor, FOLDER_FIELDS } from "./query";
 import { MAX_DESCENDANT_FOLDERS } from "./cursor";
-import type { FetchDeadline } from "@/connectors/types";
+import type { ConnectorCredentials, FetchDeadline } from "@/connectors/types";
 
 const MAX_FOLDER_DEPTH = 10;
 const MAX_FOLDER_WALK_REQUESTS = 20;
@@ -30,7 +30,7 @@ export interface WalkResult {
 export async function walkDescendants(
   rootId: string,
   rootName: string,
-  options: { accessToken: string; deadline: FetchDeadline; driveId: string | null },
+  options: { credentials: ConnectorCredentials; deadline: FetchDeadline; driveId: string | null },
 ): Promise<WalkResult> {
   const folders: Record<string, { n: string; p: string | null }> = { [rootId]: { n: rootName, p: null } };
   let frontier = [rootId];
@@ -64,7 +64,7 @@ export async function walkDescendants(
         let res: FolderListResponse;
         try {
           res = await googleFetch<FolderListResponse>(url.toString(), {
-            accessToken: options.accessToken,
+            credentials: options.credentials,
             deadline: options.deadline,
           });
         } catch (err) {

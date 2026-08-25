@@ -1,24 +1,27 @@
 import "server-only";
-import { slackEnv } from "@/lib/env";
-import { oauthRedirectUri } from "@/lib/oauth/redirect";
+import { createDeadline } from "@/connectors/deadline";
+import { nangoProxy, BudgetExhaustedError } from "@/lib/nango/client";
 import type {
   AttachmentDraft,
   Connector,
   ConnectorCredentials,
   DownloadedAttachment,
+  FetchContext,
   FetchDeadline,
   FetchResult,
   NormalizedEventDraft,
   RawPayload,
 } from "@/connectors/types";
 
-const SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize";
-const SLACK_API_BASE = "https://slack.com/api";
+// The scope list Nango's `slack` integration must be configured with (see
+// NANGO_MIGRATION_LOG.md — this codebase no longer builds an authorize URL
+// itself, Nango does). Kept here as the source of truth for what this
+// connector's fetch code actually depends on.
 // conversations.list is called with types: "public_channel,private_channel",
 // which needs channels:read (public) AND groups:read (private) — history
 // scopes alone only cover reading messages in channels the bot can already
 // see, not listing which private channels exist in the first place.
-const BOT_SCOPES = [
+export const BOT_SCOPES = [
   "channels:history",
   "channels:read",
   "groups:history",
@@ -30,7 +33,8 @@ const BOT_SCOPES = [
   // retro-apply" rule, an already-connected workspace needs an explicit
   // disconnect + reconnect before this actually lands on its token; editing
   // this list alone does nothing for existing grants. Must also be added in
-  // the Slack app dashboard (OAuth & Permissions -> Bot Token Scopes).
+  // the Slack app dashboard (OAuth & Permissions -> Bot Token Scopes) AND
+  // in Nango's `slack` integration config.
   "files:read",
 ];
 
@@ -40,12 +44,8 @@ const BOT_SCOPES = [
 interface SlackApiResponse {
   ok: boolean;
   error?: string;
-  access_token?: string;
-  token_type?: string;
-  scope?: string;
-  bot_user_id?: string;
-  team?: { id: string; name?: string };
-  authed_user?: Record<string, unknown>;
+  team?: string; // auth.test's team NAME (not the {id,name} object oauth.v2.access used to return)
+  team_id?: string;
   channels?: Array<{ id: string; name?: string; is_member?: boolean }>;
   messages?: Array<{ ts: string } & Record<string, unknown>>;
   members?: Array<{
@@ -55,6 +55,27 @@ interface SlackApiResponse {
     profile?: { display_name?: string; email?: string };
   }>;
   response_metadata?: { next_cursor?: string };
+}
+
+/** Every JSON call this connector makes, routed through Nango's proxy — see
+ * NANGO_MIGRATION_LOG.md D-007: Nango owns retry/backoff (it honors Slack's
+ * `retry-after` natively), so there's no hand-rolled 429 loop here anymore.
+ * Slack's Web API accepts GET with query-string params for every method
+ * this connector calls (only binary file uploads require POST), so this
+ * collapses what used to be separate Post/Get helpers into one. */
+async function slackApi(
+  method: string,
+  params: Record<string, string>,
+  credentials: ConnectorCredentials,
+  deadline: FetchDeadline,
+): Promise<SlackApiResponse> {
+  return nangoProxy<SlackApiResponse>({
+    connectionId: credentials.connectionId,
+    providerConfigKey: credentials.providerConfigKey,
+    endpoint: `/${method}`,
+    params,
+    deadline,
+  });
 }
 
 /** One users.list pass per sync (paginated), not one users.info call per
@@ -69,11 +90,14 @@ interface SlackApiResponse {
  * sync. */
 const USER_DIRECTORY_PAGE_LIMIT = 10; // 10 * 200 = 2000 users — comfortably above any real workspace
 
-async function fetchUserDirectory(accessToken: string): Promise<Map<string, { displayName?: string }>> {
+async function fetchUserDirectory(
+  credentials: ConnectorCredentials,
+  deadline: FetchDeadline,
+): Promise<Map<string, { displayName?: string }>> {
   const directory = new Map<string, { displayName?: string }>();
   let cursor = "";
   for (let page = 0; page < USER_DIRECTORY_PAGE_LIMIT; page++) {
-    const res = await slackApiGet("users.list", { limit: "200", ...(cursor ? { cursor } : {}) }, accessToken);
+    const res = await slackApi("users.list", { limit: "200", ...(cursor ? { cursor } : {}) }, credentials, deadline);
     if (!res.ok) break;
     for (const user of res.members ?? []) {
       const displayName = user.profile?.display_name || user.real_name || user.name;
@@ -178,110 +202,59 @@ function filesToAttachmentDrafts(files: SlackFile[] | undefined): AttachmentDraf
   return drafts.length > 0 ? drafts : undefined;
 }
 
-function redirectUri(): string {
-  return oauthRedirectUri("slack");
-}
-
-async function slackApiPost(method: string, params: Record<string, string>, accessToken?: string): Promise<SlackApiResponse> {
-  const res = await fetch(`${SLACK_API_BASE}/${method}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    },
-    body: new URLSearchParams(params),
-  });
-  return res.json();
-}
-
-async function slackApiGet(method: string, params: Record<string, string>, accessToken: string): Promise<SlackApiResponse> {
-  const url = new URL(`${SLACK_API_BASE}/${method}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-
-  // Slack rate-limits aggressively (Tier 2/3 methods can be as low as 20-50
-  // req/min per workspace) — a single 429 retry with the provided
-  // Retry-After is the minimum viable handling; a real production sync
-  // engine under load would want a shared rate limiter across integrations.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.status === 429) {
-      const retryAfterSec = Number(res.headers.get("Retry-After") ?? "5");
-      await new Promise((resolve) => setTimeout(resolve, retryAfterSec * 1000));
-      continue;
-    }
-    return res.json();
-  }
-  throw new Error(`Slack API ${method}: exhausted retries after repeated 429s`);
-}
+// Reserved headroom at every loop boundary for the caller's raw_events/
+// normalized_events writes and cursor upsert that happen after fetchSince
+// returns — same pattern as every other connector. Slack's fetchSince had
+// no deadline awareness at all before this migration (documented as an
+// accepted omission in connectors/types.ts); it needs one now because
+// nangoProxy requires a real FetchDeadline to bound Nango's own retries.
+const RESERVE_MS = 5_000;
 
 export const slackConnector: Connector<SlackCursor> = {
   id: "slack",
   displayName: "Slack",
-  requiresOAuth: true,
+  nangoProviderConfigKey: "slack",
 
-  getAuthorizeUrl(state: string): string {
-    const env = slackEnv();
-    const url = new URL(SLACK_AUTHORIZE_URL);
-    url.searchParams.set("client_id", env.SLACK_CLIENT_ID);
-    url.searchParams.set("scope", BOT_SCOPES.join(","));
-    url.searchParams.set("redirect_uri", redirectUri());
-    url.searchParams.set("state", state);
-    return url.toString();
-  },
-
-  async exchangeCode(code: string): Promise<ConnectorCredentials> {
-    const env = slackEnv();
-    const data = await slackApiPost("oauth.v2.access", {
-      client_id: env.SLACK_CLIENT_ID,
-      client_secret: env.SLACK_CLIENT_SECRET,
-      code,
-      redirect_uri: redirectUri(),
-    });
-
-    if (!data.ok) {
-      throw new Error(`Slack OAuth exchange failed: ${data.error ?? "unknown error"}`);
+  async identify(credentials: ConnectorCredentials) {
+    const data = await slackApi("auth.test", {}, credentials, createDeadline(10_000));
+    if (!data.ok || !data.team_id) {
+      throw new Error(`Slack auth.test failed: ${data.error ?? "no team_id in response"}`);
     }
-
-    return {
-      tokens: {
-        access_token: data.access_token,
-        token_type: data.token_type,
-        scope: data.scope,
-        bot_user_id: data.bot_user_id,
-        team: data.team,
-        authed_user: data.authed_user,
-      },
-      externalAccountId: data.team?.id ?? "unknown",
-      externalAccountLabel: data.team?.name,
-      // Slack bot tokens don't expire under the classic OAuth flow used
-      // here, so there's no expires_in to record.
-    };
+    return { externalAccountId: data.team_id, externalAccountLabel: data.team };
   },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return false;
-    const data = await slackApiPost("auth.test", {}, accessToken);
-    return Boolean(data.ok);
+    try {
+      const data = await slackApi("auth.test", {}, credentials, createDeadline(10_000));
+      return Boolean(data.ok);
+    } catch {
+      return false;
+    }
   },
 
   async fetchSince(
     credentials: ConnectorCredentials,
     cursor: SlackCursor | null,
+    context: FetchContext,
   ): Promise<FetchResult<SlackCursor>> {
-    const accessToken = credentials.tokens.access_token as string;
     const channelCursors = { ...(cursor?.channelCursors ?? {}) };
     const rawPayloads: RawPayload[] = [];
+    let hasMore = false;
 
-    const userDirectory = await fetchUserDirectory(accessToken).catch((err: unknown) => {
+    const userDirectory = await fetchUserDirectory(credentials, context.deadline).catch((err: unknown) => {
       console.warn("[slack] failed to fetch user directory — actors will show as raw ids:", err);
       return new Map<string, { displayName?: string }>();
     });
 
-    const channelsRes = await slackApiGet(
+    if (context.deadline.remainingMs() < RESERVE_MS) {
+      return { rawPayloads: [], nextCursor: { provider: "slack", channelCursors }, hasMore: true };
+    }
+
+    const channelsRes = await slackApi(
       "conversations.list",
       { types: "public_channel,private_channel", limit: "200" },
-      accessToken,
+      credentials,
+      context.deadline,
     );
     if (!channelsRes.ok) {
       throw new Error(`Slack conversations.list failed: ${channelsRes.error ?? "unknown error"}`);
@@ -289,17 +262,29 @@ export const slackConnector: Connector<SlackCursor> = {
 
     for (const channel of channelsRes.channels ?? []) {
       if (!channel.is_member) continue; // bot must be invited to the channel to read history
+      if (context.deadline.remainingMs() < RESERVE_MS) {
+        hasMore = true;
+        break;
+      }
 
       const oldest = channelCursors[channel.id];
-      const historyRes = await slackApiGet(
-        "conversations.history",
-        { channel: channel.id, ...(oldest ? { oldest } : {}), limit: "200" },
-        accessToken,
-      );
-      if (!historyRes.ok) {
+      let historyRes: SlackApiResponse;
+      try {
+        historyRes = await slackApi(
+          "conversations.history",
+          { channel: channel.id, ...(oldest ? { oldest } : {}), limit: "200" },
+          credentials,
+          context.deadline,
+        );
+      } catch (err) {
+        if (err instanceof BudgetExhaustedError) {
+          hasMore = true;
+          break;
+        }
         // Don't let one broken/archived channel abort the whole sync.
         continue;
       }
+      if (!historyRes.ok) continue;
 
       let highestTs = oldest;
       for (const message of historyRes.messages ?? []) {
@@ -326,7 +311,7 @@ export const slackConnector: Connector<SlackCursor> = {
     return {
       rawPayloads,
       nextCursor: { provider: "slack", channelCursors },
-      hasMore: false, // conversations.list/.history pagination beyond one page is a v2 follow-up, not needed for the mock-first vertical slice
+      hasMore, // conversations.list/.history pagination beyond one page is a v2 follow-up, not needed for the mock-first vertical slice
     };
   },
 
@@ -377,11 +362,15 @@ export const slackConnector: Connector<SlackCursor> = {
     downloadRef: Record<string, unknown>,
     deadline: FetchDeadline,
   ): Promise<DownloadedAttachment | null> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
     const url = downloadRef.url_private_download as string | undefined;
-    if (!accessToken || !url || deadline.expired()) return null;
+    if (!url || deadline.expired()) return null;
 
     try {
+      // Direct fetch, not the proxy (see D-004): Slack file bytes are a
+      // binary download, not a JSON API call, and getting a raw token here
+      // is simpler than special-casing this one endpoint's response shape
+      // through nangoProxy.
+      const accessToken = await credentials.getAccessToken();
       const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
         console.warn(`[slack] attachment download failed: HTTP ${res.status}`);
@@ -405,9 +394,17 @@ export const slackConnector: Connector<SlackCursor> = {
   },
 
   async disconnect(credentials: ConnectorCredentials): Promise<void> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return;
-    // Best-effort — the row gets deleted/marked revoked locally regardless.
-    await slackApiPost("auth.revoke", {}, accessToken).catch(() => {});
+    // Best-effort, direct (not proxied) — a one-off admin action outside
+    // any sync budget. The caller (integrations/actions.ts) deletes the
+    // Nango connection regardless of whether this succeeds.
+    try {
+      const accessToken = await credentials.getAccessToken();
+      await fetch("https://slack.com/api/auth.revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch {
+      // swallow — best-effort
+    }
   },
 };

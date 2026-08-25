@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.15"
+  }
   public: {
     Tables: {
       action_item_source_events: {
@@ -343,59 +348,44 @@ export type Database = {
       }
       connector_credentials: {
         Row: {
-          access_token_expires_at: string | null
           client_space_id: string
           created_at: string
           created_by: string | null
           external_account_id: string
           external_account_label: string | null
           id: string
+          nango_connection_id: string | null
+          nango_provider_config_key: string | null
           provider: Database["public"]["Enums"]["connector_provider"]
-          refresh_failed_at: string | null
-          refresh_failure_count: number
           revoked_at: string | null
-          secret_alg: string
-          secret_ciphertext: string
-          secret_iv: string
-          secret_key_version: number
           updated_at: string
           workspace_id: string
         }
         Insert: {
-          access_token_expires_at?: string | null
           client_space_id: string
           created_at?: string
           created_by?: string | null
           external_account_id: string
           external_account_label?: string | null
           id?: string
+          nango_connection_id?: string | null
+          nango_provider_config_key?: string | null
           provider: Database["public"]["Enums"]["connector_provider"]
-          refresh_failed_at?: string | null
-          refresh_failure_count?: number
           revoked_at?: string | null
-          secret_alg?: string
-          secret_ciphertext: string
-          secret_iv: string
-          secret_key_version?: number
           updated_at?: string
           workspace_id: string
         }
         Update: {
-          access_token_expires_at?: string | null
           client_space_id?: string
           created_at?: string
           created_by?: string | null
           external_account_id?: string
           external_account_label?: string | null
           id?: string
+          nango_connection_id?: string | null
+          nango_provider_config_key?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"]
-          refresh_failed_at?: string | null
-          refresh_failure_count?: number
           revoked_at?: string | null
-          secret_alg?: string
-          secret_ciphertext?: string
-          secret_iv?: string
-          secret_key_version?: number
           updated_at?: string
           workspace_id?: string
         }
@@ -1986,4 +1976,3 @@ export const Constants = {
     },
   },
 } as const
-

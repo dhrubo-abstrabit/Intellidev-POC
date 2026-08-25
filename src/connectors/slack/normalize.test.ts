@@ -1,10 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.stubEnv("SLACK_CLIENT_ID", "test-client-id");
-vi.stubEnv("SLACK_CLIENT_SECRET", "test-client-secret");
-vi.stubEnv("SLACK_OAUTH_STATE_SECRET", "test-state-secret-at-least-16-bytes");
-
-const { slackConnector } = await import("./index");
+import { describe, expect, it } from "vitest";
+import { slackConnector } from "./index";
 
 describe("slackConnector.normalize", () => {
   it("maps a plain message to a message.posted draft", () => {

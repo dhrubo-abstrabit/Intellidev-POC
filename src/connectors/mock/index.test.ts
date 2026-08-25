@@ -6,11 +6,11 @@ const context = { config: {}, deadline: createDeadline(60_000) };
 
 describe("mockConnector", () => {
   it("generates a deterministic batch and advances the cursor", async () => {
-    const first = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, null, context);
+    const first = await mockConnector.fetchSince({ connectionId: "mock", providerConfigKey: "mock", externalAccountId: "mock", getAccessToken: async () => "" }, null, context);
     expect(first.rawPayloads).toHaveLength(5);
     expect(first.nextCursor).toEqual({ seq: 5 });
 
-    const second = await mockConnector.fetchSince({ tokens: {}, externalAccountId: "mock" }, first.nextCursor, context);
+    const second = await mockConnector.fetchSince({ connectionId: "mock", providerConfigKey: "mock", externalAccountId: "mock", getAccessToken: async () => "" }, first.nextCursor, context);
     expect(second.rawPayloads).toHaveLength(5);
     expect(second.nextCursor).toEqual({ seq: 10 });
 

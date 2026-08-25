@@ -1,9 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.stubEnv("GOOGLE_CONNECTOR_CLIENT_ID", "test-client-id");
-vi.stubEnv("GOOGLE_CONNECTOR_CLIENT_SECRET", "test-client-secret");
-
-const { gmailConnector } = await import("./index");
+import { describe, expect, it } from "vitest";
+import { gmailConnector } from "./index";
 
 function payload(overrides: Record<string, unknown> = {}) {
   return {

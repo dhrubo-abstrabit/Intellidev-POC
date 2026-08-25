@@ -25,8 +25,10 @@ import { getConfigSchema } from "@/lib/db/schemas/integration-config";
 import { GOOGLE_CONFIG_SECTIONS } from "@/connectors/google/config";
 import {
   connectMock,
-  connectProvider,
+  createIntegrationConnectSession,
   disconnectIntegration,
+  finalizeConnection,
+  reconcileConnections,
   syncNow,
 } from "./actions";
 
@@ -40,29 +42,6 @@ const STATUS_VARIANT: Record<
   error: "destructive",
   revoked: "outline",
   disconnected: "outline",
-};
-
-// Keyed by the `status` code the OAuth callback route redirects with (see
-// lib/oauth/redirect.ts's integrationsRedirectUrl and
-// api/oauth/[provider]/callback/route.ts). Falls back to a generic message
-// for any status not listed here, so a new failure mode never renders blank.
-const CONNECT_STATUS_MESSAGE: Record<string, string> = {
-  denied: "Connection was cancelled.",
-  oauth_state_invalid:
-    "That connection link expired or was invalid — try connecting again.",
-  oauth_state_provider_mismatch:
-    "That connection link was for a different connector — try connecting again.",
-  exchange_failed:
-    "Could not complete the connection with the provider. Please try again.",
-  credential_save_failed:
-    "Connected, but saving the credential failed. Please try again.",
-  integration_save_failed:
-    "Connected, but saving the integration failed. Please try again.",
-  no_refresh_token:
-    "Google didn't return a long-lived grant. Remove this app at myaccount.google.com/permissions, then connect again.",
-  scope_missing:
-    "Not all requested permissions were granted — disconnect and reconnect to approve the full scope list.",
-  invalid: "Connected, but the connector failed its post-connect check.",
 };
 
 /** Providers that merged into `google` and no longer have a connector
@@ -89,14 +68,10 @@ function googleServiceSummary(config: Record<string, unknown>): string[] {
 
 export default async function IntegrationsPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ workspaceId: string; projectId: string }>;
-  searchParams: Promise<{ connect?: string; status?: string }>;
 }) {
   const { workspaceId, projectId } = await params;
-  const { connect: connectedProvider, status: connectStatus } =
-    await searchParams;
 
   // Integrations key on client_space_id now, not project_id — resolve the
   // project's client space once here (see src/lib/scope.ts).
@@ -126,6 +101,13 @@ export default async function IntegrationsPage({
   const availableConnectors = listConnectors().filter(
     (c) => !activeProviders.has(c.id),
   );
+  // Only a Nango-backed provider can have an orphaned connection (one that
+  // exists on Nango's side with no local row yet — see reconcileConnections'
+  // doc comment) — an available `mock` slot has nothing for the sweep to
+  // find, so don't show the button when it's the only thing available.
+  const hasNangoAvailable = availableConnectors.some(
+    (c) => c.nangoProviderConfigKey,
+  );
 
   return (
     <div className="space-y-8">
@@ -135,13 +117,6 @@ export default async function IntegrationsPage({
           Connect and manage the sources this project pulls activity from.
         </p>
       </div>
-
-      {connectStatus && connectStatus !== "connected" ? (
-        <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {CONNECT_STATUS_MESSAGE[connectStatus] ??
-            `Connecting ${connectedProvider ?? "the connector"} failed (${connectStatus}).`}
-        </p>
-      ) : null}
 
       <section>
         <h2 className="mb-4 text-base font-semibold">Connected</h2>
@@ -316,7 +291,24 @@ export default async function IntegrationsPage({
 
       {availableConnectors.length > 0 ? (
         <section>
-          <h2 className="mb-4 text-base font-semibold">Available</h2>
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold">Available</h2>
+            {/* Covers the case reconcileConnections' event-driven trigger
+              can't: the whole browser closed or crashed mid-flow, not just
+              the Connect UI popup (see ConnectProviderButton's `close`
+              handler and reconcileConnections' own doc comment). */}
+            {hasNangoAvailable ? (
+              <AsyncButton
+                action={reconcileConnections.bind(null, workspaceId, projectId)}
+                loadingMessage="Checking…"
+                size="sm"
+                variant="outline"
+                data-testid="check-connections"
+              >
+                Check for connections
+              </AsyncButton>
+            ) : null}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {availableConnectors.map((connector) => (
               <Card key={connector.id}>
@@ -326,17 +318,15 @@ export default async function IntegrationsPage({
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {connector.requiresOAuth ? (
-                    <form
-                      action={connectProvider.bind(
-                        null,
-                        connector.id,
-                        workspaceId,
-                        projectId,
-                      )}
-                    >
-                      <ConnectProviderButton provider={connector.id} />
-                    </form>
+                  {connector.nangoProviderConfigKey ? (
+                    <ConnectProviderButton
+                      provider={connector.id}
+                      workspaceId={workspaceId}
+                      projectId={projectId}
+                      createConnectSession={createIntegrationConnectSession}
+                      finalizeConnection={finalizeConnection}
+                      reconcileConnections={reconcileConnections}
+                    />
                   ) : connector.id === "mock" ? (
                     <AsyncButton
                       action={connectMock.bind(null, workspaceId, projectId)}

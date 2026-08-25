@@ -8,9 +8,12 @@
  * enabled another service. See CLAUDE.md's "Google connector specifics".
  *
  * The lists stay separate here because each sub-connector's own fetch code
- * still documents which scopes IT depends on, and because
- * `include_granted_scopes` is still never set (see oauth.ts): the requested
- * list is the whole truth about what a token can do.
+ * still documents which scopes IT depends on. `include_granted_scopes` is a
+ * setting on Nango's `google` integration now, not something this app's code
+ * sets on an authorize URL (the old oauth.ts, which used to set it, is
+ * deleted — see NANGO_MIGRATION_LOG.md) — kept off there for the same
+ * reason it was kept off here: the requested list should stay the whole
+ * truth about what a token can do.
  */
 export const IDENTITY_SCOPES = ["openid", "email", "profile"];
 

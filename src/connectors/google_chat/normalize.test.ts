@@ -1,9 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.stubEnv("GOOGLE_CONNECTOR_CLIENT_ID", "test-client-id");
-vi.stubEnv("GOOGLE_CONNECTOR_CLIENT_SECRET", "test-client-secret");
-
-const { googleChatConnector } = await import("./index");
+import { describe, expect, it } from "vitest";
+import { googleChatConnector } from "./index";
 
 describe("googleChatConnector.normalize", () => {
   it("maps a message with text to a message.posted draft with a stable dedupeKey", () => {

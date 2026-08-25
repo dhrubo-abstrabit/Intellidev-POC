@@ -1,5 +1,4 @@
 import "server-only";
-import { refreshGoogleTokens, revokeGoogleToken } from "@/connectors/google/oauth";
 import { googleFetch, GoogleBudgetExhaustedError } from "@/connectors/google/client";
 import { createDeadline } from "@/connectors/deadline";
 import { ConnectorConfigError } from "@/connectors/errors";
@@ -106,29 +105,23 @@ function clampNormalizedBody(body: string | undefined): string | undefined {
 /**
  * NOT registered in connectors/registry.ts anymore — the merged `google`
  * connector owns the OAuth handshake and delegates fetch/normalize here (see
- * connectors/google/index.ts). `getAuthorizeUrl`/`exchangeCode` are gone with
- * it: there is no `api/oauth/gmail/callback` route left for them to redirect
- * to, so keeping them would only offer a dead path. Everything below is
- * still live, just called through `google`.
+ * connectors/google/index.ts). No OAuth methods or `disconnect` on this
+ * object at all: Nango owns the handshake now, and google/index.ts's own
+ * disconnect doesn't delegate to the sub-connectors, so an implementation
+ * here would just be dead code. Everything below is still live, just
+ * called through `google`.
  */
 export const gmailConnector: Connector<GmailCursor> = {
   id: "gmail",
   displayName: "Gmail",
-  requiresOAuth: true,
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
-    if (!accessToken) return false;
     try {
-      await googleFetch(`${GMAIL_API_BASE}/profile`, { accessToken, deadline: createDeadline(10_000), maxAttempts: 1 });
+      await googleFetch(`${GMAIL_API_BASE}/profile`, { credentials, deadline: createDeadline(10_000), maxAttempts: 1 });
       return true;
     } catch {
       return false;
     }
-  },
-
-  async refreshTokens(credentials: ConnectorCredentials): Promise<ConnectorCredentials> {
-    return refreshGoogleTokens(credentials);
   },
 
   async fetchSince(
@@ -143,7 +136,6 @@ export const gmailConnector: Connector<GmailCursor> = {
       );
     }
     const config = parsedConfig.data;
-    const accessToken = credentials.tokens.access_token as string;
     const previousCursor = parseCursor(cursor);
 
     const windowStartEpochSec = previousCursor.lastInternalDateMs
@@ -172,7 +164,7 @@ export const gmailConnector: Connector<GmailCursor> = {
         // includeSpamTrash left at its default (false) — never opted into.
         if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-        const res = await googleFetch<GmailListResponse>(url.toString(), { accessToken, deadline: context.deadline });
+        const res = await googleFetch<GmailListResponse>(url.toString(), { credentials, deadline: context.deadline });
         for (const m of res.messages ?? []) stubs.push({ id: m.id, threadId: m.threadId });
         pageToken = res.nextPageToken;
         pages++;
@@ -203,7 +195,7 @@ export const gmailConnector: Connector<GmailCursor> = {
         // format=full is required — format=metadata returns headers but no
         // payload.body.data, which is what the plain-text extraction needs.
         message = await googleFetch<GmailMessage>(`${GMAIL_API_BASE}/messages/${stub.id}?format=full`, {
-          accessToken,
+          credentials,
           deadline: context.deadline,
         });
       } catch (err) {
@@ -298,31 +290,35 @@ export const gmailConnector: Connector<GmailCursor> = {
     downloadRef: Record<string, unknown>,
     deadline: FetchDeadline,
   ): Promise<DownloadedAttachment | null> {
-    const accessToken = credentials.tokens.access_token as string | undefined;
     const messageId = downloadRef.messageId as string | undefined;
     const attachmentId = downloadRef.attachmentId as string | undefined;
-    if (!accessToken || !messageId || !attachmentId || deadline.expired()) return null;
+    if (!messageId || !attachmentId || deadline.expired()) return null;
 
     try {
-      // messages.attachments.get returns JSON, so this DOES go through
-      // googleFetch (unlike Chat/Drive's binary download endpoints) — a
-      // single attempt is enough for the same reason fetchSince's own
-      // per-message fetch above accepts one failure without retrying.
-      const res = await googleFetch<{ size?: number; data?: string }>(
-        `${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`,
-        { accessToken, deadline, maxAttempts: 1 },
-      );
-      if (!res.data) return null;
+      // Bypasses the proxy deliberately (see NANGO_MIGRATION_LOG.md D-004):
+      // this endpoint returns the attachment's bytes as base64 INSIDE a
+      // JSON response, which Nango's proxy would fully buffer in memory (no
+      // content-disposition/chunked signal to stream on) and inflate ~33%
+      // via base64 — a real OOM risk on a large attachment. A single
+      // attempt only, same rationale as Chat/Drive's own binary downloads:
+      // retrying a slow single attachment would eat the budget meant for
+      // OTHER attachments in the same run.
+      const accessToken = await credentials.getAccessToken();
+      const res = await fetch(`${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) {
+        console.warn(`[gmail] attachment download failed for message ${messageId}: HTTP ${res.status}`);
+        return null;
+      }
+      const body = (await res.json()) as { data?: string };
+      if (!body.data) return null;
       // base64URL, not base64 — see mime.ts's decodeBase64Url comment for
       // why plain "base64" corrupts any payload containing '-' or '_'.
-      return { bytes: Buffer.from(res.data, "base64url") };
+      return { bytes: Buffer.from(body.data, "base64url") };
     } catch (err) {
       console.warn(`[gmail] attachment download failed for message ${messageId}:`, err);
       return null;
     }
-  },
-
-  async disconnect(credentials: ConnectorCredentials): Promise<void> {
-    await revokeGoogleToken(credentials).catch(() => {});
   },
 };
