@@ -5,11 +5,11 @@
  * [...]}`, which Postgres cannot cast to bytea at all. Use these at every
  * boundary where a Buffer crosses into or out of a bytea column.
  *
- * Lives here (not lib/crypto/tokens.ts) because it has a non-token consumer:
- * services/sync/run-sync.ts hashes raw event payloads into raw_events'
- * payload_hash bytea column, which has nothing to do with credential
- * encryption. Keeping it separate means the Nango migration can delete
- * lib/crypto/tokens.ts entirely without touching that call site.
+ * Lives here (previously: not lib/crypto/tokens.ts, now deleted entirely by
+ * the Nango migration) because it has a non-token consumer: services/sync/
+ * run-sync.ts hashes raw event payloads into raw_events' payload_hash bytea
+ * column, which has nothing to do with credential encryption. Keeping it
+ * separate meant that deletion didn't have to touch this call site.
  */
 export function toBytea(buffer: Buffer): string {
   return `\\x${buffer.toString("hex")}`;
