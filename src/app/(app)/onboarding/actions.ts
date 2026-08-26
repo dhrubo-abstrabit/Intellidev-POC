@@ -29,13 +29,19 @@ export async function createWorkspace(
 
   // A workspace cannot exist without a tenant above it — workspaces.tenant_id
   // is NOT NULL, and the workspaces_insert policy requires the caller to
-  // already be a super_admin of that tenant (see
-  // supabase/migrations/20260820100400_tenancy.sql). This app has no
+  // already hold tenant_role 'owner' (see
+  // supabase/migrations/20260901000400_tenancy.sql). This app has no
   // tenant/billing UI yet, so "create a workspace" provisions a brand-new
   // tenant behind the scenes, one per workspace, invisible to the user.
-  // handle_new_tenant makes the creator that tenant's super_admin atomically,
-  // so the workspace insert right after satisfies its own RLS check without
-  // a second round trip.
+  // handle_new_tenant makes the creator that tenant's owner atomically, so
+  // the workspace insert right after satisfies its own RLS check without a
+  // second round trip.
+  //
+  // Neither insert passes an owner id: `tenants` and `workspaces` have no
+  // owner_id column. Ownership is tenant_members.role = 'owner' and
+  // workspace_members.role = 'admin', both written by the provisioning
+  // triggers from auth.uid(). A column plus a role row would be two sources
+  // of truth for one fact.
   //
   // `tenants.slug` is globally unique — and because RLS scopes every SELECT
   // to tenants this user already administers, a pre-check ("does this slug
@@ -50,7 +56,7 @@ export async function createWorkspace(
 
     const { data: tenant, error: tenantError } = await supabase
       .from("tenants")
-      .insert({ name: parsed.data.name, slug, owner_id: user.id })
+      .insert({ name: parsed.data.name, slug })
       .select("id")
       .single();
 
@@ -63,7 +69,7 @@ export async function createWorkspace(
 
     const { data: workspace, error: workspaceError } = await supabase
       .from("workspaces")
-      .insert({ tenant_id: tenant.id, name: parsed.data.name, slug, owner_id: user.id })
+      .insert({ tenant_id: tenant.id, name: parsed.data.name, slug })
       .select("id")
       .single();
     if (workspaceError || !workspace) {

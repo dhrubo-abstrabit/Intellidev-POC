@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 interface SyncJobPayload {
-  integrationId: string;
+  projectConnectorId: string;
   trigger?: Database["public"]["Enums"]["sync_trigger"];
   /** Set by run-sync.ts itself when a connector reports hasMore:true — see
    * MAX_SYNC_CHAIN_DEPTH there. Absent on every cron/manual-triggered job. */
@@ -24,11 +24,11 @@ interface SyncJobPayload {
 
 async function handler(request: NextRequest) {
   const body = (await request.json()) as Partial<SyncJobPayload>;
-  if (typeof body.integrationId !== "string") {
-    return NextResponse.json({ error: "integrationId is required" }, { status: 400 });
+  if (typeof body.projectConnectorId !== "string") {
+    return NextResponse.json({ error: "projectConnectorId is required" }, { status: 400 });
   }
 
-  const result = await runSync(body.integrationId, body.trigger ?? "schedule", body.chainDepth ?? 0, body.batchDate);
+  const result = await runSync(body.projectConnectorId, body.trigger ?? "schedule", body.chainDepth ?? 0, body.batchDate);
   // A non-2xx tells withJobAuth to fail_job (which pg_cron's dispatcher then
   // redelivers with backoff — see the pgmq/pg_cron migration) — only
   // "failed" (an actual error) should trigger that; "skipped" (another sync

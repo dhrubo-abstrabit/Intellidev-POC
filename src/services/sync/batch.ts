@@ -10,20 +10,23 @@ export type BatchMemberOutcome = "succeeded" | "failed" | "enqueue_failed" | "ti
 /**
  * Creates (or reuses, if this client space/day was already seeded — e.g. a
  * retried cron invocation) the coordination row for "every one of this
- * client space's due integrations must report in before extraction runs for
- * batchDate", plus one membership row per integration. Idempotent: safe to
+ * client space's due project connectors must report in before extraction runs for
+ * batchDate", plus one membership row per project connector. Idempotent: safe to
  * call more than once for the same (client space, batchDate).
  *
  * Batched per CLIENT SPACE, not per project (see
- * supabase/migrations/20260820100900_sync.sql) — integrations, events and
+ * supabase/migrations/20260901000900_sync.sql) — connectors, events and
  * the daily digest all belong to the client space; a project is a tagged
  * view over a subset of its action items, not a separate data owner.
  */
 export async function seedBatchForClientSpace(
   service: ServiceClient,
-  params: { workspaceId: string; clientSpaceId: string; batchDate: string; integrationIds: string[] },
+  // No workspaceId: sync_batches is keyed on the client space alone now. The
+  // batch is a coordination record for one engagement's daily sync, and every
+  // access path to it flows through client_space_id.
+  params: { clientSpaceId: string; batchDate: string; projectConnectorIds: string[] },
 ): Promise<string> {
-  const { workspaceId, clientSpaceId, batchDate, integrationIds } = params;
+  const { clientSpaceId, batchDate, projectConnectorIds } = params;
 
   const { data: existing } = await service
     .from("sync_batches")
@@ -36,7 +39,7 @@ export async function seedBatchForClientSpace(
   if (!batchId) {
     const { data: inserted, error } = await service
       .from("sync_batches")
-      .insert({ workspace_id: workspaceId, client_space_id: clientSpaceId, batch_date: batchDate })
+      .insert({ client_space_id: clientSpaceId, batch_date: batchDate })
       .select("id")
       .single();
     if (error) {
@@ -56,10 +59,10 @@ export async function seedBatchForClientSpace(
     }
   }
 
-  if (integrationIds.length > 0) {
+  if (projectConnectorIds.length > 0) {
     await service.from("sync_batch_members").upsert(
-      integrationIds.map((integrationId) => ({ batch_id: batchId, integration_id: integrationId, client_space_id: clientSpaceId })),
-      { onConflict: "batch_id,integration_id", ignoreDuplicates: true },
+      projectConnectorIds.map((projectConnectorId) => ({ batch_id: batchId, project_connector_id: projectConnectorId, client_space_id: clientSpaceId })),
+      { onConflict: "batch_id,project_connector_id", ignoreDuplicates: true },
     );
   }
 
@@ -72,7 +75,7 @@ export type SettleBatchResult =
       inBatch: true;
       firedLlmJob: boolean;
       /** True when THIS call's own compare-and-swap found its member row
-       * already completed — i.e. this integration reported in once already
+       * already completed — i.e. this connector reported in once already
        * today (normal completion, or an earlier settle from the same run),
        * and is now reporting again with fresh work (e.g. a later manual
        * "Sync Now", or attachment extraction finishing after the batch
@@ -87,7 +90,7 @@ export type SettleBatchResult =
     };
 
 /**
- * Reports one integration as done (terminal — no further chaining) for its
+ * Reports one connector as done (terminal — no further chaining) for its
  * client space's batch on batchDate, and fires the day's LLM job exactly
  * once, the moment every member has reported in. Race-safe via two
  * independent conditional updates (`WHERE completed_at IS NULL` / `WHERE
@@ -95,8 +98,8 @@ export type SettleBatchResult =
  * Postgres serializes via ordinary row locking — no counter arithmetic, no
  * custom RPC.
  *
- * Returns `{inBatch: false}` when this integration isn't part of any active
- * batch for batchDate (batch never seeded, or this integration wasn't due
+ * Returns `{inBatch: false}` when this connector isn't part of any active
+ * batch for batchDate (batch never seeded, or this connector wasn't due
  * at cron time) — callers should fall back to their own immediate-trigger
  * behavior in that case. See `alreadySettled` above for the other case
  * callers need to handle explicitly: the batch's one-shot trigger already
@@ -104,9 +107,9 @@ export type SettleBatchResult =
  */
 export async function settleBatchMembership(
   service: ServiceClient,
-  params: { clientSpaceId: string; integrationId: string; batchDate: string; outcome: BatchMemberOutcome },
+  params: { clientSpaceId: string; projectConnectorId: string; batchDate: string; outcome: BatchMemberOutcome },
 ): Promise<SettleBatchResult> {
-  const { clientSpaceId, integrationId, batchDate, outcome } = params;
+  const { clientSpaceId, projectConnectorId, batchDate, outcome } = params;
 
   const { data: batch } = await service
     .from("sync_batches")
@@ -120,7 +123,7 @@ export async function settleBatchMembership(
     .from("sync_batch_members")
     .select("id")
     .eq("batch_id", batch.id)
-    .eq("integration_id", integrationId)
+    .eq("project_connector_id", projectConnectorId)
     .maybeSingle();
   if (!member) return { inBatch: false };
 
@@ -135,7 +138,7 @@ export async function settleBatchMembership(
     // Already settled — either an earlier delivery of this SAME terminal
     // event (the job queue is at-least-once, in which case the caller that
     // won that race already did/is doing the remaining-count check below),
-    // OR this integration produced fresh work AGAIN after already
+    // OR this connector produced fresh work AGAIN after already
     // completing its part of today's batch (a second manual "Sync Now", or
     // attachment extraction finishing after the batch's one-shot trigger
     // already fired). Only the caller can tell these apart (it knows
@@ -162,13 +165,13 @@ export async function settleBatchMembership(
   return { inBatch: true, firedLlmJob: (won?.length ?? 0) === 1, alreadySettled: false };
 }
 
-/** Called by cron tick immediately when publishing an integration's own
- * `/api/jobs/sync` dispatch fails — that integration will never itself call
+/** Called by cron tick immediately when publishing a connector's own
+ * `/api/jobs/sync` dispatch fails — that connector will never itself call
  * settleBatchMembership, so without this the batch would only ever complete
  * via the 2-hour timeout backstop. */
 export async function markMemberEnqueueFailed(
   service: ServiceClient,
-  params: { clientSpaceId: string; integrationId: string; batchDate: string },
+  params: { clientSpaceId: string; projectConnectorId: string; batchDate: string },
 ): Promise<SettleBatchResult> {
   return settleBatchMembership(service, { ...params, outcome: "enqueue_failed" });
 }
@@ -245,7 +248,7 @@ export type ForceCompleteBatchResult = { clientSpaceId: string; batchDate: strin
 
 /**
  * Backstop for a batch that never completed on its own — a lost job
- * delivery or a hard function timeout means some integration never reached
+ * delivery or a hard function timeout means some connector never reached
  * a terminal state, and with cron running once/day there's no later tick to
  * notice. Called from a delayed job scheduled at batch-seed time (see
  * src/app/api/cron/tick/route.ts). No-ops if the batch already fired
