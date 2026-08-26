@@ -1,0 +1,23 @@
+-- =========================================================================
+-- Adds a third auth mode: 'none'.
+--
+-- The mock connector is load-bearing for tests and for local dev without live
+-- OAuth, but it has neither a Nango connection nor a locally-sealed secret.
+-- With project_connectors.connection_id NOT NULL, every connector needs a
+-- space_connections row — and space_connections_auth_mode_chk demanded that
+-- the row carry credentials for one of the two real modes. Net effect: a mock
+-- connector could not be created at all.
+--
+-- The previous schema sidestepped this by making integrations.credential_id
+-- nullable ("null for connectors with no OAuth grant (e.g. mock)"). Keeping
+-- connection_id NOT NULL and naming the credential-less case explicitly is
+-- better: it keeps every connector reachable from its connection, and
+-- 'none' documents the intent rather than leaving a null to interpret.
+--
+-- SPLIT ACROSS TWO MIGRATIONS ON PURPOSE. Postgres allows `alter type ... add
+-- value` inside a transaction (PG12+), but the new value cannot be USED until
+-- that transaction commits — and the Supabase CLI wraps each migration file
+-- in its own transaction. The CHECK constraint that references 'none' must
+-- therefore live in the next file, not this one.
+-- =========================================================================
+alter type public.connector_auth_mode add value if not exists 'none';

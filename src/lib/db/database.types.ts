@@ -274,6 +274,7 @@ export type Database = {
           id: string
           mime_type: string | null
           normalized_event_id: string
+          project_connector_id: string
           project_id: string
           provider: Database["public"]["Enums"]["connector_provider"]
           provider_attachment_id: string
@@ -295,6 +296,7 @@ export type Database = {
           id: string
           mime_type?: string | null
           normalized_event_id: string
+          project_connector_id: string
           project_id: string
           provider: Database["public"]["Enums"]["connector_provider"]
           provider_attachment_id: string
@@ -316,6 +318,7 @@ export type Database = {
           id?: string
           mime_type?: string | null
           normalized_event_id?: string
+          project_connector_id?: string
           project_id?: string
           provider?: Database["public"]["Enums"]["connector_provider"]
           provider_attachment_id?: string
@@ -327,6 +330,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "event_attachments_connector_fkey"
+            columns: ["project_connector_id", "project_id", "client_space_id"]
+            isOneToOne: false
+            referencedRelation: "project_connectors"
+            referencedColumns: ["id", "project_id", "client_space_id"]
+          },
           {
             foreignKeyName: "event_attachments_normalized_event_id_fkey"
             columns: ["normalized_event_id"]
@@ -1910,7 +1920,7 @@ export type Database = {
     }
     Enums: {
       chunk_source: "normalized_event" | "event_attachment" | "context_document"
-      connector_auth_mode: "nango" | "api_key"
+      connector_auth_mode: "nango" | "api_key" | "none"
       connector_provider:
         | "slack"
         | "google"
@@ -2084,7 +2094,7 @@ export const Constants = {
         "event_attachment",
         "context_document",
       ],
-      connector_auth_mode: ["nango", "api_key"],
+      connector_auth_mode: ["nango", "api_key", "none"],
       connector_provider: [
         "slack",
         "google",
