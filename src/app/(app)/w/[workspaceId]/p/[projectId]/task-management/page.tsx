@@ -29,9 +29,9 @@ export default async function TaskManagementPage({
   const supabase = await createClient();
 
   let itemsQuery = supabase
-    .from("action_items")
+    .from("tasks")
     .select(
-      "id, title, description, kind, priority, confidence_score, status, for_date, due_at, owner_hint, assignee_id, assignee_team_member_id, snoozed_until, assignee:users!action_items_assignee_id_fkey(id, full_name, avatar_url)",
+      "id, title, description, kind, priority, confidence, status, for_date, due_at, owner_hint, assignee_id, assignee_team_member_id, snoozed_until, assignee:users!tasks_assignee_id_fkey(id, full_name, avatar_url)",
     )
     .eq("project_id", projectId);
 
@@ -46,7 +46,7 @@ export default async function TaskManagementPage({
   }
   if (filters.assignee === "unassigned") {
     // Two mutually-exclusive assignee columns (see
-    // action_items_single_assignee_chk) means "unassigned" has to rule out
+    // tasks_single_assignee_chk) means "unassigned" has to rule out
     // both, not just assignee_id.
     itemsQuery = itemsQuery.is("assignee_id", null).is("assignee_team_member_id", null);
   } else if (filters.assignee) {
@@ -77,7 +77,7 @@ export default async function TaskManagementPage({
       .eq("workspace_id", workspaceId),
     supabase.from("team_members").select("id, name, email, role").eq("workspace_id", workspaceId),
     supabase
-      .from("action_items")
+      .from("tasks")
       .select("id", { count: "exact", head: true })
       .eq("project_id", projectId)
       .eq("status", "snoozed"),
@@ -152,9 +152,9 @@ export default async function TaskManagementPage({
   let sourceEvents: SourceEvent[] = [];
   if (openItem) {
     const { data: sourceRows } = await supabase
-      .from("action_item_source_events")
+      .from("task_sources")
       .select("normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
-      .eq("action_item_id", openItem.id);
+      .eq("task_id", openItem.id);
 
     const eventRows = (sourceRows ?? [])
       .map((row) => row.normalized_events)

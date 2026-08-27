@@ -62,7 +62,7 @@ export function TaskDetailSheet({
             <DialogHeader>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">{item.kind.replace("_", " ")}</Badge>
-                <Badge variant="outline">{Math.round(item.confidence_score * 100)}% confidence</Badge>
+                <Badge variant="outline">{Math.round(item.confidence * 100)}% confidence</Badge>
               </div>
               <DialogTitle className="text-lg leading-snug">{item.title}</DialogTitle>
             </DialogHeader>

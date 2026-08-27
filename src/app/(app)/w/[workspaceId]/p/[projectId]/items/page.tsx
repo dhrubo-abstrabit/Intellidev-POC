@@ -21,8 +21,8 @@ export default async function ActionItemsPage({
   const supabase = await createClient();
 
   const { data: items } = await supabase
-    .from("action_items")
-    .select("id, title, description, kind, priority, confidence_score, status, for_date, owner_hint")
+    .from("tasks")
+    .select("id, title, description, kind, priority, confidence, status, for_date, owner_hint")
     .eq("project_id", projectId)
     .in("status", ["pending", "in_progress"])
     .order("for_date", { ascending: false })
@@ -50,7 +50,7 @@ export default async function ActionItemsPage({
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={PRIORITY_VARIANT[item.priority] ?? "outline"}>{item.priority}</Badge>
-                  <Badge variant="outline">{Math.round(item.confidence_score * 100)}% confidence</Badge>
+                  <Badge variant="outline">{Math.round(item.confidence * 100)}% confidence</Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">

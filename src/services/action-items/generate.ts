@@ -165,13 +165,13 @@ async function loadContext(service: ServiceClient, ctx: ClientSpaceProjectContex
 
   const attachmentsByEvent = await fetchExtractedAttachments(service, eventRows.map((e) => e.id));
 
-  // Scoped to the client space, not the project: action_items'
-  // action_items_open_dedupe_uniq is (client_space_id, dedupe_hash), and
+  // Scoped to the client space, not the project: tasks'
+  // tasks_open_dedupe_uniq is (client_space_id, dedupe_hash), and
   // events (hence candidate items) are client-space scoped too — an item
   // tagged to no project (project_id null) is just as much "already open for
   // this client" as one tagged to this project.
   const { data: openItems } = await service
-    .from("action_items")
+    .from("tasks")
     .select("id, title, kind, priority")
     .eq("client_space_id", clientSpaceId)
     .in("status", ["pending", "in_progress"]);
@@ -254,7 +254,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
 
   const { data: clientSpace } = await service
     .from("client_spaces")
-    .select("id, workspace_id, timezone")
+    .select("id, workspace_id, tenant_id, timezone")
     .eq("id", clientSpaceId)
     .maybeSingle();
   if (!clientSpace) {
@@ -279,14 +279,25 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
   const { data: run, error: runError } = await service
     .from("llm_runs")
     .insert({
-      workspace_id: clientSpace.workspace_id,
+      // llm_runs is keyed to the TENANT now, not the workspace — usage
+      // metering is one GROUP BY over the billing boundary. tasks below still
+      // carries workspace_id, for the team_members assignee FK.
+      tenant_id: clientSpace.tenant_id,
       client_space_id: clientSpaceId,
-      kind: "action_items",
+      // llm_run_kind renamed this value: the old enum described the OUTPUT
+      // ("action_items"), the new one describes the OPERATION ("extract"),
+      // which is what distinguishes it from reconcile/daily_summary/embed.
+      kind: "extract",
       status: "running",
       model: "claude-haiku-4-5",
       provider: "anthropic",
       prompt_version: PROMPT_VERSION,
-      input_event_ids: eventIds,
+      // llm_runs.input_event_ids is gone. It was an immutable uuid[] audit of
+      // which events fed a run; task_sources now records the same linkage
+      // per-task with a role and a relevance score, which is strictly more
+      // useful and has referential integrity an array cannot have. The one
+      // thing lost is the record for a run that produced NO tasks — see the
+      // note in the handover if that turns out to matter.
       started_at: new Date().toISOString(),
     })
     .select("id")
@@ -357,12 +368,12 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
 
     const validEventIds = new Set(eventIds);
     const candidateHashes = resolvedItems.map((item) => normalizedTitleHash(item.title));
-    // Scoped to the client space: action_items_open_dedupe_uniq is
+    // Scoped to the client space: tasks_open_dedupe_uniq is
     // (client_space_id, dedupe_hash), not (project_id, dedupe_hash) — see
     // supabase/migrations/20260820101100_ai.sql.
     const { data: existingOpen } = candidateHashes.length
       ? await service
-          .from("action_items")
+          .from("tasks")
           .select("id, dedupe_hash")
           .eq("client_space_id", clientSpaceId)
           .in("status", ["pending", "in_progress"])
@@ -372,7 +383,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
 
     let itemsCreated = 0;
     let itemsMerged = 0;
-    const sourceLinks: Database["public"]["Tables"]["action_item_source_events"]["Insert"][] = [];
+    const sourceLinks: Database["public"]["Tables"]["task_sources"]["Insert"][] = [];
 
     for (const item of resolvedItems) {
       const hash = normalizedTitleHash(item.title);
@@ -385,11 +396,11 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
 
       if (existingId) {
         await service
-          .from("action_items")
+          .from("tasks")
           .update({
             description: item.description ?? null,
             priority: item.priority,
-            confidence_score: item.confidence,
+            confidence: item.confidence,
             owner_hint: item.ownerHint ?? null,
             llm_run_id: run.id,
             generated_at: new Date().toISOString(),
@@ -398,7 +409,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
         itemsMerged += 1;
         sourceLinks.push(
           ...sourceEventIds.map((eventId) => ({
-            action_item_id: existingId,
+            task_id: existingId,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
           })),
@@ -407,7 +418,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       }
 
       const newId = uuidv7();
-      const { error: insertError } = await service.from("action_items").insert({
+      const { error: insertError } = await service.from("tasks").insert({
         id: newId,
         workspace_id: clientSpace.workspace_id,
         client_space_id: clientSpaceId,
@@ -420,34 +431,34 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
         title: item.title,
         description: item.description ?? null,
         priority: item.priority,
-        confidence_score: item.confidence,
+        confidence: item.confidence,
         owner_hint: item.ownerHint ?? null,
         dedupe_hash: hash,
         for_date: date,
       });
 
       if (insertError) {
-        // action_items_open_dedupe_uniq (client_space_id, dedupe_hash)
+        // tasks_open_dedupe_uniq (client_space_id, dedupe_hash)
         // rejected this insert — another row with the same hash exists that
         // our existingByHash snapshot didn't know about (a genuine
         // concurrent writer, since same-run duplicates are already caught by
         // the existingByHash check above). Fall through to updating that row
         // instead of silently losing this item.
-        if (insertError.code !== "23505") throw new Error(`action_items insert failed: ${insertError.message}`);
+        if (insertError.code !== "23505") throw new Error(`tasks insert failed: ${insertError.message}`);
         const { data: conflictRow } = await service
-          .from("action_items")
+          .from("tasks")
           .select("id")
           .eq("client_space_id", clientSpaceId)
           .eq("dedupe_hash", hash)
           .in("status", ["pending", "in_progress"])
           .maybeSingle();
-        if (!conflictRow) throw new Error(`action_items insert failed: ${insertError.message}`);
+        if (!conflictRow) throw new Error(`tasks insert failed: ${insertError.message}`);
         await service
-          .from("action_items")
+          .from("tasks")
           .update({
             description: item.description ?? null,
             priority: item.priority,
-            confidence_score: item.confidence,
+            confidence: item.confidence,
             owner_hint: item.ownerHint ?? null,
             llm_run_id: run.id,
             generated_at: new Date().toISOString(),
@@ -457,7 +468,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
         itemsMerged += 1;
         sourceLinks.push(
           ...sourceEventIds.map((eventId) => ({
-            action_item_id: conflictRow.id,
+            task_id: conflictRow.id,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
           })),
@@ -469,7 +480,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       itemsCreated += 1;
       sourceLinks.push(
         ...sourceEventIds.map((eventId) => ({
-          action_item_id: newId,
+          task_id: newId,
           normalized_event_id: eventId,
           client_space_id: clientSpaceId,
         })),
@@ -477,11 +488,11 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
     }
 
     if (sourceLinks.length > 0) {
-      // (action_item_id, normalized_event_id) is the primary key — a
+      // (task_id, normalized_event_id) is the primary key — a
       // redelivered/rerun job citing the same event again is a harmless
       // no-op, not a duplicate-key error, as long as we ignore conflicts.
-      await service.from("action_item_source_events").upsert(sourceLinks, {
-        onConflict: "action_item_id,normalized_event_id",
+      await service.from("task_sources").upsert(sourceLinks, {
+        onConflict: "task_id,normalized_event_id",
         ignoreDuplicates: true,
       });
     }

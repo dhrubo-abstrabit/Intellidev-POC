@@ -22,6 +22,23 @@ function parseTeamMemberForm(formData: FormData) {
 }
 
 /**
+ * audit_logs.tenant_id is NOT NULL — the trail is anchored to the billing
+ * boundary so an entry outlives the workspace it describes ("workspace X was
+ * deleted" is precisely the row you cannot afford to cascade away, which is
+ * why none of the narrower scope columns carry an FK).
+ *
+ * Resolved through the service client: the caller's membership was already
+ * asserted, and workspaces.tenant_id is not otherwise in scope here.
+ */
+async function tenantIdForWorkspace(
+  service: ReturnType<typeof createServiceClient>,
+  workspaceId: string,
+): Promise<string | null> {
+  const { data } = await service.from("workspaces").select("tenant_id").eq("id", workspaceId).maybeSingle();
+  return data?.tenant_id ?? null;
+}
+
+/**
  * Membership-only guard (assertWorkspaceMembership), then a write through
  * the user-scoped client — the team_members_write_admin RLS policy is the
  * real owner/admin gate, not this action. Mirrors integrations/actions.ts's
@@ -56,7 +73,13 @@ export async function createTeamMember(
   }
 
   const service = createServiceClient();
-  await service.from("audit_logs").insert({
+  const auditTenantId = await tenantIdForWorkspace(service, workspaceId);
+  // Best-effort, as it already was: the write below is not error-checked, so
+  // a NOT NULL violation on tenant_id would turn a silent audit miss into a
+  // thrown action. Skip instead — the membership assert above means this is
+  // unreachable in practice.
+  if (auditTenantId) await service.from("audit_logs").insert({
+    tenant_id: auditTenantId,
     workspace_id: workspaceId,
     actor_user_id: user.id,
     actor_type: "user",
@@ -100,7 +123,13 @@ export async function updateTeamMember(
   }
 
   const service = createServiceClient();
-  await service.from("audit_logs").insert({
+  const auditTenantId = await tenantIdForWorkspace(service, workspaceId);
+  // Best-effort, as it already was: the write below is not error-checked, so
+  // a NOT NULL violation on tenant_id would turn a silent audit miss into a
+  // thrown action. Skip instead — the membership assert above means this is
+  // unreachable in practice.
+  if (auditTenantId) await service.from("audit_logs").insert({
+    tenant_id: auditTenantId,
     workspace_id: workspaceId,
     actor_user_id: user.id,
     actor_type: "user",
@@ -140,7 +169,13 @@ export async function deleteTeamMember(workspaceId: string, teamMemberId: string
   }
 
   const service = createServiceClient();
-  await service.from("audit_logs").insert({
+  const auditTenantId = await tenantIdForWorkspace(service, workspaceId);
+  // Best-effort, as it already was: the write below is not error-checked, so
+  // a NOT NULL violation on tenant_id would turn a silent audit miss into a
+  // thrown action. Skip instead — the membership assert above means this is
+  // unreachable in practice.
+  if (auditTenantId) await service.from("audit_logs").insert({
+    tenant_id: auditTenantId,
     workspace_id: workspaceId,
     actor_user_id: user.id,
     actor_type: "user",

@@ -8,7 +8,7 @@ import { generateActionItems } from "./generate";
 
 /**
  * Exercises the real LLM pipeline: mock-connector events -> normalize ->
- * a genuine Claude Haiku 4.5 call -> action_items, against the real local
+ * a genuine Claude Haiku 4.5 call -> tasks, against the real local
  * Supabase instance and the real Anthropic API (using the API key in
  * .env.local). This costs a small, real amount of money — a handful of
  * short synthetic messages through Haiku 4.5 is a fraction of a cent — but
@@ -128,7 +128,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
 
   it("merging: re-running against fresh events with the same open items doesn't duplicate", async () => {
     const { count: beforeTotal } = await service
-      .from("action_items")
+      .from("tasks")
       .select("id", { count: "exact", head: true })
       .eq("client_space_id", clientSpaceId);
 
@@ -138,7 +138,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     const result = await generateActionItems(clientSpaceId, projectToday("UTC"));
     expect(result.status).toBe("succeeded");
 
-    const { data: allItems } = await service.from("action_items").select("id, title").eq("client_space_id", clientSpaceId);
+    const { data: allItems } = await service.from("tasks").select("id, title").eq("client_space_id", clientSpaceId);
     const titles = allItems?.map((i) => i.title) ?? [];
     // If merging worked, titles stay unique even though the model saw a
     // fresh batch of the *same* synthetic conversation topics again.

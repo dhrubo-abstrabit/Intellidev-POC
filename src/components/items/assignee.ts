@@ -2,7 +2,7 @@
  * One codec shared by the assignee picker's Select value AND the
  * task-management page's `?assignee=` filter param — both need to tell a
  * real workspace user apart from a Team Members roster contact in a single
- * flat string, since action_items has two mutually-exclusive assignee
+ * flat string, since tasks has two mutually-exclusive assignee
  * columns (assignee_id -> users, assignee_team_member_id -> team_members;
  * see supabase/migrations/20260810130000_action_item_team_assignee.sql).
  *

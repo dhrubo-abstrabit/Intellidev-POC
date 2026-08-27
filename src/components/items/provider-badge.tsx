@@ -6,11 +6,22 @@ export type ConnectorProvider = Database["public"]["Enums"]["connector_provider"
 /** Human-readable labels for connector_provider — plain `capitalize` can't
  * turn "google_chat" into "Google Chat", so this is the map every provider
  * badge/chip in the app should read from instead of ad-hoc string munging.
- * `gmail`/`google_drive`/`google_chat` are retired as connectors but kept
- * here: events ingested before the merge still carry those providers. */
+ *
+ * The Record type is exhaustive on purpose: adding a value to the
+ * connector_provider enum without a label here fails the build rather than
+ * rendering `undefined` in a badge.
+ *
+ * `gmail`/`google_drive`/`google_chat`/`clickup` have no registered connector
+ * — they are retained in the enum because Postgres cannot drop an enum value
+ * once rows reference it, and historical events still carry them.
+ * `supabase`/`openai_codex`/`github` are the reverse: declared in the enum
+ * ahead of the connectors that will produce them. */
 export const PROVIDER_LABEL: Record<ConnectorProvider, string> = {
   slack: "Slack",
   google: "Google",
+  supabase: "Supabase",
+  openai_codex: "OpenAI Codex",
+  github: "GitHub",
   google_chat: "Google Chat",
   google_drive: "Google Drive",
   gmail: "Gmail",

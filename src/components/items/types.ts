@@ -1,8 +1,8 @@
 import type { Database } from "@/lib/db/database.types";
 
-export type ActionItemStatus = Database["public"]["Enums"]["action_item_status"];
-export type ActionItemPriority = Database["public"]["Enums"]["action_item_priority"];
-export type ActionItemKind = Database["public"]["Enums"]["action_item_kind"];
+export type ActionItemStatus = Database["public"]["Enums"]["task_status"];
+export type ActionItemPriority = Database["public"]["Enums"]["task_priority"];
+export type ActionItemKind = Database["public"]["Enums"]["task_kind"];
 
 // snoozed is excluded from the Kanban board and from the plain status
 // picker — it requires a snoozed_until date, which those controls don't
@@ -14,7 +14,7 @@ export type AssigneeKind = "user" | "team_member";
 
 /** A task's resolved assignee — either a real workspace user (assignee_id)
  * or a Team Members roster contact (assignee_team_member_id); the two
- * columns are mutually exclusive (action_items_single_assignee_chk). `value`
+ * columns are mutually exclusive (tasks_single_assignee_chk). `value`
  * is the encoded picker/filter value (see ./assignee.ts) so a component can
  * seed a Select or a link straight from a row without re-encoding. */
 export type AssigneeSummary = {
@@ -26,13 +26,13 @@ export type AssigneeSummary = {
 };
 
 export type ActionItemRow = Pick<
-  Database["public"]["Tables"]["action_items"]["Row"],
+  Database["public"]["Tables"]["tasks"]["Row"],
   | "id"
   | "title"
   | "description"
   | "kind"
   | "priority"
-  | "confidence_score"
+  | "confidence"
   | "status"
   | "for_date"
   | "due_at"
@@ -81,7 +81,7 @@ export type AttachmentSummary = {
 };
 
 /** One normalized_events row (a Slack message, etc.) linked to an action
- * item via action_item_source_events — the "why was this created" trail. */
+ * item via task_sources — the "why was this created" trail. */
 export type SourceEvent = {
   id: string;
   type: string;

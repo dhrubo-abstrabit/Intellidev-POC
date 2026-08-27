@@ -14,7 +14,7 @@ export default async function ProjectOverviewPage({
 }) {
   const { workspaceId, projectId } = await params;
 
-  // Integrations key on client_space_id now, not project_id — action_items
+  // Integrations key on client_space_id now, not project_id — tasks
   // still carries project_id directly, so only the integrations query below
   // needs the resolved scope.
   const scope = await resolveProjectScope(workspaceId, projectId);
@@ -30,7 +30,7 @@ export default async function ProjectOverviewPage({
       .select("id, provider, status, last_sync_succeeded_at")
       .eq("client_space_id", scope.clientSpaceId),
     supabase
-      .from("action_items")
+      .from("tasks")
       .select("id", { count: "exact", head: true })
       .eq("project_id", projectId)
       .in("status", ["pending", "in_progress"]),

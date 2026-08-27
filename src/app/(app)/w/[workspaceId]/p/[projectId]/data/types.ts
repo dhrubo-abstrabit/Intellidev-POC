@@ -41,7 +41,7 @@ export type DayEvent = {
   attachments: AttachmentSummary[];
 };
 
-/** An action_items row extracted from (some of) the selected day's events,
+/** An tasks row extracted from (some of) the selected day's events,
  * with the ids of the events that produced it — the message <-> action
  * point linkage the day-linkage panel highlights on click. */
 export type DayActionPoint = {

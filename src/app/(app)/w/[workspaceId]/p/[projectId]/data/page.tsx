@@ -166,22 +166,22 @@ export default async function ProjectDataPage({
   }));
 
   // Action points are grouped by *source message day*, not by
-  // action_items.for_date (the day the LLM run happened) — an item citing
+  // tasks.for_date (the day the LLM run happened) — an item citing
   // messages from two days will legitimately appear on both; that's correct
   // given the message->action-point provenance this tab exists to show, not
   // a bug to "fix" by switching back to for_date.
   let dayActionPoints: DayActionPoint[] = [];
   if (dayEventIds.length > 0) {
     const { data: sourceRows } = await supabase
-      .from("action_item_source_events")
+      .from("task_sources")
       .select(
-        "normalized_event_id, action_items!inner(id, title, description, kind, priority, confidence_score, status, for_date, due_at, owner_hint)",
+        "normalized_event_id, tasks!inner(id, title, description, kind, priority, confidence, status, for_date, due_at, owner_hint)",
       )
       .in("normalized_event_id", dayEventIds);
 
     const itemsById = new Map<string, DayActionPoint>();
     for (const row of sourceRows ?? []) {
-      const item = row.action_items;
+      const item = row.tasks;
       if (!item) continue;
       const existing = itemsById.get(item.id);
       if (existing) {
@@ -194,7 +194,7 @@ export default async function ProjectDataPage({
         description: item.description,
         kind: item.kind,
         priority: item.priority,
-        confidenceScore: item.confidence_score,
+        confidenceScore: item.confidence,
         status: item.status,
         forDate: item.for_date,
         dueAt: item.due_at,
