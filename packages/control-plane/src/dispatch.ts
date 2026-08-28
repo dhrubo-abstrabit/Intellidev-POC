@@ -107,6 +107,30 @@ export interface DispatchConfig {
   extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>
 }
 
+/**
+ * The longest a unix socket path may be.
+ *
+ * `sun_path` is 104 bytes on macOS and 108 on Linux. The smaller one is the constraint worth
+ * respecting, because it is the one developers hit.
+ */
+export const UNIX_SOCKET_PATH_LIMIT = 104
+
+/**
+ * The temp-directory prefix for one run's inline runtime.
+ *
+ * Short on purpose. The credential broker listens on a unix socket inside this directory, and
+ * on macOS `tmpdir()` is already ~50 characters (`/var/folders/_t/<random>/T/`). A full run id
+ * plus `mkdtemp`'s six random characters plus `/broker.sock` overran the limit the moment run
+ * ids became uuids, and the failure is `listen EINVAL: invalid argument` — which names neither
+ * the limit nor the cause.
+ *
+ * Eight hex characters distinguish concurrent runs well enough for a temp directory, and
+ * `mkdtemp` adds entropy of its own, so uniqueness does not rest on this.
+ */
+export function runtimeDirPrefix(runId: string): string {
+  return `idv-${runId.slice(0, 8)}-`
+}
+
 /** A dispatch refused before anything was created. Becomes a 400, not a failed run. */
 export class DispatchRefused extends Error {}
 
@@ -139,7 +163,11 @@ export async function dispatchTask(args: {
   }
 
   const branch = renderBranchName('feat/{{task.slug}}-{{task.id}}', {
-    taskId: task.id.replace(/^task_/, ''),
+    // The first eight characters, not the whole id. Task ids are uuids now, and a full one made
+    // branches like `feat/add-a-thing-41c1aad7-a6a0-434b-bbda-53917c60569a` — unreadable in a
+    // PR list, and close to limits on the tooling that has to carry it. Eight hex characters
+    // distinguish a project's open branches without needing to be globally unique.
+    taskId: task.id.replace(/^task_/, '').slice(0, 8),
     slug: slugify(task.title),
   })
   const run = await store.createRun(task.id, task.harness, branch)
@@ -215,7 +243,7 @@ async function execute(args: {
   }
 
   if (config.mode === 'inline') {
-    const runtime = await mkdtemp(join(tmpdir(), `intellidev-${runId}-`))
+    const runtime = await mkdtemp(join(tmpdir(), runtimeDirPrefix(runId)))
     const result = await runAdapter({
       spec,
       credentials: new LocalCredentialProvider({

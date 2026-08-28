@@ -34,7 +34,8 @@
     "db:baseline": "supabase db dump --db-url \"$SUPABASE_CONNECTION_STRING_SESSION\" --schema public -f db/baseline/product-schema.sql",
     "db:verify": "bash db/verify/run.sh",
     "db:contract": "pnpm --filter @intellidev/control-plane run db:contract",
-    "dev:seed": "pnpm --filter @intellidev/control-plane run dev:seed"
+    "dev:seed": "pnpm --filter @intellidev/control-plane run dev:seed",
+    "task": "pnpm --filter @intellidev/control-plane run task"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
