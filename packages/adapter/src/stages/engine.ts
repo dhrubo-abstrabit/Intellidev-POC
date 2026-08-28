@@ -299,8 +299,29 @@ export class StageEngine {
     // here belongs to whatever comes next.
     state.pendingSteers = []
 
+    /**
+     * The last thing the harness actually said, kept for the crash message.
+     *
+     * FOUND BY RUNNING IT. A run failed with `harness claude-code exited 1` and an empty
+     * `stderrPreview`, while the real reason — "Failed to authenticate: OAuth session expired
+     * and could not be refreshed" — had come through as an `assistant.message` two events
+     * earlier. Diagnosing it needed the container's CloudWatch log, for a failure whose cause
+     * was sitting in the event stream the whole time.
+     *
+     * The same shape as the fix in the opencode mapper: when a harness dies, what it said
+     * before dying is usually the answer, and it belongs in the failure rather than only in a
+     * log somebody has to go and find.
+     */
+    let lastSpoken: string | undefined
     for await (const event of session.events) {
       if (this.outsideWorktree(event)) continue
+      if (event.type === 'assistant.message') {
+        const text = event.data.text.trim()
+        if (text) lastSpoken = text
+      } else if (event.type === 'error') {
+        // An error the harness reported itself outranks anything it merely said.
+        lastSpoken = event.data.message
+      }
       this.deps.bus.emit(event)
     }
     const exit = await session.done()
@@ -312,13 +333,16 @@ export class StageEngine {
     // how often a gate may reject work, not how often the process may die.
     if (exit.exitCode !== 0 && exit.exitCode !== null) {
       throw new Error(
-        `harness ${ctx.harness} exited ${exit.exitCode} during stage "${stage.id}" — ` +
-          `see the harness.crashed event for what it reported`,
+        `harness ${ctx.harness} exited ${exit.exitCode} during stage "${stage.id}"` +
+          (lastSpoken
+            ? `: ${truncateForFailure(lastSpoken)}`
+            : ' — see the harness.crashed event for what it reported'),
       )
     }
     if (exit.signal) {
       throw new Error(
-        `harness ${ctx.harness} was killed by ${exit.signal} during stage "${stage.id}"`,
+        `harness ${ctx.harness} was killed by ${exit.signal} during stage "${stage.id}"` +
+          (lastSpoken ? `: ${truncateForFailure(lastSpoken)}` : ''),
       )
     }
 
@@ -426,3 +450,16 @@ export function collectEvents(): { sink: (event: { type: string }) => void; type
 }
 
 export type { EventBodyInput }
+
+/**
+ * Trims a harness message down to something that fits in a failure reason.
+ *
+ * A failure reason is rendered on a board and stored on the run, so it has to stay a sentence
+ * rather than becoming a transcript. First line only, because a model's final message is often
+ * a paragraph whose first line carries the actual problem.
+ */
+function truncateForFailure(text: string): string {
+  const firstLine = text.split('\n').find((line) => line.trim()) ?? text
+  const trimmed = firstLine.trim()
+  return trimmed.length > 200 ? `${trimmed.slice(0, 197)}…` : trimmed
+}

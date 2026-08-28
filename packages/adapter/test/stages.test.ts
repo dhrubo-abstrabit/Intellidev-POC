@@ -184,6 +184,64 @@ describe('a harness that dies', () => {
    * nothing at all. Seen in a real run: `design harness crashed (1)` followed immediately by
    * `design passed`.
    */
+  /**
+   * REGRESSION. A real Fargate run failed with `harness claude-code exited 1` and an empty
+   * `stderrPreview`, while the actual reason — "Failed to authenticate: OAuth session expired
+   * and could not be refreshed" — had arrived two events earlier as an `assistant.message`.
+   * Finding it meant reading the container's CloudWatch log for a cause that was in the event
+   * stream the whole time, and an expired seat is a thing that will keep happening.
+   */
+  it('reports what the harness said, not just that it exited', async () => {
+    const crashing = new FakeDriver(
+      'claude-code',
+      undefined,
+      [
+        {
+          type: 'assistant.message',
+          data: {
+            text: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+          },
+        },
+      ],
+      [],
+      { exitCode: 1, signal: null },
+    )
+    const { engine, events } = harness({
+      template: { name: 't', stages: [{ id: 'design', kind: 'agent', promptFile: 'p.md' }] },
+      drivers: { 'claude-code': crashing },
+    })
+
+    await engine.run()
+    const failure = events.find((e) => e.type === 'error')
+    expect(failure?.type).toBe('error')
+    if (failure?.type !== 'error') return
+    expect(failure.data.message).toContain('OAuth session expired')
+    // The exit code stays, because "which harness, which stage, what code" is still the frame
+    // the message hangs on.
+    expect(failure.data.message).toContain('exited 1')
+  })
+
+  /**
+   * A harness that dies without saying anything must still point somewhere useful, rather than
+   * producing a bare exit code with no next step.
+   */
+  it('falls back to the crash event when the harness said nothing', async () => {
+    const silent = new FakeDriver('claude-code', undefined, [], [], {
+      exitCode: 1,
+      signal: null,
+    })
+    const { engine, events } = harness({
+      template: { name: 't', stages: [{ id: 'design', kind: 'agent', promptFile: 'p.md' }] },
+      drivers: { 'claude-code': silent },
+    })
+
+    await engine.run()
+    const failure = events.find((e) => e.type === 'error')
+    expect(failure?.type).toBe('error')
+    if (failure?.type !== 'error') return
+    expect(failure.data.message).toContain('harness.crashed')
+  })
+
   it('fails the stage instead of passing it', async () => {
     const crashing = new FakeDriver('claude-code', undefined, [], [], {
       exitCode: 1,
