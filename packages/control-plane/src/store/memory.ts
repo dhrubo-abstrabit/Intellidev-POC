@@ -6,6 +6,7 @@ import {
   type RunStatus,
   type TaskStatus,
 } from '@intellidev/shared'
+import { DeliveryCursor } from './delivery.js'
 import {
   RepoNotAllowed,
   type Listener,
@@ -18,7 +19,14 @@ import {
 
 interface Subscription {
   readonly listener: Listener
-  deliveredThrough: number
+  /**
+   * What this subscriber has been given.
+   *
+   * A cursor rather than a number, because a watermark cannot express "delivered 5, 6 and 7 but
+   * not 4" — the state reached when batches arrive out of order, which silently dropped events
+   * from live streams. See `DeliveryCursor`.
+   */
+  readonly cursor: DeliveryCursor
 }
 
 /**
@@ -258,8 +266,7 @@ export class InMemoryStore implements Store {
     const log = this.events.get(runId) ?? []
     for (const subscription of this.subscriptions.get(runId) ?? []) {
       for (const event of log) {
-        if (event.seq <= subscription.deliveredThrough) continue
-        subscription.deliveredThrough = event.seq
+        if (!subscription.cursor.record(event.seq)) continue
         subscription.listener(event)
       }
     }
@@ -288,9 +295,9 @@ export class InMemoryStore implements Store {
     const log = this.events.get(runId) ?? []
     const subscription: Subscription = {
       listener,
-      // Omitting `since` means "only what arrives from now on", so the watermark starts at
-      // the newest event rather than at -1.
-      deliveredThrough: opts.since === undefined ? (log.at(-1)?.seq ?? -1) : opts.since,
+      // Omitting `since` means "only what arrives from now on", so the cursor starts at the
+      // newest event rather than at -1.
+      cursor: new DeliveryCursor(opts.since === undefined ? (log.at(-1)?.seq ?? -1) : opts.since),
     }
     const set = this.subscriptions.get(runId) ?? new Set()
     set.add(subscription)

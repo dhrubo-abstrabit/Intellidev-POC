@@ -320,6 +320,34 @@ function contract(
     })
 
     describe('subscription', () => {
+      /**
+       * Overlapping batches must not cost a live subscriber an event.
+       *
+       * This is where the bug lived, and it only reproduces against Postgres: `appendEvents`
+       * awaits between its insert and its fan-out, so two batches for one run interleave and the
+       * later one used to advance the subscriber's watermark past the earlier one. A Fargate run
+       * dropped seqs 4, 6, 7 and 12 from a live stream while the database held all fourteen.
+       *
+       * In the contract rather than a unit test because both stores owe the same guarantee, and
+       * the in-memory one satisfies it for a different reason (it re-reads the whole log).
+       */
+      it('delivers every seq exactly once when two batches overlap', async () => {
+        const task = await store.createTask(TASK, scope)
+        const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+        const seen: number[] = []
+        store.subscribe(run.id, (e) => seen.push(e.seq), { since: -1 })
+
+        // Started without awaiting the first, which is what the event socket does when a
+        // container emits faster than a database round trip.
+        const late = store.appendEvents([event(run.id, 4)])
+        const early = store.appendEvents([event(run.id, 5), event(run.id, 6), event(run.id, 7)])
+        await Promise.all([early, late])
+        await new Promise((resolve) => setTimeout(resolve, 300))
+
+        expect([...seen].sort((a, b) => a - b)).toEqual([4, 5, 6, 7])
+        expect(new Set(seen).size).toBe(seen.length)
+      })
+
       it('backfills from `since`, so there is no separate read to race', async () => {
         const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id

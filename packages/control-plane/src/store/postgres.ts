@@ -10,6 +10,7 @@ import {
   type StageRecord,
   type TaskStatus,
 } from '@intellidev/shared'
+import { DeliveryCursor } from './delivery.js'
 import {
   RepoNotAllowed,
   type Listener,
@@ -24,7 +25,14 @@ import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.
 
 interface Subscription {
   readonly listener: Listener
-  deliveredThrough: number
+  /**
+   * What this subscriber has been given.
+   *
+   * A cursor rather than a number, because a watermark cannot express "delivered 5, 6 and 7 but
+   * not 4" — the state reached when batches arrive out of order, which silently dropped events
+   * from live streams. See `DeliveryCursor`.
+   */
+  readonly cursor: DeliveryCursor
 }
 
 /**
@@ -136,7 +144,10 @@ export class PostgresStore implements Store {
     // One query for every subscriber, from the furthest-behind watermark, then filtered per
     // subscription. Querying per subscriber would multiply round trips on a link where a
     // round trip is the dominant cost.
-    const lowest = Math.min(...[...set].map((s) => s.deliveredThrough))
+    // The furthest-behind *gapless* point across subscribers. Using each cursor's resume
+    // point rather than its highest delivered seq is what lets a straggler still be fetched:
+    // a subscriber holding 5,6,7 with 4 missing resumes from 3, so 4 is in this read.
+    const lowest = Math.min(...[...set].map((s) => s.cursor.resumeFrom))
     let fresh: AgentEvent[]
     try {
       fresh = await this.eventsSince(runId, lowest)
@@ -150,8 +161,7 @@ export class PostgresStore implements Store {
 
     for (const subscription of set) {
       for (const event of fresh) {
-        if (event.seq <= subscription.deliveredThrough) continue
-        subscription.deliveredThrough = event.seq
+        if (!subscription.cursor.record(event.seq)) continue
         subscription.listener(event)
       }
     }
@@ -161,8 +171,9 @@ export class PostgresStore implements Store {
   private deliverLocally(runId: string, events: readonly AgentEvent[]): void {
     for (const subscription of this.subscriptions.get(runId) ?? []) {
       for (const event of events) {
-        if (event.seq <= subscription.deliveredThrough) continue
-        subscription.deliveredThrough = event.seq
+        // record() is the gate: it returns false only for a genuine duplicate, so an
+        // out-of-order straggler is delivered instead of being swallowed by a watermark.
+        if (!subscription.cursor.record(event.seq)) continue
         subscription.listener(event)
       }
     }
@@ -589,7 +600,7 @@ export class PostgresStore implements Store {
    * at another. Until then, running more than one instance means a UI can miss events.
    */
   subscribe(runId: string, listener: Listener, opts: { since: number }): () => void {
-    const subscription: Subscription = { listener, deliveredThrough: opts.since }
+    const subscription: Subscription = { listener, cursor: new DeliveryCursor(opts.since) }
     const set = this.subscriptions.get(runId) ?? new Set()
     set.add(subscription)
     this.subscriptions.set(runId, set)

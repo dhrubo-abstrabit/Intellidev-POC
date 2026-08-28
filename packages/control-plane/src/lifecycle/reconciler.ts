@@ -298,8 +298,27 @@ export function stoppedReason(detail: TaskStateDetail): string {
   return parts.length > 0 ? parts.join(' · ') : 'stopped by ECS with no reason given'
 }
 
+/**
+ * An error message that includes what actually went wrong.
+ *
+ * Drizzle wraps a driver failure so that `message` is only `Failed query: <sql>` and the real
+ * reason — the Postgres code, the missing column, the closed pool — hangs off `cause`. Logging
+ * just `message` produced pages of identical SQL with no diagnosis, which is how a reconciler
+ * failing every sixty seconds went unexplained.
+ */
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  if (!(error instanceof Error)) return String(error)
+  const causes: string[] = []
+  let current: unknown = error.cause
+  // Bounded, because a cause chain can be circular and this runs inside a log line.
+  for (let depth = 0; current instanceof Error && depth < 4; depth++) {
+    const code = (current as { code?: string }).code
+    causes.push(code ? `${code} ${current.message}` : current.message)
+    current = current.cause
+  }
+  // The SQL is the least useful part, so it is truncated rather than printed whole.
+  const head = error.message.split('\n')[0]?.slice(0, 160) ?? ''
+  return causes.length > 0 ? `${head} — caused by: ${causes.join(' <- ')}` : head
 }
 
 function sleep(ms: number): Promise<void> {
