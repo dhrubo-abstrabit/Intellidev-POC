@@ -6,7 +6,7 @@ import {
 } from '../src/runs/credentials.js'
 import { InMemoryStore } from '../src/store/memory.js'
 import { RunTokenRegistry } from '../src/runs/tokens.js'
-import type { HarnessAccounts } from '../src/harness/accounts.js'
+import type { SeatStore } from '../src/harness/seat-store.js'
 import { allowRepoFor, TEST_SCOPE } from './fixtures.js'
 
 /**
@@ -21,8 +21,9 @@ let tokens: RunTokenRegistry
 let grants: CredentialGrant[]
 
 /** A stand-in for the UI's stored harness accounts. */
-function accountsWith(material: Record<string, unknown> | undefined): HarnessAccounts {
-  return { materialFor: () => material } as unknown as HarnessAccounts
+function accountsWith(material: Record<string, unknown> | undefined): SeatStore {
+  // Only `material` is exercised here; the broker never lists or connects.
+  return { material: async () => material } as unknown as SeatStore
 }
 
 function broker(opts: {

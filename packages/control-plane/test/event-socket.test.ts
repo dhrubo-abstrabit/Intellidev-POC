@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../src/server.js'
 import { InMemoryStore } from '../src/store.js'
 import { RunTokenRegistry } from '../src/runs/tokens.js'
-import { HarnessAccounts } from '../src/harness/accounts.js'
+import { FileSeatStore } from '../src/harness/accounts.js'
 import { McpRegistry } from '../src/mcp/registry.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -41,7 +41,7 @@ async function scaffold() {
       publicUrl: 'http://127.0.0.1:0',
     },
     mcp: await McpRegistry.open(join(work, 'mcp.json')),
-    accounts: await HarnessAccounts.open(join(work, 'accounts.json')),
+    accounts: await FileSeatStore.open(join(work, 'accounts.json')),
     publicDir: work,
   })
   await app.listen({ port: 0, host: '127.0.0.1' })

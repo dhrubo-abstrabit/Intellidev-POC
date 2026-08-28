@@ -4,8 +4,9 @@ import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
+import { LocalSecretCipher } from './secrets/cipher.js'
 import { RunTokenRegistry } from './runs/tokens.js'
-import { HarnessAccounts } from './harness/accounts.js'
+import { FileSeatStore } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
 
@@ -70,7 +71,9 @@ await mkdir(workRoot, { recursive: true })
 
 // Under the work root, not the repo: the file holds live OAuth refresh tokens.
 const mcp = await McpRegistry.open(join(workRoot, 'mcp-servers.json'))
-const accounts = await HarnessAccounts.open(join(workRoot, 'harness-accounts.json'))
+// Replaced below once the project scope is known; seats are space-scoped and Postgres
+// needs that, while the file store has only one space to hold.
+const fileSeats = await FileSeatStore.open(join(workRoot, 'harness-accounts.json'))
 
 /**
  * Fargate mode resolves every resource name from SSM before the server starts.
@@ -194,6 +197,29 @@ async function resolveScope(): Promise<ProjectScope> {
 const scope = await resolveScope()
 
 /**
+ * Where harness seats live.
+ *
+ * Postgres wherever there is a database, because a seat in a file is lost on every deploy and
+ * invisible to a second instance. The cipher is local here: KMS is for the hosted control plane,
+ * whose task role holds the key grant — this process deliberately does not.
+ */
+const accounts =
+  store instanceof PostgresStore
+    ? store.seats(new LocalSecretCipher(secretPassphrase()))
+    : fileSeats
+
+/**
+ * The passphrase the local cipher derives its master key from.
+ *
+ * Configurable so a developer's stored seats survive a restart, and so two checkouts do not
+ * silently share one. It is a development convenience and offers no protection against anyone
+ * who can read the machine, which is exactly why deployments use KMS instead.
+ */
+function secretPassphrase(): string {
+  return process.env['INTELLIDEV_SECRET_PASSPHRASE'] ?? 'intellidev-local-development'
+}
+
+/**
  * The repository this deployment is allowed to act on.
  *
  * A task names a repository from the project's allowlist, so a fresh project can dispatch
@@ -269,12 +295,55 @@ if (aws) {
     log: (message) => process.stderr.write(`${message}\n`),
   })
   reconciler.start()
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => reconciler.stop())
-  }
+  onShutdown(() => {
+    reconciler.stop()
+  })
+}
+
+/**
+ * Shut down in an order that does not strand work.
+ *
+ * FOUND BY RUNNING IT. The previous version registered `process.once('SIGTERM', …)` to stop the
+ * reconciler — which *replaces* Node's default behaviour of exiting. The signal stopped the
+ * reconciler and the process ran on for ever, so `kill` appeared to do nothing and the port
+ * stayed held. On ECS that is worse than untidy: a task that ignores SIGTERM is killed after the
+ * stop timeout, so every deploy waits out the grace period and in-flight runs die hard rather
+ * than draining.
+ *
+ * Order matters. The server closes first so nothing new arrives and in-flight requests finish;
+ * the store closes second, since a request still completing needs it; and the exit is
+ * unconditional, because a hung close must not turn a restart into a hang.
+ */
+const shutdownTasks: Array<() => void | Promise<void>> = []
+function onShutdown(task: () => void | Promise<void>): void {
+  shutdownTasks.push(task)
+}
+
+let shuttingDown = false
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    // A second signal while draining means "stop waiting", which is what an impatient operator
+    // and an orchestrator escalating both mean by it.
+    if (shuttingDown) process.exit(1)
+    shuttingDown = true
+    process.stderr.write(`\n  ${signal} — shutting down\n`)
+
+    void (async () => {
+      for (const task of shutdownTasks) {
+        await Promise.resolve(task()).catch(() => undefined)
+      }
+      await app.close().catch(() => undefined)
+      await store.close().catch(() => undefined)
+      process.exit(0)
+    })()
+  })
 }
 
 await app.listen({ port, host: '127.0.0.1' })
+
+// Read before the banner is built, because listing seats is a database query now. Names only:
+// the listing decrypts nothing, which is what keeps a page load off the KMS path.
+const connectedSeats = (await accounts.list(scope)).map((seat) => seat.harness)
 
 process.stderr.write(
   [
@@ -296,12 +365,7 @@ process.stderr.write(
         .join(' ') || 'harness default'
     }`,
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
-    `  seats   ${
-      accounts
-        .list()
-        .map((a) => a.harness)
-        .join(', ') || 'no harness connected'
-    }`,
+    `  seats   ${connectedSeats.join(', ') || 'no harness connected'}`,
     ``,
   ].join('\n'),
 )

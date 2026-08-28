@@ -1,5 +1,5 @@
 import type { HarnessId, StageId } from '@intellidev/shared'
-import type { HarnessAccounts } from '../harness/accounts.js'
+import type { SeatStore } from '../harness/seat-store.js'
 import type { Store } from '../store/types.js'
 import type { RunTokenRegistry } from './tokens.js'
 import { AppNotInstalled, type GitHubApp } from '../github/app.js'
@@ -36,7 +36,7 @@ export interface CredentialGrant {
 export interface CredentialBrokerOptions {
   readonly store: Store
   readonly tokens: RunTokenRegistry
-  readonly accounts: HarnessAccounts
+  readonly accounts: SeatStore
   /** Resolves an upstream MCP server's current token, refreshing if needed. */
   readonly mcpToken: (serverId: string) => Promise<string | undefined>
   /**
@@ -169,7 +169,10 @@ export class ControlPlaneCredentialBroker {
       )
     }
 
-    const material = this.opts.accounts.materialFor(task.harness as HarnessId)
+    const material = await this.opts.accounts.material(
+      { clientSpaceId: task.clientSpaceId },
+      task.harness as HarnessId,
+    )
     // Empty material is a valid answer, not an error: opencode's free tier needs no login,
     // and a harness that does need one complains far more clearly than a boot failure.
     this.record(runId, 'seat', harness, true, material ? undefined : 'no account connected')

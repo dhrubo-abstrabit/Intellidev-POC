@@ -20,7 +20,7 @@ import { FargateRunner } from './runner/fargate.js'
 import { ArtifactStore } from './aws/artifacts.js'
 import type { RunTokenRegistry } from './runs/tokens.js'
 import { preflightRepo } from './runs/preflight.js'
-import type { HarnessAccounts } from './harness/accounts.js'
+import type { SeatStore } from './harness/seat-store.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpRegistry } from './mcp/registry.js'
 import type { Store, TaskRow } from './store.js'
@@ -139,7 +139,7 @@ export async function dispatchTask(args: {
   task: TaskRow
   config: DispatchConfig
   mcp: McpAccess
-  accounts: HarnessAccounts
+  accounts: SeatStore
 }): Promise<{ runId: string }> {
   const { store, task, config, mcp, accounts } = args
 
@@ -176,7 +176,8 @@ export async function dispatchTask(args: {
   const servers = await resolveMcpServers(task, mcp)
   // Material travels in the environment, not the spec: the spec is written to a bind-mounted
   // directory and this is a credential.
-  const seat = accounts.materialFor(task.harness)
+  // Seats are space-scoped, and the task carries the space it belongs to.
+  const seat = await accounts.material({ clientSpaceId: task.clientSpaceId }, task.harness)
   const spec = buildRunSpec({ task, run: run.id, branch, config, servers })
 
   // Deliberately not awaited: dispatch returns 202 and the UI follows the event stream.

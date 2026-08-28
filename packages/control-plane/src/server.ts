@@ -9,9 +9,9 @@ import {
   readCredentialFile,
   recipeFor,
   toPublic as accountToPublic,
-  type HarnessAccounts,
 } from './harness/accounts.js'
 import { HarnessLogin, loginSupported } from './harness/login.js'
+import type { SeatStore } from './harness/seat-store.js'
 import { McpOAuth } from './mcp/oauth.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpRegistry } from './mcp/registry.js'
@@ -59,7 +59,7 @@ export interface ServerOptions {
   /** The connected-server catalogue. Persisted, unlike tasks. */
   mcp: McpRegistry
   /** Harness subscription logins. Also persisted, for the same reason. */
-  accounts: HarnessAccounts
+  accounts: SeatStore
   /** Absolute path to the directory holding `index.html`. */
   publicDir?: string
 }
@@ -108,9 +108,22 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   const store = opts.store ?? new InMemoryStore()
   const tokens = opts.tokens ?? new RunTokenRegistry()
   const app = Fastify({ logger: false })
+  /**
+   * The space seats belong to.
+   *
+   * Derived from the server's project scope rather than passed separately: a project always sits
+   * in exactly one client space, and two sources for the same fact is how they come to disagree.
+   */
+  const seatScope = { clientSpaceId: opts.scope.clientSpaceId }
+
   await app.register(websocket)
   const oauth = new McpOAuth(opts.mcp)
-  const login = new HarnessLogin(opts.accounts, opts.dispatch.image, opts.dispatch.workRoot)
+  const login = new HarnessLogin(
+    opts.accounts,
+    seatScope,
+    opts.dispatch.image,
+    opts.dispatch.workRoot,
+  )
   const publicDir =
     opts.publicDir ?? join(dirname(new URL(import.meta.url).pathname), '..', 'public')
 
@@ -130,11 +143,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
      * authenticates a run just as well as a connected account.
      */
     harnessAuth: Object.fromEntries(
-      HarnessId.options.map((harness) => {
-        const recipe = recipeFor(harness)
-        const viaEnv = Boolean(recipe?.envVar && opts.dispatch.harnessEnv?.[recipe.envVar])
-        return [harness, Boolean(opts.accounts.get(harness)) || viaEnv]
-      }),
+      await Promise.all(
+        HarnessId.options.map(async (harness) => {
+          const recipe = recipeFor(harness)
+          const viaEnv = Boolean(recipe?.envVar && opts.dispatch.harnessEnv?.[recipe.envVar])
+          return [harness, (await opts.accounts.has(seatScope, harness)) || viaEnv] as const
+        }),
+      ),
     ),
   }))
 
@@ -190,7 +205,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   })
 
   app.get('/api/harness/accounts', async () => ({
-    accounts: opts.accounts.list().map(accountToPublic),
+    // Already public: names and paths, never a value, and no decryption on a path that runs
+    // on every page load.
+    accounts: await opts.accounts.list(seatScope),
   }))
 
   /**
@@ -211,25 +228,27 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     try {
       if (recipe.kind === 'env') {
         if (!token) return reply.code(400).send({ error: `${harness} needs a token` })
-        const account = await opts.accounts.connect({
+        const account = {
           harness,
           label: parsed.data.label ?? harness,
           env: { [recipe.envVar!]: token },
           connectedAt: new Date().toISOString(),
           importedFrom: recipe.command,
-        })
+        }
+        await opts.accounts.connect(seatScope, account)
         return reply.code(201).send({ account: accountToPublic(account) })
       }
 
       const from = path ?? recipe.hostPath!
       const contents = await readCredentialFile(from)
-      const account = await opts.accounts.connect({
+      const account = {
         harness,
         label: parsed.data.label ?? harness,
         files: [{ path: recipe.homePath!, contents }],
         connectedAt: new Date().toISOString(),
         importedFrom: from,
-      })
+      }
+      await opts.accounts.connect(seatScope, account)
       return reply.code(201).send({ account: accountToPublic(account) })
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
@@ -241,7 +260,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     async (request, reply) => {
       const harness = HarnessId.safeParse(request.params.harness)
       if (!harness.success) return reply.code(400).send({ error: 'not a harness' })
-      const removed = await opts.accounts.remove(harness.data)
+      const removed = await opts.accounts.remove(seatScope, harness.data)
       if (!removed) return reply.code(404).send({ error: 'not connected' })
       return { ok: true }
     },

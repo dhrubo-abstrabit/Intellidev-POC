@@ -2,7 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
-import type { HarnessAccount, HarnessAccounts } from './accounts.js'
+import type { HarnessAccount } from './accounts.js'
+import type { SeatStore, SpaceScope } from './seat-store.js'
 
 /**
  * Sign in to a harness by driving that harness's own login command.
@@ -97,7 +98,9 @@ export class HarnessLogin {
   private recipe?: Recipe
 
   constructor(
-    private readonly accounts: HarnessAccounts,
+    private readonly accounts: SeatStore,
+    /** The space the seat is connected into. Seats are shared across its projects. */
+    private readonly scope: SpaceScope,
     private readonly image: string,
     /**
      * Where the login's throwaway HOME goes.
@@ -258,7 +261,7 @@ export class HarnessLogin {
       return
     }
 
-    await this.accounts.connect({
+    await this.accounts.connect(this.scope, {
       harness: state.harness,
       label: state.harness,
       files,

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
+import type { SeatStore, SpaceScope } from './seat-store.js'
 
 /**
  * Subscription logins for the harnesses, connected once and reused by every run.
@@ -116,13 +117,24 @@ export function recipeFor(harness: HarnessId): HarnessAuthRecipe | undefined {
  * Same reasoning as the MCP registry: a login is a human action, so losing it on restart would
  * make the feature unusable. Written `0600` because the file holds live credentials.
  */
-export class HarnessAccounts {
+/**
+ * Seats in a JSON file, for development without a database.
+ *
+ * Kept because the in-memory task store has no database behind it either, and the pairing
+ * should stay consistent: a developer running without Postgres gets a control plane that works
+ * rather than one that fails the moment a run needs a seat.
+ *
+ * **Ignores the space scope**, because a file holds one space's worth of seats and there is no
+ * second space to confuse it with. That is a real difference from the Postgres store and the
+ * reason this is not the default anywhere a database exists.
+ */
+export class FileSeatStore implements SeatStore {
   private accounts = new Map<HarnessId, HarnessAccount>()
 
   private constructor(private readonly path: string) {}
 
-  static async open(path: string): Promise<HarnessAccounts> {
-    const store = new HarnessAccounts(path)
+  static async open(path: string): Promise<FileSeatStore> {
+    const store = new FileSeatStore(path)
     const raw = await readFile(path, 'utf8').catch(() => null)
     if (raw) {
       try {
@@ -141,28 +153,32 @@ export class HarnessAccounts {
     await chmod(this.path, 0o600).catch(() => undefined)
   }
 
-  list(): HarnessAccount[] {
-    return [...this.accounts.values()].sort((a, b) => a.harness.localeCompare(b.harness))
+  async list(): Promise<HarnessAccountPublic[]> {
+    return [...this.accounts.values()]
+      .sort((a, b) => a.harness.localeCompare(b.harness))
+      .map(toPublic)
   }
 
-  get(harness: HarnessId): HarnessAccount | undefined {
-    return this.accounts.get(harness)
+  async has(_scope: SpaceScope, harness: HarnessId): Promise<boolean> {
+    return this.accounts.has(harness)
   }
 
-  async connect(account: HarnessAccount): Promise<HarnessAccount> {
+  async connect(_scope: SpaceScope, account: HarnessAccount): Promise<void> {
     this.accounts.set(account.harness, account)
     await this.save()
-    return account
   }
 
-  async remove(harness: HarnessId): Promise<boolean> {
+  async remove(_scope: SpaceScope, harness: HarnessId): Promise<boolean> {
     const had = this.accounts.delete(harness)
     if (had) await this.save()
     return had
   }
 
   /** Material in the shape `materialiseSeat` expects, or undefined when not connected. */
-  materialFor(harness: HarnessId): Record<string, unknown> | undefined {
+  async material(
+    _scope: SpaceScope,
+    harness: HarnessId,
+  ): Promise<Record<string, unknown> | undefined> {
     const account = this.accounts.get(harness)
     if (!account) return undefined
     return {
