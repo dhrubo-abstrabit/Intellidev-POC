@@ -325,7 +325,7 @@ async function executeInDocker(args: {
    */
   const eventChannel = config.tokens
     ? {
-        token: config.tokens.mint(runId).token,
+        token: (await config.tokens.mint(runId)).token,
         url: `${containerReachableUrl(config.publicUrl, config.mode).replace(/^http/, 'ws')}/internal/runs/${runId}/events`,
       }
     : undefined
@@ -644,7 +644,7 @@ export async function settle(
   prUrl?: string,
   failureReason?: string,
   /** Revoked on settle: a token that outlives its run is a standing credential. */
-  tokens?: { revoke(runId: string): void },
+  tokens?: { revoke(runId: string): Promise<void> },
 ): Promise<boolean> {
   const existing = await store.getRun(runId)
   // `isRunTerminal`, not `!== 'running'`. There are four non-terminal statuses — queued,
@@ -669,7 +669,9 @@ export async function settle(
   // A finished run puts the task in review, not done: a human decides whether the PR is
   // acceptable, which is the whole reason the PR is the boundary.
   await moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
-  tokens?.revoke(runId)
+  // Not awaited: settling must not fail because a revoke was slow, and the token expires
+  // on its own regardless. Logged rather than silent, so a persistent failure is visible.
+  void tokens?.revoke(runId).catch(() => undefined)
   return true
 }
 

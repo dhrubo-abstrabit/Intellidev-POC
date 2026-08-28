@@ -581,7 +581,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.get<{ Params: { id: string }; Querystring: { token?: string } }>(
     '/internal/runs/:id/events',
     { websocket: true },
-    (connection, request) => {
+    // Async because verifying a run token is now a database read: tokens are durable, so an
+    // instance that did not mint one can still verify it.
+    async (connection, request) => {
       const socket = connection as unknown as {
         send(data: string): void
         close(code?: number, reason?: string): void
@@ -590,7 +592,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
       // Authorise against the token's *own* run, never the id in the path. Trusting the
       // path would let a valid token for run A write events into run B.
-      const authorisedRunId = tokens.verify(request.query.token ?? '')
+      const authorisedRunId = await tokens.verify(request.query.token ?? '')
       if (!authorisedRunId) {
         socket.close(4401, 'invalid or expired run token')
         return

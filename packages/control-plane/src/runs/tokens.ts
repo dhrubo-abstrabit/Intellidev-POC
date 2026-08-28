@@ -19,6 +19,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
  *    away.
  *  - **Bound to one run and expired.** A token that outlives its run is a standing
  *    credential, which is the thing this design exists to avoid.
+ *
+ * **Durable, not in-process.** This used to be two Maps, which works exactly as long as there
+ * is one control-plane process. Behind a load balancer a token minted while dispatching on
+ * instance A is unverifiable on instance B, so a container's broker calls fail on roughly half
+ * of them — and the half that fails moves with the routing, which is the worst kind of bug to
+ * meet in production. Storage is behind `RunTokenStore` so the in-memory path still needs no
+ * database, and the Postgres one keeps only the fingerprint.
  */
 
 export interface RunTokenRecord {
@@ -37,12 +44,71 @@ function fingerprint(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
-export class RunTokenRegistry {
+/**
+ * Where tokens live between minting and verifying.
+ *
+ * Four methods rather than a general key-value interface, because the semantics matter:
+ * `revokeRunTokens` is keyed by *run*, not by token, since a run's token has to be killable
+ * without knowing what it was.
+ */
+export interface RunTokenStore {
+  putRunToken(fingerprint: string, runId: string, expiresAt: number): Promise<void>
+  getRunToken(fingerprint: string): Promise<RunTokenRecord | undefined>
+  revokeRunTokens(runId: string): Promise<void>
+  pruneRunTokens(now: number): Promise<number>
+}
+
+/**
+ * The default store: correct for one process, and all a local loop needs.
+ *
+ * Kept rather than deleted because the in-memory task store has no database behind it either,
+ * and the pairing should stay consistent — a developer running without Postgres gets a control
+ * plane that works, not one that fails at dispatch.
+ */
+export class InMemoryRunTokens implements RunTokenStore {
   private readonly byFingerprint = new Map<string, RunTokenRecord>()
   private readonly byRun = new Map<string, string>()
 
+  async putRunToken(fingerprint: string, runId: string, expiresAt: number): Promise<void> {
+    this.byFingerprint.set(fingerprint, { runId, expiresAt })
+    this.byRun.set(runId, fingerprint)
+  }
+
+  async getRunToken(fingerprint: string): Promise<RunTokenRecord | undefined> {
+    return this.byFingerprint.get(fingerprint)
+  }
+
+  async revokeRunTokens(runId: string): Promise<void> {
+    const fp = this.byRun.get(runId)
+    if (!fp) return
+    this.byFingerprint.delete(fp)
+    this.byRun.delete(runId)
+  }
+
+  async pruneRunTokens(now: number): Promise<number> {
+    let dropped = 0
+    for (const [fp, record] of this.byFingerprint) {
+      if (record.expiresAt <= now) {
+        this.byFingerprint.delete(fp)
+        this.byRun.delete(record.runId)
+        dropped += 1
+      }
+    }
+    return dropped
+  }
+
+  get size(): number {
+    return this.byFingerprint.size
+  }
+}
+
+export class RunTokenRegistry {
+  private readonly store: RunTokenStore
+
   constructor(
     private readonly opts: {
+      /** Where tokens are kept. Defaults to memory, which is right for one process. */
+      store?: RunTokenStore
       /**
        * How long a token stays valid.
        *
@@ -53,7 +119,9 @@ export class RunTokenRegistry {
       ttlMs?: number
       now?: () => number
     } = {},
-  ) {}
+  ) {
+    this.store = opts.store ?? new InMemoryRunTokens()
+  }
 
   /**
    * Issues a token for a run, replacing any previous one.
@@ -61,15 +129,14 @@ export class RunTokenRegistry {
    * Replacing matters: dispatch is retried on throttling, and two live tokens for one run
    * would mean revoking it took two calls — so one would be missed.
    */
-  mint(runId: string): MintedRunToken {
-    this.revoke(runId)
+  async mint(runId: string): Promise<MintedRunToken> {
+    await this.revoke(runId)
     // 32 bytes of CSPRNG. base64url so it survives an env var, a URL and a header without
     // escaping, which is where a `+` or `/` would otherwise be mangled.
     const token = randomBytes(32).toString('base64url')
     const expiresAt = this.now() + (this.opts.ttlMs ?? 6 * 60 * 60 * 1000)
     const fp = fingerprint(token)
-    this.byFingerprint.set(fp, { runId, expiresAt })
-    this.byRun.set(runId, fp)
+    await this.store.putRunToken(fp, runId, expiresAt)
     return { token, runId, expiresAt }
   }
 
@@ -81,15 +148,16 @@ export class RunTokenRegistry {
    * taken from the request path — which is how a valid token for run A ends up authorising
    * a write to run B.
    */
-  verify(token: string): string | undefined {
+  async verify(token: string): Promise<string | undefined> {
     if (!token) return undefined
     const fp = fingerprint(token)
-    const record = this.byFingerprint.get(fp)
+    const record = await this.store.getRunToken(fp)
     if (!record) return undefined
 
     if (record.expiresAt <= this.now()) {
-      this.byFingerprint.delete(fp)
-      this.byRun.delete(record.runId)
+      // Expiry is enforced here as well as in the store's query, so a store that returns a
+      // stale row cannot extend a token's life.
+      await this.store.revokeRunTokens(record.runId)
       return undefined
     }
 
@@ -104,29 +172,13 @@ export class RunTokenRegistry {
   }
 
   /** Called when a run settles. A token outliving its run is a standing credential. */
-  revoke(runId: string): void {
-    const fp = this.byRun.get(runId)
-    if (!fp) return
-    this.byFingerprint.delete(fp)
-    this.byRun.delete(runId)
+  async revoke(runId: string): Promise<void> {
+    await this.store.revokeRunTokens(runId)
   }
 
   /** Drops expired records. Cheap, and keeps a long-lived process from growing. */
-  prune(): number {
-    const now = this.now()
-    let dropped = 0
-    for (const [fp, record] of this.byFingerprint) {
-      if (record.expiresAt <= now) {
-        this.byFingerprint.delete(fp)
-        this.byRun.delete(record.runId)
-        dropped += 1
-      }
-    }
-    return dropped
-  }
-
-  get size(): number {
-    return this.byFingerprint.size
+  async prune(): Promise<number> {
+    return await this.store.pruneRunTokens(this.now())
   }
 
   private now(): number {

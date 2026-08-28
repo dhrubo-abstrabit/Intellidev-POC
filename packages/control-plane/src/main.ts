@@ -113,7 +113,15 @@ const store: Store = databaseUrl
 if (store instanceof PostgresStore) await store.start()
 // One registry shared by dispatch (which mints) and the event socket (which verifies), so
 // there is exactly one place a run's token can be revoked.
-const tokens = new RunTokenRegistry()
+/**
+ * Run tokens, durable wherever there is a database.
+ *
+ * The in-memory default is correct for exactly one process. Behind a load balancer a token
+ * minted while dispatching on one instance is unverifiable on another, so a container's broker
+ * calls fail on about half of them — and which half depends on routing, which is why this had
+ * to be fixed before a second instance exists rather than after.
+ */
+const tokens = new RunTokenRegistry(store instanceof PostgresStore ? { store } : {})
 
 /**
  * Where a run reaches this control plane from outside the process.

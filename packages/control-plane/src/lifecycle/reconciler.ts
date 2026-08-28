@@ -37,7 +37,7 @@ export interface ReconcilerOptions {
   readonly sweepIntervalMs?: number
   readonly log?: (message: string) => void
   /** Revoked when a run settles here, exactly as on the dispatch path. */
-  readonly tokens?: { revoke(runId: string): void }
+  readonly tokens?: { revoke(runId: string): Promise<void> }
 }
 
 export interface SettledRun {

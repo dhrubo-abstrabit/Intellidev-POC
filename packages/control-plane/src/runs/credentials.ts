@@ -76,7 +76,7 @@ export class ControlPlaneCredentialBroker {
    */
   async authenticate(bearer: string | undefined): Promise<string> {
     const token = bearer?.replace(/^Bearer\s+/i, '').trim()
-    const runId = token ? this.opts.tokens.verify(token) : undefined
+    const runId = token ? await this.opts.tokens.verify(token) : undefined
     if (!runId) throw new CredentialRefused(401, 'invalid or expired run token')
 
     const run = await this.opts.store.getRun(runId)

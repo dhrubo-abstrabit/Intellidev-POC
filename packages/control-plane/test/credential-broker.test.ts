@@ -66,7 +66,7 @@ async function seedRun(
   )
   await store.setTaskStatus(task.id, 'dispatched')
   const run = await store.createRun(task.id, over.harness ?? 'claude-code', 'feat/x')
-  return { runId: run.id, token: tokens.mint(run.id).token }
+  return { runId: run.id, token: (await tokens.mint(run.id)).token }
 }
 
 beforeEach(() => {
@@ -91,7 +91,7 @@ describe('authentication', () => {
     const b = broker({})
     await expect(b.authenticate(undefined)).rejects.toThrow(CredentialRefused)
     await expect(b.authenticate('Bearer nonsense')).rejects.toThrow(/invalid or expired/)
-    tokens.revoke(runId)
+    await tokens.revoke(runId)
     await expect(b.authenticate(`Bearer ${token}`)).rejects.toThrow(/invalid or expired/)
   })
 })

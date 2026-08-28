@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import pg from 'pg'
 import {
@@ -20,7 +20,7 @@ import {
   type Store,
   type TaskRow,
 } from './types.js'
-import { productTasks, projectRepos, runEvents, runs, taskSpecs } from './schema.js'
+import { productTasks, projectRepos, runEvents, runTokens, runs, taskSpecs } from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
 
 interface Subscription {
@@ -177,6 +177,63 @@ export class PostgresStore implements Store {
         subscription.listener(event)
       }
     }
+  }
+
+  // --- run tokens -----------------------------------------------------------
+  //
+  // Implemented here rather than in a store of its own so it shares this pool. Supavisor has a
+  // connection ceiling, and a second pool for four small queries would spend from the same
+  // budget the event stream needs.
+  //
+  // Structurally satisfies `RunTokenStore`, which is what lets `RunTokenRegistry` take either
+  // this or the in-memory one without either knowing about the other.
+
+  async putRunToken(fingerprint: string, runId: string, expiresAt: number): Promise<void> {
+    await this.db
+      .insert(runTokens)
+      .values({ fingerprint, runId, expiresAt: new Date(expiresAt) })
+      // A retried dispatch mints again for the same run; the fingerprint differs, so this
+      // conflict only fires on the vanishingly unlikely repeat of 32 random bytes. Handled
+      // anyway, because an insert that can throw on a dispatch path is worth not having.
+      .onConflictDoUpdate({
+        target: runTokens.fingerprint,
+        set: { runId, expiresAt: new Date(expiresAt), revokedAt: null },
+      })
+  }
+
+  async getRunToken(
+    fingerprint: string,
+  ): Promise<{ runId: string; expiresAt: number } | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(runTokens)
+      .where(and(eq(runTokens.fingerprint, fingerprint), isNull(runTokens.revokedAt)))
+      .limit(1)
+    // Expiry is left to the caller so both stores answer the same question: this returns what
+    // is stored, and the registry decides whether it is still good.
+    return row ? { runId: row.runId, expiresAt: row.expiresAt.getTime() } : undefined
+  }
+
+  /**
+   * Revokes by run, marking rather than deleting.
+   *
+   * A soft revoke keeps the row, so "which run held this token, and when was it killed" stays
+   * answerable after the fact — the audit question you only have when something has gone wrong.
+   * The fingerprint is all that is stored, so a kept row is not a kept credential.
+   */
+  async revokeRunTokens(runId: string): Promise<void> {
+    await this.db
+      .update(runTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(runTokens.runId, runId), isNull(runTokens.revokedAt)))
+  }
+
+  async pruneRunTokens(now: number): Promise<number> {
+    const rows = await this.db
+      .delete(runTokens)
+      .where(lt(runTokens.expiresAt, new Date(now)))
+      .returning({ fingerprint: runTokens.fingerprint })
+    return rows.length
   }
 
   // --- projects -------------------------------------------------------------

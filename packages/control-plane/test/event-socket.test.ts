@@ -66,7 +66,7 @@ async function seedRun(): Promise<{ runId: string; token: string }> {
     TEST_SCOPE,
   )
   const run = await store.createRun(task.id, 'claude-code', 'feat/x')
-  return { runId: run.id, token: tokens.mint(run.id).token }
+  return { runId: run.id, token: (await tokens.mint(run.id)).token }
 }
 
 function event(runId: string, seq: number): AgentEvent {
@@ -137,7 +137,7 @@ describe('authentication', () => {
 
   it('refuses a revoked token, so a settled run cannot keep writing', async () => {
     const { runId, token } = await seedRun()
-    tokens.revoke(runId)
+    await tokens.revoke(runId)
     const client = connect(`${baseUrl}/internal/runs/${runId}/events?token=${token}`)
     await client.opened
     await settle()
