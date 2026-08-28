@@ -22,6 +22,8 @@ import {
 } from './types.js'
 import { productTasks, projectRepos, runEvents, runTokens, runs, taskSpecs } from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
+import { PostgresSeatStore } from '../harness/postgres-seats.js'
+import type { SecretCipher } from '../secrets/cipher.js'
 
 interface Subscription {
   readonly listener: Listener
@@ -177,6 +179,18 @@ export class PostgresStore implements Store {
         subscription.listener(event)
       }
     }
+  }
+
+  /**
+   * A seat store sharing this connection pool.
+   *
+   * A factory rather than exposing `db`, for the same reason run tokens live on this class:
+   * Supavisor has a connection ceiling that the event stream also spends from, and a second
+   * pool for a handful of small queries competes with the thing that matters. The cipher is a
+   * parameter because which one is right depends on the deployment, not on the store.
+   */
+  seats(cipher: SecretCipher): PostgresSeatStore {
+    return new PostgresSeatStore(this.db, cipher)
   }
 
   // --- run tokens -----------------------------------------------------------
