@@ -13,7 +13,9 @@
     "prove-runner": "tsx scripts/prove-runner.ts",
     "prove-reconciler": "tsx scripts/prove-reconciler.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx scripts/migrate.ts"
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:status": "tsx scripts/db-status.ts",
+    "db:new": "drizzle-kit generate --custom --name"
   },
   "dependencies": {
     "@aws-sdk/client-ecs": "^3.1114.0",

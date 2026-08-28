@@ -28,8 +28,11 @@
     "runner:prove": "pnpm --filter @intellidev/control-plane run prove-runner",
     "bundle:push": "pnpm --filter @intellidev/infra-aws run push-bundle",
     "reconciler:prove": "pnpm --filter @intellidev/control-plane run prove-reconciler",
-    "db:generate": "pnpm --filter @intellidev/control-plane run db:generate",
-    "db:migrate": "pnpm --filter @intellidev/control-plane run db:migrate"
+    "db:migrate": "pnpm --filter @intellidev/control-plane run db:migrate",
+    "db:status": "pnpm --filter @intellidev/control-plane run db:status",
+    "db:new": "pnpm --filter @intellidev/control-plane run db:new",
+    "db:baseline": "supabase db dump --linked --schema public -f db/baseline/product-schema.sql",
+    "db:verify": "bash db/verify/run.sh"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
