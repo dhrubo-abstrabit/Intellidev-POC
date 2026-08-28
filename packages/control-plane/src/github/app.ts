@@ -212,6 +212,75 @@ export class GitHubApp {
     return { token: body.token, expiresAt: body.expires_at }
   }
 
+  /**
+   * Confirms the App can reach a repository, and reports what it found.
+   *
+   * Called when someone adds a repository to a project, so the answer arrives on the form
+   * rather than thirty seconds into a run. Minting a token is the honest check — the
+   * installation lookup alone says the App is installed *somewhere* on the owner, not that this
+   * repository is one of the selected ones.
+   *
+   * Returns the default branch too, because the caller would otherwise ask GitHub for it
+   * separately and a repository's default is not always `main`.
+   */
+  async describeRepository(
+    owner: string,
+    repo: string,
+  ): Promise<{ installationId: number; defaultBranch: string; private: boolean }> {
+    const installationId = await this.installationFor(owner, repo)
+    const minted = await this.mint(installationId, repo)
+
+    const res = await this.fetchImpl(`${this.apiBase}/repos/${owner}/${repo}`, {
+      headers: {
+        authorization: `Bearer ${minted.token}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+      },
+    })
+    if (!res.ok) {
+      // The token minted but the repository will not answer: the App is installed on the owner
+      // without this repository selected, which is a different fix from "not installed at all".
+      throw new AppNotInstalled(owner, repo, this.installUrl)
+    }
+    const body = (await res.json()) as { default_branch?: string; private?: boolean }
+    return {
+      installationId,
+      defaultBranch: body.default_branch ?? 'main',
+      private: body.private ?? false,
+    }
+  }
+
+  /**
+   * The repositories an installation covers, for a picker.
+   *
+   * Paginated to a single page on purpose. A picker showing a hundred repositories is a search
+   * box's job, not a scroll, and fetching every page would make opening a form wait on an
+   * organisation's whole inventory.
+   */
+  async listRepositories(
+    owner: string,
+    repo: string,
+  ): Promise<Array<{ owner: string; repo: string; defaultBranch: string }>> {
+    const installationId = await this.installationFor(owner, repo)
+    const minted = await this.mint(installationId, repo)
+    const res = await this.fetchImpl(`${this.apiBase}/installation/repositories?per_page=100`, {
+      headers: {
+        authorization: `Bearer ${minted.token}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+      },
+    })
+    if (!res.ok) return []
+    const body = (await res.json()) as {
+      repositories?: Array<{ name: string; default_branch?: string; owner?: { login?: string } }>
+    }
+    return (body.repositories ?? []).map((r) => ({
+      owner: r.owner?.login ?? owner,
+      repo: r.name,
+      defaultBranch: r.default_branch ?? 'main',
+    }))
+  }
+
   private appHeaders(): Record<string, string> {
     return {
       authorization: `Bearer ${this.appJwt()}`,

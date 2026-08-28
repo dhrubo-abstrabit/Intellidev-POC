@@ -30,7 +30,7 @@ import {
 } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { ControlPlaneCredentialBroker, CredentialRefused } from './runs/credentials.js'
-import { gitHubAppFromEnv } from './github/app.js'
+import { AppNotInstalled, gitHubAppFromEnv } from './github/app.js'
 
 /**
  * The control plane, cut to what a UI needs to be useful: create a task, dispatch it, watch
@@ -323,6 +323,100 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     },
   )
 
+  /**
+   * The GitHub App, if this deployment has one.
+   *
+   * Declared here rather than beside the credential broker that also uses it, because the
+   * repository routes below reference it and a `const` used before its declaration is a
+   * temporal dead zone — it typechecks and then throws at runtime, which has already happened
+   * twice in this codebase.
+   *
+   * Configured from the environment, so a deployment gains the App by setting two variables
+   * rather than by a code change. Absent locally, where a PAT is enough.
+   */
+  const githubApp = gitHubAppFromEnv()
+
+  // --- repositories --------------------------------------------------------
+  //
+  // Which repositories this project may act on. The GitHub App is installed at *space* level and
+  // can cover a whole organisation, so being able to reach a repository says nothing about
+  // whether this project should. That gap is what this list closes, and why `task_specs.repo_id`
+  // is a foreign key into it rather than free text.
+
+  app.get('/api/repos', async () => ({ repos: await store.listProjectRepos(opts.scope) }))
+
+  /**
+   * Repositories the App could be pointed at, for a picker.
+   *
+   * Answered from the installation rather than from anything stored, so it reflects what a
+   * person actually granted — including a repository added to the installation a minute ago.
+   */
+  app.get('/api/repos/available', async (_request, reply) => {
+    if (!githubApp) return reply.code(400).send({ error: 'no GitHub App is configured' })
+    const known = await store.listProjectRepos(opts.scope)
+    const anchor = known[0]
+    if (!anchor) {
+      // Listing needs an installation to ask, and an installation is found from a repository.
+      // With none added yet there is nothing to anchor on, which is a state the UI should
+      // handle by asking for the first repository by name.
+      return { repos: [], reason: 'add one repository by name first' }
+    }
+    const available = await githubApp.listRepositories(anchor.owner, anchor.repo)
+    const already = new Set(known.map((r) => `${r.owner}/${r.repo}`))
+    return { repos: available.filter((r) => !already.has(`${r.owner}/${r.repo}`)) }
+  })
+
+  /**
+   * Adds a repository, after confirming the App can actually reach it.
+   *
+   * Verified here rather than trusted, because the alternative is discovering it thirty seconds
+   * into a run: a repository the App is not installed on produces a 403 from git inside a
+   * container, which reaches a person as a failed run rather than as a form error naming the
+   * fix.
+   */
+  app.post('/api/repos', async (request, reply) => {
+    const parsed = z
+      .object({ owner: z.string().min(1), repo: z.string().min(1) })
+      .safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'owner and repo are required' })
+    }
+    if (!githubApp) return reply.code(400).send({ error: 'no GitHub App is configured' })
+
+    const { owner, repo } = parsed.data
+    try {
+      const found = await githubApp.describeRepository(owner, repo)
+      const added = await store.addProjectRepo(opts.scope, {
+        owner,
+        repo,
+        // The installation GitHub resolved, not one configured by hand: an id typed into an
+        // environment variable is an id that goes stale when someone reinstalls the App.
+        installationRef: String(found.installationId),
+        defaultBranch: found.defaultBranch,
+      })
+      return reply.code(201).send({ repo: added })
+    } catch (error) {
+      if (error instanceof AppNotInstalled) {
+        // Carries the install link, which is the whole remedy.
+        return reply.code(400).send({ error: error.message })
+      }
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.delete<{ Params: { owner: string; repo: string } }>(
+    '/api/repos/:owner/:repo',
+    async (request, reply) => {
+      const removed = await store.removeProjectRepo(
+        opts.scope,
+        request.params.owner,
+        request.params.repo,
+      )
+      if (!removed) return reply.code(404).send({ error: 'not on this project' })
+      return { ok: true }
+    },
+  )
+
   // --- tasks ---------------------------------------------------------------
 
   app.get('/api/tasks', async () => ({ tasks: await store.listTasks(opts.scope) }))
@@ -581,10 +675,6 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    *
    * This is what lets a container hold nothing but its run token: B3's whole point.
    */
-  // Configured from the environment, so a deployment gains the App by setting two
-  // variables rather than by a code change. Absent locally, where a PAT is enough.
-  const githubApp = gitHubAppFromEnv()
-
   const broker = new ControlPlaneCredentialBroker({
     store,
     tokens,

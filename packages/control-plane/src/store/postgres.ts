@@ -340,7 +340,13 @@ export class PostgresStore implements Store {
       // `DO NOTHING` returns nothing when it conflicts.
       .onConflictDoUpdate({
         target: [projectRepos.projectId, projectRepos.owner, projectRepos.repo],
-        set: { installationRef: input.installationRef },
+        // The default branch too, not just the installation. Re-adding a repository is how a
+        // person fixes a stale entry, and leaving the branch untouched meant a row seeded
+        // before the App could be asked kept a null default for ever.
+        set: {
+          installationRef: input.installationRef,
+          defaultBranch: input.defaultBranch ?? null,
+        },
       })
       .returning()
     return toProjectRepo(row!)
