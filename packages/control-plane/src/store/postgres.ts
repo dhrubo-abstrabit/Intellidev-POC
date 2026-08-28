@@ -23,6 +23,7 @@ import {
 import { productTasks, projectRepos, runEvents, runTokens, runs, taskSpecs } from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
 import { PostgresSeatStore } from '../harness/postgres-seats.js'
+import { PostgresMcpStore } from '../mcp/postgres-mcp.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 
 interface Subscription {
@@ -205,6 +206,11 @@ export class PostgresStore implements Store {
    */
   seats(cipher: SecretCipher): PostgresSeatStore {
     return new PostgresSeatStore(this.db, cipher)
+  }
+
+  /** An MCP store sharing this connection pool, for the same reason `seats` does. */
+  mcp(cipher: SecretCipher): PostgresMcpStore {
+    return new PostgresMcpStore(this.db, cipher)
   }
 
   // --- run tokens -----------------------------------------------------------
