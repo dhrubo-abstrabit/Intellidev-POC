@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { AgentEvent } from '@intellidev/shared'
 import { PostgresStore } from '../src/store/postgres.js'
-import { unsafeToWipeReason } from './guard.js'
+import { allowRepoFor, TEST_REPO_URL } from './fixtures.js'
 
 /**
  * C6, proven the only way it can be: **two independent store instances**.
@@ -48,7 +48,7 @@ const TASK = {
   description: 'two instances',
   acceptanceCriteria: ['delivered across instances'],
   harness: 'claude-code' as const,
-  repoUrl: 'https://example.test/repo.git',
+  repoUrl: TEST_REPO_URL,
   baseBranch: 'main',
   mcpServerIds: [],
 }
@@ -63,10 +63,17 @@ async function until(predicate: () => boolean, timeoutMs = 8000): Promise<void> 
 }
 
 const dsn = connectionString()
-const unsafe = dsn ? await unsafeToWipeReason(dsn) : undefined
+/**
+ * A real project is required, not a placeholder.
+ *
+ * `runner.runs` carries composite foreign keys onto the product's tenancy, so there is nothing
+ * to invent here — a made-up project id is rejected by the database. `pnpm dev:seed` creates one
+ * and prints the ids to set.
+ */
+const liveProjectId = process.env['INTELLIDEV_PROJECT_ID']
 
-if (!dsn || unsafe) {
-  const why = unsafe ?? 'no SUPABASE_CONNECTION_STRING_SESSION'
+if (!dsn || !liveProjectId) {
+  const why = !dsn ? 'no SUPABASE_CONNECTION_STRING_SESSION' : 'no INTELLIDEV_PROJECT_ID'
   describe.skip(`cross-instance fan-out (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })
@@ -81,14 +88,25 @@ if (!dsn || unsafe) {
       await writer.truncateAll()
     })
 
+    /** Resolved from the database, because the run's tenancy has to be real. */
+    async function scope() {
+      const found = await writer.findProject(liveProjectId!)
+      if (!found) throw new Error(`project ${liveProjectId} is not in this database`)
+      return found
+    }
+
     afterAll(async () => {
       await writer.truncateAll()
+      // Leaves the shared database as it was found.
+      await writer.removeProjectRepo(await scope(), 'acme', 'widget')
       await writer.close()
       await reader.close()
     })
 
     async function seedRun(): Promise<string> {
-      const task = await writer.createTask(TASK)
+      const where = await scope()
+      await allowRepoFor(writer, TEST_REPO_URL, where)
+      const task = await writer.createTask(TASK, where)
       return (await writer.createRun(task.id, 'claude-code', 'feat/x')).id
     }
 

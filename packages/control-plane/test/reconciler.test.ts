@@ -1,21 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import { LifecycleReconciler, stoppedReason } from '../src/lifecycle/reconciler.js'
 import { InMemoryStore } from '../src/store.js'
+import { allowTestRepo, TEST_SCOPE, TEST_REPO_URL } from './fixtures.js'
 
 const ARN = 'arn:aws:ecs:ap-south-1:1:task/intellidev-dev-runners/abc'
 
 /** A store with one dispatched run whose handle is a task ARN. */
 async function storeWithRun(handle = ARN) {
   const store = new InMemoryStore()
-  const task = await store.createTask({
-    title: 't',
-    description: 'd',
-    acceptanceCriteria: ['a'],
-    harness: 'claude-code',
-    repoUrl: 'https://example.test/r.git',
-    baseBranch: 'main',
-    mcpServerIds: [],
-  })
+  await allowTestRepo(store)
+  const task = await store.createTask(
+    {
+      title: 't',
+      description: 'd',
+      acceptanceCriteria: ['a'],
+      harness: 'claude-code',
+      repoUrl: TEST_REPO_URL,
+      baseBranch: 'main',
+      mcpServerIds: [],
+    },
+    TEST_SCOPE,
+  )
   // Walked through the real transitions rather than forced: a dispatched run's task is
   // `running`, and settling from `not_started` would be refused by the state machine — so
   // a fixture that skipped this would test a state that cannot exist.

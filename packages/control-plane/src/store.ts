@@ -8,4 +8,6 @@
 export type { Listener, RunRow, Store, TaskRow } from './store/types.js'
 export { InMemoryStore } from './store/memory.js'
 export { PostgresStore, type PostgresStoreOptions } from './store/postgres.js'
-export { runEvents, runs, tasks, schema } from './store/schema.js'
+export { productTasks, projectRepos, runEvents, runs, taskSpecs, schema } from './store/schema.js'
+export { RepoNotAllowed } from './store/types.js'
+export type { ProjectRepoRow, ProjectScope } from './store/types.js'

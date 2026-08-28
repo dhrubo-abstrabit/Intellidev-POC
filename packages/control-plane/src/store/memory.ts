@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import {
   canTransitionTask,
   type AgentEvent,
@@ -6,7 +6,15 @@ import {
   type RunStatus,
   type TaskStatus,
 } from '@intellidev/shared'
-import type { Listener, RunRow, Store, TaskRow } from './types.js'
+import {
+  RepoNotAllowed,
+  type Listener,
+  type ProjectRepoRow,
+  type ProjectScope,
+  type RunRow,
+  type Store,
+  type TaskRow,
+} from './types.js'
 
 interface Subscription {
   readonly listener: Listener
@@ -38,13 +46,72 @@ export class InMemoryStore implements Store {
    * the second of its backlog.
    */
   private readonly subscriptions = new Map<string, Set<Subscription>>()
+  /**
+   * The repository allowlist, modelled here too.
+   *
+   * Not a convenience: the Postgres store refuses a task whose repository is not listed for its
+   * project, and an in-memory store that allowed anything would be a *different* store. The
+   * contract suite runs one set of tests against both precisely to catch that kind of drift, so
+   * the rule has to live in both.
+   */
+  private readonly repos = new Map<string, ProjectRepoRow>()
+
+  // --- project repositories ------------------------------------------------
+
+  async addProjectRepo(
+    scope: ProjectScope,
+    input: { owner: string; repo: string; installationRef: string; defaultBranch?: string },
+  ): Promise<ProjectRepoRow> {
+    const existing = [...this.repos.values()].find(
+      (r) => r.projectId === scope.projectId && r.owner === input.owner && r.repo === input.repo,
+    )
+    if (existing) return existing
+    const row: ProjectRepoRow = {
+      id: randomUUID(),
+      projectId: scope.projectId,
+      clientSpaceId: scope.clientSpaceId,
+      owner: input.owner,
+      repo: input.repo,
+      installationRef: input.installationRef,
+      ...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
+    }
+    this.repos.set(row.id, row)
+    return row
+  }
+
+  async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {
+    return [...this.repos.values()].filter((r) => r.projectId === scope.projectId)
+  }
+
+  async removeProjectRepo(scope: ProjectScope, owner: string, repo: string): Promise<boolean> {
+    const found = [...this.repos.values()].find(
+      (r) => r.projectId === scope.projectId && r.owner === owner && r.repo === repo,
+    )
+    if (!found) return false
+    this.repos.delete(found.id)
+    return true
+  }
 
   // --- tasks ---------------------------------------------------------------
 
-  async createTask(input: Omit<TaskRow, 'id' | 'status' | 'createdAt'>): Promise<TaskRow> {
+  async createTask(
+    input: Omit<TaskRow, 'id' | 'status' | 'createdAt' | 'projectId' | 'clientSpaceId'>,
+    scope: ProjectScope,
+  ): Promise<TaskRow> {
+    const target = parseRepoUrl(input.repoUrl)
+    const allowed = target
+      ? [...this.repos.values()].find(
+          (r) =>
+            r.projectId === scope.projectId && r.owner === target.owner && r.repo === target.repo,
+        )
+      : undefined
+    if (!allowed) throw new RepoNotAllowed(input.repoUrl, scope.projectId)
+
     const task: TaskRow = {
       ...input,
-      id: `task_${randomBytes(5).toString('hex')}`,
+      id: randomUUID(),
+      projectId: scope.projectId,
+      clientSpaceId: scope.clientSpaceId,
       status: 'not_started',
       createdAt: new Date().toISOString(),
     }
@@ -52,9 +119,11 @@ export class InMemoryStore implements Store {
     return task
   }
 
-  async listTasks(): Promise<TaskRow[]> {
+  async listTasks(scope: ProjectScope): Promise<TaskRow[]> {
     // Newest first: a dispatch board is read from the top.
-    return [...this.tasks.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    return [...this.tasks.values()]
+      .filter((t) => t.projectId === scope.projectId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
   async getTask(id: string): Promise<TaskRow | undefined> {
@@ -80,8 +149,10 @@ export class InMemoryStore implements Store {
   // --- runs ----------------------------------------------------------------
 
   async createRun(taskId: string, harness: HarnessId, branch: string): Promise<RunRow> {
+    const task = this.tasks.get(taskId)
+    if (!task) throw new Error(`no such task ${taskId}`)
     const run: RunRow = {
-      id: `run_${randomBytes(5).toString('hex')}`,
+      id: randomUUID(),
       taskId,
       status: 'queued',
       harness,
@@ -235,4 +306,26 @@ export class InMemoryStore implements Store {
 
   /** Nothing to release. Present so callers need not know which implementation they hold. */
   async close(): Promise<void> {}
+}
+
+/**
+ * `owner` and `repo` from a clone URL. Mirrors the Postgres store's parser.
+ *
+ * Duplicated rather than shared because it is three lines and the alternative is a module both
+ * stores import for one regex — but if a third caller ever needs it, that is the moment to
+ * extract it rather than now.
+ */
+function parseRepoUrl(repoUrl: string): { owner: string; repo: string } | undefined {
+  const path = (() => {
+    try {
+      return new URL(repoUrl).pathname
+    } catch {
+      return /^[^@]+@[^:]+:(.+)$/.exec(repoUrl)?.[1]
+    }
+  })()
+  const parts = (path ?? '')
+    .replace(/^\//, '')
+    .replace(/\.git$/, '')
+    .split('/')
+  return parts.length >= 2 && parts[0] && parts[1] ? { owner: parts[0], repo: parts[1] } : undefined
 }

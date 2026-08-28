@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import pg from 'pg'
@@ -10,8 +10,16 @@ import {
   type StageRecord,
   type TaskStatus,
 } from '@intellidev/shared'
-import type { Listener, RunRow, Store, TaskRow } from './types.js'
-import { runEvents, runs, tasks } from './schema.js'
+import {
+  RepoNotAllowed,
+  type Listener,
+  type ProjectRepoRow,
+  type ProjectScope,
+  type RunRow,
+  type Store,
+  type TaskRow,
+} from './types.js'
+import { productTasks, projectRepos, runEvents, runs, taskSpecs } from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
 
 interface Subscription {
@@ -160,41 +168,165 @@ export class PostgresStore implements Store {
     }
   }
 
-  // --- tasks ---------------------------------------------------------------
+  // --- projects -------------------------------------------------------------
 
-  async createTask(input: Omit<TaskRow, 'id' | 'status' | 'createdAt'>): Promise<TaskRow> {
-    const row = {
-      id: `task_${randomBytes(5).toString('hex')}`,
-      title: input.title,
-      description: input.description,
-      details: input.details ?? null,
-      acceptanceCriteria: input.acceptanceCriteria,
-      harness: input.harness,
-      status: 'not_started' as TaskStatus,
-      createdAt: new Date(),
-      repoUrl: input.repoUrl,
-      baseBranch: input.baseBranch,
-      mcpServerIds: input.mcpServerIds,
-    }
-    const [inserted] = await this.db.insert(tasks).values(row).returning()
-    return toTask(inserted!)
+  /**
+   * Resolves a project to the tenancy above it.
+   *
+   * Not on the `Store` interface: it reads the product's tables, which the in-memory store has
+   * no equivalent of, and it is needed once at boot rather than on any request path. Putting it
+   * on the interface would force a meaningless implementation in memory.
+   */
+  async findProject(projectId: string): Promise<ProjectScope | undefined> {
+    const [row] = await this.db
+      .select({
+        projectId: sql<string>`p.id`,
+        clientSpaceId: sql<string>`p.client_space_id`,
+        workspaceId: sql<string>`p.workspace_id`,
+      })
+      .from(sql`public.projects p`)
+      .where(sql`p.id = ${projectId}`)
+      .limit(1)
+    return row
   }
 
-  async listTasks(): Promise<TaskRow[]> {
-    const rows = await this.db.select().from(tasks).orderBy(asc(tasks.createdAt))
+  // --- project repositories ------------------------------------------------
+
+  async addProjectRepo(
+    scope: ProjectScope,
+    input: { owner: string; repo: string; installationRef: string; defaultBranch?: string },
+  ): Promise<ProjectRepoRow> {
+    const [row] = await this.db
+      .insert(projectRepos)
+      .values({
+        clientSpaceId: scope.clientSpaceId,
+        projectId: scope.projectId,
+        owner: input.owner,
+        repo: input.repo,
+        installationRef: input.installationRef,
+        defaultBranch: input.defaultBranch ?? null,
+      })
+      // Idempotent on the natural key, so a repeated UI action is not an error. `DO UPDATE`
+      // rather than `DO NOTHING` because the row has to come back either way, and
+      // `DO NOTHING` returns nothing when it conflicts.
+      .onConflictDoUpdate({
+        target: [projectRepos.projectId, projectRepos.owner, projectRepos.repo],
+        set: { installationRef: input.installationRef },
+      })
+      .returning()
+    return toProjectRepo(row!)
+  }
+
+  async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {
+    const rows = await this.db
+      .select()
+      .from(projectRepos)
+      .where(eq(projectRepos.projectId, scope.projectId))
+      .orderBy(asc(projectRepos.owner), asc(projectRepos.repo))
+    return rows.map(toProjectRepo)
+  }
+
+  async removeProjectRepo(scope: ProjectScope, owner: string, repo: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(projectRepos)
+      .where(
+        and(
+          eq(projectRepos.projectId, scope.projectId),
+          eq(projectRepos.owner, owner),
+          eq(projectRepos.repo, repo),
+        ),
+      )
+      .returning({ id: projectRepos.id })
+    return rows.length > 0
+  }
+
+  // --- tasks ---------------------------------------------------------------
+
+  /**
+   * Creates a task and the spec that makes it runnable, in one transaction.
+   *
+   * Two tables, because `public.tasks` is the product's and shared with an ingest pipeline: the
+   * runner's fields live beside it in `runner.task_specs`, and a task is runnable exactly when
+   * a spec row exists. One transaction, because a task with no spec is invisible to this system
+   * while still appearing on the product's board — a half-created row nobody owns.
+   *
+   * The repository is resolved to a row in `runner.project_repos` rather than stored as a URL.
+   * That is the project's allowlist, and this is the only place it can be enforced: the GitHub
+   * App is installed at space level and may cover an entire organisation, so being *able* to
+   * reach a repository says nothing about whether this project may act on it.
+   */
+  async createTask(
+    input: Omit<TaskRow, 'id' | 'status' | 'createdAt' | 'projectId' | 'clientSpaceId'>,
+    scope: ProjectScope,
+  ): Promise<TaskRow> {
+    const target = parseRepoUrl(input.repoUrl)
+    if (!target) throw new RepoNotAllowed(input.repoUrl, scope.projectId)
+
+    return await this.db.transaction(async (tx) => {
+      const [allowed] = await tx
+        .select()
+        .from(projectRepos)
+        .where(
+          and(
+            eq(projectRepos.projectId, scope.projectId),
+            eq(projectRepos.owner, target.owner),
+            eq(projectRepos.repo, target.repo),
+          ),
+        )
+        .limit(1)
+      if (!allowed) throw new RepoNotAllowed(input.repoUrl, scope.projectId)
+
+      // Generated here rather than by the column default, because the same id is needed for
+      // the spec insert and reading it back would cost another round trip.
+      const id = randomUUID()
+
+      await tx.insert(productTasks).values({
+        id,
+        clientSpaceId: scope.clientSpaceId,
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        title: input.title,
+        description: input.description,
+        // `confidence`, `for_date` and `dedupe_hash` are NOT NULL on their table and carry
+        // defaults added by migration 0001 — a task a person wrote has no meaningful value for
+        // any of them.
+        status: 'pending',
+      })
+
+      await tx.insert(taskSpecs).values({
+        taskId: id,
+        repoId: allowed.id,
+        baseBranch: input.baseBranch,
+        harness: input.harness,
+        acceptanceCriteria: input.acceptanceCriteria,
+        details: input.details ?? null,
+        mcpServerIds: input.mcpServerIds,
+        runnerStatus: 'not_started',
+      })
+
+      const created = await this.readTask(id, tx)
+      if (!created) throw new Error(`task ${id} vanished during creation`)
+      return created
+    })
+  }
+
+  async listTasks(scope: ProjectScope): Promise<TaskRow[]> {
+    const rows = await this.taskQuery()
+      .where(eq(productTasks.projectId, scope.projectId))
+      .orderBy(asc(productTasks.createdAt))
     return rows.map(toTask)
   }
 
   async getTask(id: string): Promise<TaskRow | undefined> {
-    const [row] = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1)
-    return row ? toTask(row) : undefined
+    return await this.readTask(id, this.db)
   }
 
   /**
    * Moves a task's status, refusing transitions the state machine does not allow.
    *
-   * The guard runs against the row this statement itself read, in one round trip: a
-   * read-then-write would let two dispatches both see `not_started` and both proceed.
+   * Writes both statuses: the runner's own onto the spec, and the product's coarse projection
+   * onto their table. The projection goes through `runner.product_status()` rather than a map in
+   * this file, so anything else that advances a runner status collapses it the same way.
    */
   async setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow> {
     const current = await this.getTask(id)
@@ -202,18 +334,102 @@ export class PostgresStore implements Store {
     if (current.status !== status && !canTransitionTask(current.status, status)) {
       throw new Error(`cannot move task ${id} from ${current.status} to ${status}`)
     }
-    const [row] = await this.db.update(tasks).set({ status }).where(eq(tasks.id, id)).returning()
-    return toTask(row!)
+
+    return await this.db.transaction(async (tx) => {
+      await tx.update(taskSpecs).set({ runnerStatus: status }).where(eq(taskSpecs.taskId, id))
+      await tx
+        .update(productTasks)
+        .set({ status: sql`runner.product_status(${status})` })
+        .where(eq(productTasks.id, id))
+      const row = await this.readTask(id, tx)
+      if (!row) throw new Error(`no such task ${id}`)
+      return row
+    })
+  }
+
+  /**
+   * The join every task read shares.
+   *
+   * Inner joins on purpose: a `public.tasks` row with no spec is an ingest observation, not
+   * agent work, and must not surface here. That is the same predicate as "is this runnable".
+   */
+  private taskQuery() {
+    return this.db
+      .select({
+        id: productTasks.id,
+        projectId: productTasks.projectId,
+        clientSpaceId: productTasks.clientSpaceId,
+        title: productTasks.title,
+        description: productTasks.description,
+        createdAt: productTasks.createdAt,
+        details: taskSpecs.details,
+        acceptanceCriteria: taskSpecs.acceptanceCriteria,
+        harness: taskSpecs.harness,
+        mcpServerIds: taskSpecs.mcpServerIds,
+        baseBranch: taskSpecs.baseBranch,
+        runnerStatus: taskSpecs.runnerStatus,
+        owner: projectRepos.owner,
+        repo: projectRepos.repo,
+      })
+      .from(productTasks)
+      .innerJoin(taskSpecs, eq(taskSpecs.taskId, productTasks.id))
+      .innerJoin(projectRepos, eq(projectRepos.id, taskSpecs.repoId))
+      .$dynamic()
+  }
+
+  /** Reads one task, on this connection or inside a caller's transaction. */
+  private async readTask(
+    id: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    executor: any,
+  ): Promise<TaskRow | undefined> {
+    const [row] = await executor
+      .select({
+        id: productTasks.id,
+        projectId: productTasks.projectId,
+        clientSpaceId: productTasks.clientSpaceId,
+        title: productTasks.title,
+        description: productTasks.description,
+        createdAt: productTasks.createdAt,
+        details: taskSpecs.details,
+        acceptanceCriteria: taskSpecs.acceptanceCriteria,
+        harness: taskSpecs.harness,
+        mcpServerIds: taskSpecs.mcpServerIds,
+        baseBranch: taskSpecs.baseBranch,
+        runnerStatus: taskSpecs.runnerStatus,
+        owner: projectRepos.owner,
+        repo: projectRepos.repo,
+      })
+      .from(productTasks)
+      .innerJoin(taskSpecs, eq(taskSpecs.taskId, productTasks.id))
+      .innerJoin(projectRepos, eq(projectRepos.id, taskSpecs.repoId))
+      .where(eq(productTasks.id, id))
+      .limit(1)
+    return row ? toTask(row) : undefined
   }
 
   // --- runs ----------------------------------------------------------------
 
+  /**
+   * Starts a run, inheriting its tenancy from the task.
+   *
+   * `client_space_id` and `project_id` are copied onto the run rather than reached through the
+   * task at read time, because the RLS policy on `runner.runs` filters on them directly — a
+   * policy that had to join two schemas to find a project would be paid on every row of every
+   * event query. The composite foreign key onto `projects(id, client_space_id)` is what stops
+   * the copy from ever disagreeing with the task it came from.
+   */
   async createRun(taskId: string, harness: HarnessId, branch: string): Promise<RunRow> {
+    const task = await this.getTask(taskId)
+    if (!task) throw new Error(`no such task ${taskId}`)
+
     const [row] = await this.db
       .insert(runs)
       .values({
-        id: `run_${randomBytes(5).toString('hex')}`,
+        id: randomUUID(),
         taskId,
+        clientSpaceId: task.clientSpaceId,
+        projectId: task.projectId,
         status: 'queued',
         harness,
         branch,
@@ -393,8 +609,25 @@ export class PostgresStore implements Store {
    * matters because it is also one round trip rather than three against a database ~85 ms
    * away, and this runs before every contract test.
    */
+  /**
+   * Empties everything this system created, and nothing else.
+   *
+   * Deliberately a targeted DELETE and not `truncate tasks cascade`, which is what this used to
+   * be. Unqualified, that resolved through `search_path` to `public.tasks` — the product's own
+   * table, shared with an ingest pipeline — so the test suite was aimed at another team's data
+   * and happened to survive only because the table was empty.
+   *
+   * The predicate is the safe one: a task with a spec row is agent work by definition, so this
+   * cannot reach an ingest-generated observation. Runs, events and specs go with it through the
+   * cascades already declared in the migration.
+   */
   async truncateAll(): Promise<void> {
-    await this.db.execute(sql`truncate table ${tasks} cascade`)
+    // Written out rather than built, because the builder emits a bare `"tasks"` — drizzle
+    // refuses to let `public` be named as a schema — and a bare name is precisely what made
+    // this dangerous. Explicit here, and guarded by `PostgresStore destructive safety`.
+    await this.db.execute(
+      sql`delete from public.tasks where id in (select task_id from runner.task_specs)`,
+    )
   }
 
   async close(): Promise<void> {
@@ -403,20 +636,91 @@ export class PostgresStore implements Store {
   }
 }
 
-function toTask(row: typeof tasks.$inferSelect): TaskRow {
+function toProjectRepo(row: typeof projectRepos.$inferSelect): ProjectRepoRow {
   return {
     id: row.id,
+    projectId: row.projectId,
+    clientSpaceId: row.clientSpaceId,
+    owner: row.owner,
+    repo: row.repo,
+    installationRef: row.installationRef,
+    ...(row.defaultBranch ? { defaultBranch: row.defaultBranch } : {}),
+  }
+}
+
+/**
+ * Assembles a `TaskRow` from the join of the product's task, its spec and its repository.
+ *
+ * `status` comes from the spec, not from `public.tasks.status`: theirs is the five-value
+ * projection and cannot be turned back into the runner's eight.
+ */
+function toTask(row: {
+  id: string
+  projectId: string | null
+  clientSpaceId: string
+  title: string
+  description: string | null
+  createdAt: Date
+  details: string | null
+  acceptanceCriteria: string[]
+  harness: string
+  mcpServerIds: string[]
+  baseBranch: string
+  runnerStatus: string
+  owner: string
+  repo: string
+}): TaskRow {
+  return {
+    id: row.id,
+    // Non-null in practice: a spec row cannot exist without a project, because its repository
+    // is project-scoped. Asserted rather than defaulted, so a violation is loud.
+    projectId: row.projectId!,
+    clientSpaceId: row.clientSpaceId,
     title: row.title,
-    description: row.description,
+    description: row.description ?? '',
     ...(row.details ? { details: row.details } : {}),
     acceptanceCriteria: row.acceptanceCriteria,
     harness: row.harness as HarnessId,
-    status: row.status as TaskStatus,
+    status: row.runnerStatus as TaskStatus,
     createdAt: row.createdAt.toISOString(),
-    repoUrl: row.repoUrl,
+    repoUrl: repoUrlOf(row.owner, row.repo),
     baseBranch: row.baseBranch,
     mcpServerIds: row.mcpServerIds,
   }
+}
+
+/**
+ * The clone URL for an allowlisted repository.
+ *
+ * GitHub is assumed, because the credential broker mints GitHub App installation tokens and
+ * nothing else can authenticate a run's clone. When a second host appears, `project_repos`
+ * grows a column for it and this reads it — the allowlist is already the right place for that
+ * to live.
+ */
+function repoUrlOf(owner: string, repo: string): string {
+  return `https://github.com/${owner}/${repo}.git`
+}
+
+/**
+ * `owner` and `repo` from a clone URL, or undefined if it is not one we understand.
+ *
+ * Accepts the scp-like form (`git@github.com:owner/repo.git`) as well as a URL, because both
+ * appear in the wild and a caller pasting the form GitHub offers should not get a refusal that
+ * reads like a permissions problem.
+ */
+function parseRepoUrl(repoUrl: string): { owner: string; repo: string } | undefined {
+  const path = (() => {
+    try {
+      return new URL(repoUrl).pathname
+    } catch {
+      return /^[^@]+@[^:]+:(.+)$/.exec(repoUrl)?.[1]
+    }
+  })()
+  const parts = (path ?? '')
+    .replace(/^\//, '')
+    .replace(/\.git$/, '')
+    .split('/')
+  return parts.length >= 2 && parts[0] && parts[1] ? { owner: parts[0], repo: parts[1] } : undefined
 }
 
 function toRun(row: typeof runs.$inferSelect): RunRow {

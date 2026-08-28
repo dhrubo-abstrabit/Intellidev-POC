@@ -2,8 +2,10 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { AgentEvent } from '@intellidev/shared'
 import { InMemoryStore } from '../src/store/memory.js'
+import { randomUUID } from 'node:crypto'
+import pg from 'pg'
 import { PostgresStore } from '../src/store/postgres.js'
-import { unsafeToWipeReason } from './guard.js'
+import type { ProjectScope } from '../src/store/types.js'
 import type { Store } from '../src/store/types.js'
 
 /**
@@ -68,7 +70,7 @@ const TASK = {
   description: 'shared by both stores',
   acceptanceCriteria: ['behaves identically'],
   harness: 'claude-code' as const,
-  repoUrl: 'https://example.test/repo.git',
+  repoUrl: 'https://github.com/acme/widget.git',
   baseBranch: 'main',
   mcpServerIds: ['github'],
 }
@@ -85,11 +87,19 @@ const TASK = {
 function contract(
   name: string,
   store: Store,
+  scope: ProjectScope,
   hooks: { reset?: () => Promise<void>; dispose?: () => Promise<void> } = {},
 ) {
   describe(name, () => {
     beforeEach(async () => {
       if (hooks.reset) await hooks.reset()
+      // Re-added every test because `reset` empties tasks, and a task cannot be created for a
+      // repository the project has not been allowed. Idempotent, so this is one statement.
+      await store.addProjectRepo(scope, {
+        owner: 'acme',
+        repo: 'widget',
+        installationRef: 'contract',
+      })
     })
     afterAll(async () => {
       if (hooks.dispose) await hooks.dispose()
@@ -97,7 +107,7 @@ function contract(
 
     describe('tasks', () => {
       it('round-trips every field, including the optional ones', async () => {
-        const created = await store.createTask({ ...TASK, details: 'extra context' })
+        const created = await store.createTask({ ...TASK, details: 'extra context' }, scope)
         const fetched = await store.getTask(created.id)
         expect(fetched).toMatchObject({
           title: TASK.title,
@@ -112,29 +122,29 @@ function contract(
 
       it('omits an absent optional rather than returning null', async () => {
         // A `details: null` would reach the UI as a rendered "null"; absence must stay absence.
-        const created = await store.createTask(TASK)
+        const created = await store.createTask(TASK, scope)
         expect(await store.getTask(created.id)).not.toHaveProperty('details')
       })
 
       it('returns undefined for a task that does not exist', async () => {
-        expect(await store.getTask('task_missing')).toBeUndefined()
+        expect(await store.getTask('00000000-0000-0000-0000-00000000dead')).toBeUndefined()
       })
 
       it('enforces the status machine, refusing an illegal jump', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         await expect(store.setTaskStatus(task.id, 'in_review')).rejects.toThrow(/cannot move/)
         expect((await store.getTask(task.id))?.status).toBe('not_started')
       })
 
       it('allows the legal path', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         await store.setTaskStatus(task.id, 'dispatched')
         await store.setTaskStatus(task.id, 'running')
         expect((await store.setTaskStatus(task.id, 'in_review')).status).toBe('in_review')
       })
 
       it('treats setting the current status as a no-op, not a violation', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         expect((await store.setTaskStatus(task.id, 'not_started')).status).toBe('not_started')
       })
     })
@@ -142,7 +152,7 @@ function contract(
     describe('runs', () => {
       it('starts queued with seqHwm -1, so seq 0 is acceptable', async () => {
         // `0 <= 0` would reject the very first event if this were 0.
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')
         expect(run.status).toBe('queued')
         expect(run.seqHwm).toBe(-1)
@@ -150,7 +160,7 @@ function contract(
       })
 
       it('applies a partial patch without disturbing other fields', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')
         await store.updateRun(run.id, { handle: 'arn:aws:ecs:::task/abc' })
         await store.updateRun(run.id, { status: 'running' })
@@ -161,7 +171,7 @@ function contract(
       })
 
       it('finds a run by its runtime handle', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')
         await store.updateRun(run.id, { handle: 'container-xyz' })
         expect((await store.findRunByHandle('container-xyz'))?.id).toBe(run.id)
@@ -170,7 +180,7 @@ function contract(
 
       it('lists unsettled runs across every non-terminal status but parked', async () => {
         // The reconciler sweeps exactly this set. `parked` waits on a human, not a container.
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const ids: Record<string, string> = {}
         for (const status of [
           'queued',
@@ -188,8 +198,8 @@ function contract(
       })
 
       it('scopes listRuns by task', async () => {
-        const a = await store.createTask(TASK)
-        const b = await store.createTask(TASK)
+        const a = await store.createTask(TASK, scope)
+        const b = await store.createTask(TASK, scope)
         await store.createRun(a.id, 'claude-code', 'feat/a')
         await store.createRun(b.id, 'claude-code', 'feat/b')
         expect(await store.listRuns(a.id)).toHaveLength(1)
@@ -197,13 +207,13 @@ function contract(
       })
 
       it('rejects a patch to a run that does not exist', async () => {
-        await expect(store.updateRun('run_missing', { status: 'failed' })).rejects.toThrow(
-          /no such run/,
-        )
+        await expect(
+          store.updateRun('00000000-0000-0000-0000-00000000beef', { status: 'failed' }),
+        ).rejects.toThrow(/no such run/)
       })
 
       it('persists stage records as structured data', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')
         const records = [
           {
@@ -222,7 +232,7 @@ function contract(
 
     describe('events', () => {
       async function runFixture(): Promise<string> {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         return (await store.createRun(task.id, 'claude-code', 'feat/x')).id
       }
 
@@ -311,7 +321,7 @@ function contract(
 
     describe('subscription', () => {
       it('backfills from `since`, so there is no separate read to race', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         for (const seq of [0, 1, 2]) await store.appendEvent(event(runId, seq))
 
@@ -324,7 +334,7 @@ function contract(
       })
 
       it('delivers the whole log for `since: -1`', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         for (const seq of [0, 1]) await store.appendEvent(event(runId, seq))
 
@@ -337,7 +347,7 @@ function contract(
 
       it('gives two subscribers of one run their own backlog', async () => {
         // A shared watermark let whoever subscribed first starve the second of its history.
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         for (const seq of [0, 1, 2]) await store.appendEvent(event(runId, seq))
 
@@ -359,7 +369,7 @@ function contract(
         // run's current position asynchronously could return a watermark that already
         // included the event the subscriber was meant to see, skipping it with nothing to
         // retry. `since` is required now, so the caller states where it is.
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         for (const seq of [0, 1]) await store.appendEvent(event(runId, seq))
 
@@ -374,7 +384,7 @@ function contract(
       })
 
       it('delivers new events to a listener and stops on unsubscribe', async () => {
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         const seen: number[] = []
         const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: -1 })
@@ -389,7 +399,7 @@ function contract(
 
       it('does not re-deliver a replayed duplicate', async () => {
         // Otherwise a reconnect would make the UI re-render events it already showed.
-        const task = await store.createTask(TASK)
+        const task = await store.createTask(TASK, scope)
         const runId = (await store.createRun(task.id, 'claude-code', 'feat/x')).id
         const seen: number[] = []
         const unsubscribe = store.subscribe(runId, (e) => seen.push(e.seq), { since: -1 })
@@ -403,6 +413,15 @@ function contract(
   })
 }
 
+/**
+ * The in-memory store's tenancy. Placeholders, because nothing joins on them here.
+ */
+const MEMORY_SCOPE: ProjectScope = {
+  projectId: '00000000-0000-0000-0000-0000000000d1',
+  clientSpaceId: '00000000-0000-0000-0000-0000000000d2',
+  workspaceId: '00000000-0000-0000-0000-0000000000d3',
+}
+
 // A fresh in-memory store per test is what isolation means here, so `reset` swaps it.
 let memory = new InMemoryStore()
 contract(
@@ -410,6 +429,7 @@ contract(
   new Proxy({} as Store, {
     get: (_target, prop) => Reflect.get(memory as object, prop, memory),
   }),
+  MEMORY_SCOPE,
   {
     reset: async () => {
       memory = new InMemoryStore()
@@ -418,24 +438,87 @@ contract(
 )
 
 const dsn = connectionString()
-// Checked before a store is even constructed: these tests truncate, and the guard's whole
-// point is that nothing destructive runs against a database holding someone else's data.
-const unsafe = dsn ? await unsafeToWipeReason(dsn) : undefined
-if (dsn && !unsafe) {
+
+/**
+ * The Postgres store runs against a real project, because its tables carry foreign keys onto
+ * the product's tenancy and there is nothing to fake. `pnpm dev:seed` creates one and prints
+ * the ids; without them this half of the contract is skipped rather than run against a project
+ * that does not exist.
+ */
+const liveProjectId = process.env['INTELLIDEV_PROJECT_ID']
+
+if (dsn && liveProjectId) {
   const live = new PostgresStore({ connectionString: dsn })
-  contract('PostgresStore', live, {
-    // `tasks` cascades to runs and run_events, so one statement empties all three — and it
-    // is one round trip rather than three against a database 85 ms away.
-    reset: async () => {
-      await live.truncateAll()
-    },
-    dispose: async () => {
-      await live.truncateAll()
-      await live.close()
-    },
-  })
+  const found = await live.findProject(liveProjectId)
+
+  if (!found) {
+    await live.close()
+    describe.skip(`PostgresStore (skipped: project ${liveProjectId} not in this database)`, () => {
+      it('is skipped', () => {})
+    })
+  } else {
+    contract('PostgresStore', live, found, {
+      reset: async () => {
+        await live.truncateAll()
+      },
+      dispose: async () => {
+        await live.truncateAll()
+        // `truncateAll` clears tasks, not the allowlist, and this runs against the same shared
+        // database the product team uses — a leftover entry surfaces later as a repository
+        // nobody remembers adding.
+        await live.removeProjectRepo(found, 'acme', 'widget')
+        await live.close()
+      },
+    })
+
+    /**
+     * `truncateAll` must not be able to reach a task this system did not create.
+     *
+     * This is the test the previous guard stood in for. `truncateAll` used to be
+     * `truncate table tasks cascade` against an unqualified name, which resolved to
+     * `public.tasks` — the product's own table, shared with an ingest pipeline — so the suite
+     * was aimed at another team's data and survived only because the table was empty.
+     *
+     * The fix was to narrow it to tasks that have a runner spec, which is the definition of
+     * agent work. A blanket skip would have protected the data by removing the coverage; this
+     * protects it by proving the property, and it fails if anyone ever widens the statement.
+     */
+    describe('PostgresStore destructive safety', () => {
+      it('leaves a product task with no runner spec untouched', async () => {
+        // Its own store and pool: the contract suite's `dispose` closes `live` when its own
+        // tests finish, which is before this sibling block runs.
+        const own = new PostgresStore({ connectionString: dsn })
+        const pool = new pg.Pool({
+          connectionString: dsn,
+          max: 1,
+          ssl: { rejectUnauthorized: false },
+        })
+        // Inserted with raw SQL on purpose: the store has no way to create a spec-less task,
+        // which is exactly why it needs proving that it cannot delete one either.
+        const id = randomUUID()
+        try {
+          await pool.query(
+            `insert into public.tasks (id, client_space_id, workspace_id, project_id, title)
+             values ($1, $2, $3, $4, $5)`,
+            [id, found.clientSpaceId, found.workspaceId, found.projectId, 'ingest-owned, not ours'],
+          )
+
+          await own.truncateAll()
+
+          const after = await pool.query('select id from public.tasks where id = $1', [id])
+          expect(after.rows).toHaveLength(1)
+        } finally {
+          await pool.query('delete from public.tasks where id = $1', [id]).catch(() => undefined)
+          await pool.end()
+          await own.close()
+        }
+      })
+    })
+  }
 } else {
-  const why = unsafe ?? 'no SUPABASE_CONNECTION_STRING_SESSION configured'
+  const why = !dsn
+    ? 'no SUPABASE_CONNECTION_STRING_SESSION configured'
+    : 'no INTELLIDEV_PROJECT_ID — run `pnpm dev:seed`'
   describe.skip(`PostgresStore (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })

@@ -19,7 +19,13 @@ import { toPublic, type McpAuthKind } from './mcp/types.js'
 import { verifyServer } from './mcp/verify.js'
 import websocket from '@fastify/websocket'
 import { AgentEvent } from '@intellidev/shared'
-import { InMemoryStore, type Store, type TaskRow } from './store.js'
+import {
+  InMemoryStore,
+  RepoNotAllowed,
+  type ProjectScope,
+  type Store,
+  type TaskRow,
+} from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { ControlPlaneCredentialBroker, CredentialRefused } from './runs/credentials.js'
 import { gitHubAppFromEnv } from './github/app.js'
@@ -34,6 +40,14 @@ import { gitHubAppFromEnv } from './github/app.js'
  */
 export interface ServerOptions {
   store?: Store
+  /**
+   * Which project this server serves.
+   *
+   * Configuration for now, resolved once at boot. It becomes per-request when login lands —
+   * the shape is already right, because every scoped call takes it as an argument rather than
+   * reading it from a field.
+   */
+  scope: ProjectScope
   /**
    * Per-run bearer tokens. Shared with dispatch, which mints one per run.
    *
@@ -235,7 +249,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // --- tasks ---------------------------------------------------------------
 
-  app.get('/api/tasks', async () => ({ tasks: await store.listTasks() }))
+  app.get('/api/tasks', async () => ({ tasks: await store.listTasks(opts.scope) }))
 
   app.post('/api/tasks', async (request, reply) => {
     const parsed = CreateTask.safeParse(request.body)
@@ -250,7 +264,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (unknown.length > 0) {
       return reply.code(400).send({ error: `not a connected MCP server: ${unknown.join(', ')}` })
     }
-    return reply.code(201).send({ task: await store.createTask(parsed.data) })
+    try {
+      return reply.code(201).send({ task: await store.createTask(parsed.data, opts.scope) })
+    } catch (error) {
+      // A repository outside the project's allowlist is a 400 the form can render, not a
+      // fault: the App may well be able to reach it, which is a different question from
+      // whether this project may act on it.
+      if (error instanceof RepoNotAllowed) {
+        return reply.code(400).send({ error: error.message })
+      }
+      throw error
+    }
   })
 
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {

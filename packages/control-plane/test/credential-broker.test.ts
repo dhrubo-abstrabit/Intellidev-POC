@@ -7,6 +7,7 @@ import {
 import { InMemoryStore } from '../src/store/memory.js'
 import { RunTokenRegistry } from '../src/runs/tokens.js'
 import type { HarnessAccounts } from '../src/harness/accounts.js'
+import { allowRepoFor, TEST_SCOPE } from './fixtures.js'
 
 /**
  * The broker's job is refusing, as much as granting.
@@ -47,15 +48,22 @@ async function seedRun(
     mcpServerIds?: string[]
   } = {},
 ) {
-  const task = await store.createTask({
-    title: 't',
-    description: 'd',
-    acceptanceCriteria: ['a'],
-    harness: over.harness ?? 'claude-code',
-    repoUrl: over.repoUrl ?? 'https://github.com/acme/widget.git',
-    baseBranch: 'main',
-    mcpServerIds: over.mcpServerIds ?? [],
-  })
+  const repoUrl = over.repoUrl ?? 'https://github.com/acme/widget.git'
+  // Allowlisted from the URL under test, so a case that deliberately uses another host or
+  // path keeps testing that rather than being forced onto a fixed repository.
+  await allowRepoFor(store, repoUrl)
+  const task = await store.createTask(
+    {
+      title: 't',
+      description: 'd',
+      acceptanceCriteria: ['a'],
+      harness: over.harness ?? 'claude-code',
+      repoUrl,
+      baseBranch: 'main',
+      mcpServerIds: over.mcpServerIds ?? [],
+    },
+    TEST_SCOPE,
+  )
   await store.setTaskStatus(task.id, 'dispatched')
   const run = await store.createRun(task.id, over.harness ?? 'claude-code', 'feat/x')
   return { runId: run.id, token: tokens.mint(run.id).token }

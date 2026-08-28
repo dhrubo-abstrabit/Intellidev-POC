@@ -9,6 +9,7 @@ import { McpRegistry } from '../src/mcp/registry.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { allowTestRepo, TEST_SCOPE, TEST_REPO_URL } from './fixtures.js'
 
 /**
  * Exercises the real endpoint over a real socket.
@@ -29,6 +30,7 @@ async function scaffold() {
   tokens = new RunTokenRegistry()
   app = await buildServer({
     store,
+    scope: TEST_SCOPE,
     tokens,
     dispatch: {
       mode: 'inline',
@@ -50,15 +52,19 @@ async function scaffold() {
 
 /** A run in the store, plus a token for it. */
 async function seedRun(): Promise<{ runId: string; token: string }> {
-  const task = await store.createTask({
-    title: 't',
-    description: 'd',
-    acceptanceCriteria: ['a'],
-    harness: 'claude-code',
-    repoUrl: 'https://example.test/r.git',
-    baseBranch: 'main',
-    mcpServerIds: [],
-  })
+  await allowTestRepo(store)
+  const task = await store.createTask(
+    {
+      title: 't',
+      description: 'd',
+      acceptanceCriteria: ['a'],
+      harness: 'claude-code',
+      repoUrl: TEST_REPO_URL,
+      baseBranch: 'main',
+      mcpServerIds: [],
+    },
+    TEST_SCOPE,
+  )
   const run = await store.createRun(task.id, 'claude-code', 'feat/x')
   return { runId: run.id, token: tokens.mint(run.id).token }
 }

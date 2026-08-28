@@ -14,8 +14,47 @@ import type { AgentEvent, HarnessId, RunStatus, StageRecord, TaskStatus } from '
  * `LISTEN`/`NOTIFY`, which is what allows a second control-plane instance.
  */
 
+/**
+ * Which project a piece of work belongs to, and the tenancy above it.
+ *
+ * Passed in rather than fixed on the store, because a hosted control plane serves many
+ * projects from one process: the scope belongs to a request, not to a connection. Until login
+ * lands it is resolved once at boot from configuration, which is the same shape with one value.
+ *
+ * `workspaceId` is here because `public.tasks.workspace_id` is NOT NULL. It is derivable from
+ * the project, but deriving it per insert would cost a round trip on the write path for a value
+ * that cannot change while a project exists.
+ */
+export interface ProjectScope {
+  readonly projectId: string
+  readonly clientSpaceId: string
+  readonly workspaceId: string
+}
+
+/**
+ * A repository a project is allowed to act on.
+ *
+ * The allowlist exists because the GitHub App is installed at *space* level and may cover an
+ * entire organisation. Without it, any project in a space could dispatch a run against any
+ * repository in that org — the broker checks that a run's requested host matches its task, but
+ * nothing constrained which repositories a project is entitled to.
+ */
+export interface ProjectRepoRow {
+  id: string
+  projectId: string
+  clientSpaceId: string
+  owner: string
+  repo: string
+  /** The GitHub installation this repository is reached through. */
+  installationRef: string
+  defaultBranch?: string
+}
+
 export interface TaskRow {
   id: string
+  /** The project this task belongs to. Never absent for a runnable task. */
+  projectId: string
+  clientSpaceId: string
   title: string
   description: string
   details?: string
@@ -53,9 +92,60 @@ export interface RunRow {
 
 export type Listener = (event: AgentEvent) => void
 
+/**
+ * Raised when a task names a repository its project is not allowed to touch.
+ *
+ * A distinct type because it is a 4xx and not a fault: the GitHub App is installed at space
+ * level and may cover an entire organisation, so "this repo exists and we can reach it" is not
+ * the same question as "this project may act on it". The answer has to be a refusal the UI can
+ * render, not a 500.
+ */
+export class RepoNotAllowed extends Error {
+  constructor(
+    readonly repoUrl: string,
+    readonly projectId: string,
+  ) {
+    super(
+      `this project is not allowed to act on ${repoUrl}. Add it to the project's ` +
+        `repositories first.`,
+    )
+  }
+}
+
 export interface Store {
-  createTask(input: Omit<TaskRow, 'id' | 'status' | 'createdAt'>): Promise<TaskRow>
-  listTasks(): Promise<TaskRow[]>
+  /**
+   * Adds a repository to a project's allowlist, or returns the existing row.
+   *
+   * Idempotent because connecting a repository is a UI action a person may repeat, and the
+   * second click should not be an error.
+   */
+  addProjectRepo(
+    scope: ProjectScope,
+    input: { owner: string; repo: string; installationRef: string; defaultBranch?: string },
+  ): Promise<ProjectRepoRow>
+  listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]>
+  /**
+   * Removes a repository from a project's allowlist.
+   *
+   * Exists mainly so tests can undo themselves: they run against the same shared database the
+   * product team uses, and an allowlist entry is not cleared by `truncateAll` — which deletes
+   * tasks. A test that leaves rows behind shows up later as a repository nobody added.
+   */
+  removeProjectRepo(scope: ProjectScope, owner: string, repo: string): Promise<boolean>
+
+  /**
+   * Creates a task and its runner spec.
+   *
+   * `repoUrl` stays in the input even though the row stores a repository *id*: callers know a
+   * URL, and resolving it here is what enforces the project's allowlist at the only point
+   * where it matters. An unlisted repository raises `RepoNotAllowed`.
+   */
+  createTask(
+    input: Omit<TaskRow, 'id' | 'status' | 'createdAt' | 'projectId' | 'clientSpaceId'>,
+    scope: ProjectScope,
+  ): Promise<TaskRow>
+  /** Tasks in one project. Scoped because a hosted instance serves many. */
+  listTasks(scope: ProjectScope): Promise<TaskRow[]>
   getTask(id: string): Promise<TaskRow | undefined>
   setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow>
 

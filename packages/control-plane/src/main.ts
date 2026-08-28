@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
-import { InMemoryStore, PostgresStore, type Store } from './store.js'
+import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { HarnessAccounts } from './harness/accounts.js'
 import { McpRegistry } from './mcp/registry.js'
@@ -124,8 +124,90 @@ const tokens = new RunTokenRegistry()
  */
 const publicUrl = process.env['INTELLIDEV_PUBLIC_URL'] ?? `http://127.0.0.1:${port}`
 
+/**
+ * Placeholder tenancy for the in-memory path.
+ *
+ * Well-formed uuids because both stores share one set of types, and recognisable on sight so a
+ * value that leaked into a real database would be obvious rather than plausible.
+ */
+const DEV_PROJECT_ID = '00000000-0000-0000-0000-0000000000d1'
+const DEV_SPACE_ID = '00000000-0000-0000-0000-0000000000d2'
+const DEV_WORKSPACE_ID = '00000000-0000-0000-0000-0000000000d3'
+
+/**
+ * Which project this process serves.
+ *
+ * `workspaceId` is looked up rather than configured, because `public.tasks.workspace_id` is NOT
+ * NULL and a wrong value would be accepted by the column and rejected by a composite foreign
+ * key much later. One query at boot removes the chance of a typo becoming a runtime failure.
+ *
+ * The in-memory path has no projects table, so it gets the configured ids as-is. That keeps the
+ * local loop working without a database, which every task here has had to preserve.
+ */
+async function resolveScope(): Promise<ProjectScope> {
+  const projectId = process.env['INTELLIDEV_PROJECT_ID']
+  const clientSpaceId = process.env['INTELLIDEV_CLIENT_SPACE_ID']
+
+  if (!(store instanceof PostgresStore)) {
+    // Stable placeholders: nothing joins on them in memory, but they must be well-formed
+    // uuids because the Postgres path shares the same types.
+    return {
+      projectId: projectId ?? DEV_PROJECT_ID,
+      clientSpaceId: clientSpaceId ?? DEV_SPACE_ID,
+      workspaceId: DEV_WORKSPACE_ID,
+    }
+  }
+
+  if (!projectId) {
+    throw new Error(
+      'INTELLIDEV_PROJECT_ID is required when a database is configured. Run `pnpm dev:seed` ' +
+        'to create a development project and it will print the ids to set.',
+    )
+  }
+
+  const found = await store.findProject(projectId)
+  if (!found) {
+    throw new Error(
+      `project ${projectId} does not exist in this database. Run \`pnpm dev:seed\`, or check ` +
+        'INTELLIDEV_PROJECT_ID against the project you meant.',
+    )
+  }
+  if (clientSpaceId && clientSpaceId !== found.clientSpaceId) {
+    // Both are configured, so disagreement is a copy-paste error worth stopping for rather
+    // than silently preferring one.
+    throw new Error(
+      `INTELLIDEV_CLIENT_SPACE_ID (${clientSpaceId}) is not the space project ${projectId} ` +
+        `belongs to (${found.clientSpaceId}).`,
+    )
+  }
+  return found
+}
+
+const scope = await resolveScope()
+
+/**
+ * The repository this deployment is allowed to act on.
+ *
+ * A task names a repository from the project's allowlist, so a fresh project can dispatch
+ * nothing until one is added. Seeding it from configuration keeps the local loop a single
+ * command; the UI grows an explicit "add repository" action in a later phase.
+ */
+const devRepo = process.env['INTELLIDEV_DEV_REPO']
+if (devRepo) {
+  const [owner, repo] = devRepo.split('/')
+  if (!owner || !repo) {
+    throw new Error(`INTELLIDEV_DEV_REPO must be "owner/repo", got "${devRepo}"`)
+  }
+  await store.addProjectRepo(scope, {
+    owner,
+    repo,
+    installationRef: process.env['GITHUB_APP_INSTALLATION_ID'] ?? 'unknown',
+  })
+}
+
 const app = await buildServer({
   store,
+  scope,
   tokens,
   dispatch: {
     mode,
@@ -196,6 +278,9 @@ process.stderr.write(
     `  bundle  ${bundleRoot}`,
     `  work    ${workRoot}`,
     `  store   ${databaseUrl ? `postgres (${new URL(databaseUrl).hostname})` : 'in memory — nothing survives a restart'}`,
+    `  project ${scope.projectId}`,
+    `  space   ${scope.clientSpaceId}`,
+    `  repos   ${(await store.listProjectRepos(scope)).map((r) => `${r.owner}/${r.repo}`).join(', ') || 'none allowlisted — tasks cannot be created'}`,
     `  mcp     ${mcp.list().length} connected server(s)`,
     `  model   ${
       Object.entries(models)
