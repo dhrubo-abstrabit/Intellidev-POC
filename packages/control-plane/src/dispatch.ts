@@ -22,12 +22,12 @@ import type { RunTokenRegistry } from './runs/tokens.js'
 import { preflightRepo } from './runs/preflight.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { McpOAuth } from './mcp/oauth.js'
-import type { McpRegistry } from './mcp/registry.js'
+import type { McpStore } from './mcp/store.js'
 import type { Store, TaskRow } from './store.js'
 
 /** Everything dispatch needs to turn a task's server ids into usable credentials. */
 export interface McpAccess {
-  registry: McpRegistry
+  registry: McpStore
   oauth: McpOAuth
 }
 
@@ -568,7 +568,7 @@ function mcpTokenEnv(servers: readonly ResolvedMcpServer[]): Record<string, stri
 async function resolveMcpServers(task: TaskRow, mcp: McpAccess): Promise<ResolvedMcpServer[]> {
   const resolved: ResolvedMcpServer[] = []
   for (const id of task.mcpServerIds ?? []) {
-    const server = mcp.registry.get(id)
+    const server = await mcp.registry.get(id)
     if (!server) continue
     const token = await mcp.oauth.accessToken(server)
     resolved.push({

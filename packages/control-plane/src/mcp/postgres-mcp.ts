@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { credentials, integrations } from '../store/schema.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 import type { McpServerRecord } from './types.js'
+import type { McpStore } from './store.js'
 
 /**
  * Connected MCP servers in Postgres, with their tokens encrypted.
@@ -32,6 +33,23 @@ interface McpSecrets {
 }
 
 export class PostgresMcpStore {
+  /**
+   * A view bound to one project.
+   *
+   * The unscoped methods stay, because a scope has to come from somewhere; this is what the rest
+   * of the control plane holds so no call site has to remember to pass it.
+   */
+  for(scope: McpScope): McpStore {
+    return {
+      list: () => this.list(scope),
+      get: (id) => this.get(scope, id),
+      upsert: (record) => this.upsert(scope, record),
+      patch: (id, changes) => this.patch(scope, id, changes),
+      remove: (id) => this.remove(scope, id),
+      withServerLock: (id, body) => this.withServerLock(scope, id, body),
+    }
+  }
+
   constructor(
     private readonly db: NodePgDatabase,
     private readonly cipher: SecretCipher,

@@ -7,7 +7,7 @@ import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './s
 import { LocalSecretCipher } from './secrets/cipher.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { FileSeatStore } from './harness/accounts.js'
-import { McpRegistry } from './mcp/registry.js'
+import { FileMcpStore } from './mcp/registry.js'
 import type { DispatchMode } from './dispatch.js'
 
 /**
@@ -70,7 +70,8 @@ const models = Object.fromEntries(
 await mkdir(workRoot, { recursive: true })
 
 // Under the work root, not the repo: the file holds live OAuth refresh tokens.
-const mcp = await McpRegistry.open(join(workRoot, 'mcp-servers.json'))
+// Replaced below once the project scope is known, exactly as seats are.
+const fileMcp = await FileMcpStore.open(join(workRoot, 'mcp-servers.json'))
 // Replaced below once the project scope is known; seats are space-scoped and Postgres
 // needs that, while the file store has only one space to hold.
 const fileSeats = await FileSeatStore.open(join(workRoot, 'harness-accounts.json'))
@@ -209,6 +210,17 @@ const accounts =
     : fileSeats
 
 /**
+ * Connected MCP servers, project-scoped.
+ *
+ * Postgres wherever there is a database, for the same reasons as seats: a file is lost on every
+ * deploy, invisible to a second instance, and its refresh guard protects only one process.
+ */
+const mcp =
+  store instanceof PostgresStore
+    ? store.mcp(new LocalSecretCipher(secretPassphrase())).for(scope)
+    : fileMcp
+
+/**
  * The passphrase the local cipher derives its master key from.
  *
  * Configurable so a developer's stored seats survive a restart, and so two checkouts do not
@@ -344,6 +356,7 @@ await app.listen({ port, host: '127.0.0.1' })
 // Read before the banner is built, because listing seats is a database query now. Names only:
 // the listing decrypts nothing, which is what keeps a page load off the KMS path.
 const connectedSeats = (await accounts.list(scope)).map((seat) => seat.harness)
+const connectedServers = (await mcp.list()).length
 
 process.stderr.write(
   [
@@ -358,7 +371,7 @@ process.stderr.write(
     `  project ${scope.projectId}`,
     `  space   ${scope.clientSpaceId}`,
     `  repos   ${(await store.listProjectRepos(scope)).map((r) => `${r.owner}/${r.repo}`).join(', ') || 'none allowlisted — tasks cannot be created'}`,
-    `  mcp     ${mcp.list().length} connected server(s)`,
+    `  mcp     ${connectedServers} connected server(s)`,
     `  model   ${
       Object.entries(models)
         .map(([h, v]) => `${h}=${v}`)

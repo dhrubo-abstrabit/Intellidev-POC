@@ -5,7 +5,7 @@ import { buildServer } from '../src/server.js'
 import { InMemoryStore } from '../src/store.js'
 import { RunTokenRegistry } from '../src/runs/tokens.js'
 import { FileSeatStore } from '../src/harness/accounts.js'
-import { McpRegistry } from '../src/mcp/registry.js'
+import { FileMcpStore } from '../src/mcp/registry.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,7 +40,7 @@ async function scaffold() {
       projectId: 'local',
       publicUrl: 'http://127.0.0.1:0',
     },
-    mcp: await McpRegistry.open(join(work, 'mcp.json')),
+    mcp: await FileMcpStore.open(join(work, 'mcp.json')),
     accounts: await FileSeatStore.open(join(work, 'accounts.json')),
     publicDir: work,
   })

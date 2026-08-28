@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { McpServerRecord } from './types.js'
+import type { McpStore } from './store.js'
 
 /**
  * The connected-server catalogue, persisted to one JSON file.
@@ -14,13 +15,13 @@ import type { McpServerRecord } from './types.js'
  * these in a secrets manager, keyed per project, with rotation. `docs/architecture.md §8`
  * describes that end state; this is the smallest thing that lets the flow be tested.
  */
-export class McpRegistry {
+export class FileMcpStore implements McpStore {
   private servers = new Map<string, McpServerRecord>()
 
   private constructor(private readonly path: string) {}
 
-  static async open(path: string): Promise<McpRegistry> {
-    const registry = new McpRegistry(path)
+  static async open(path: string): Promise<FileMcpStore> {
+    const registry = new FileMcpStore(path)
     await registry.load()
     return registry
   }
@@ -44,11 +45,11 @@ export class McpRegistry {
     await chmod(this.path, 0o600).catch(() => undefined)
   }
 
-  list(): McpServerRecord[] {
+  async list(): Promise<McpServerRecord[]> {
     return [...this.servers.values()].sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  get(id: string): McpServerRecord | undefined {
+  async get(id: string): Promise<McpServerRecord | undefined> {
     return this.servers.get(id)
   }
 
@@ -84,5 +85,30 @@ export class McpRegistry {
     const had = this.servers.delete(id)
     if (had) await this.save()
     return had
+  }
+
+  /**
+   * The in-process equivalent of the database's advisory lock.
+   *
+   * Correct for one process, which is all a file-backed store can ever serve — a second instance
+   * would be reading a different file. Kept so both implementations satisfy one contract and the
+   * refresh path does not have to ask which store it is talking to.
+   */
+  private readonly holds = new Map<string, Promise<unknown>>()
+
+  async withServerLock<T>(id: string, body: () => Promise<T>): Promise<T> {
+    // Chained rather than rejected: a second caller waits its turn, which is what the database
+    // lock does too.
+    const previous = this.holds.get(id) ?? Promise.resolve()
+    const mine = previous.then(body, body)
+    this.holds.set(
+      id,
+      mine.catch(() => undefined),
+    )
+    try {
+      return await mine
+    } finally {
+      if (this.holds.get(id) === mine) this.holds.delete(id)
+    }
   }
 }

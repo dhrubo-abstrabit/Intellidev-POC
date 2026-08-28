@@ -14,7 +14,7 @@ import { HarnessLogin, loginSupported } from './harness/login.js'
 import type { SeatStore } from './harness/seat-store.js'
 import { McpOAuth } from './mcp/oauth.js'
 import { MCP_PRESETS } from './mcp/presets.js'
-import type { McpRegistry } from './mcp/registry.js'
+import type { McpStore } from './mcp/store.js'
 import { toPublic, type McpAuthKind } from './mcp/types.js'
 import { verifyServer } from './mcp/verify.js'
 import websocket from '@fastify/websocket'
@@ -57,7 +57,7 @@ export interface ServerOptions {
   tokens?: RunTokenRegistry
   dispatch: DispatchConfig
   /** The connected-server catalogue. Persisted, unlike tasks. */
-  mcp: McpRegistry
+  mcp: McpStore
   /** Harness subscription logins. Also persisted, for the same reason. */
   accounts: SeatStore
   /** Absolute path to the directory holding `index.html`. */
@@ -279,7 +279,12 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     }
     // Referencing a server that was never connected would fail thirty minutes in, at the
     // first tool call, so it is refused here instead.
-    const unknown = parsed.data.mcpServerIds.filter((id) => !opts.mcp.get(id))
+    // Resolved in parallel: a task may name several servers, and one round trip each
+    // would be paid on every task creation.
+    const known = await Promise.all(
+      parsed.data.mcpServerIds.map(async (id) => [id, await opts.mcp.get(id)] as const),
+    )
+    const unknown = known.filter(([, server]) => !server).map(([id]) => id)
     if (unknown.length > 0) {
       return reply.code(400).send({ error: `not a connected MCP server: ${unknown.join(', ')}` })
     }
@@ -333,7 +338,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   app.get('/api/mcp/presets', async () => ({ presets: MCP_PRESETS }))
 
-  app.get('/api/mcp/servers', async () => ({ servers: opts.mcp.list().map(toPublic) }))
+  app.get('/api/mcp/servers', async () => ({ servers: (await opts.mcp.list()).map(toPublic) }))
 
   app.post('/api/mcp/servers', async (request, reply) => {
     const parsed = UpsertMcpServer.safeParse(request.body)
@@ -367,7 +372,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * single "Connect" button rather than two that mean different things.
    */
   app.post<{ Params: { id: string } }>('/api/mcp/servers/:id/connect', async (request, reply) => {
-    const server = opts.mcp.get(request.params.id)
+    const server = await opts.mcp.get(request.params.id)
     if (!server) return reply.code(404).send({ error: 'no such server' })
 
     if (server.auth !== 'oauth2') {
@@ -393,7 +398,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   })
 
   app.post<{ Params: { id: string } }>('/api/mcp/servers/:id/verify', async (request, reply) => {
-    const server = opts.mcp.get(request.params.id)
+    const server = await opts.mcp.get(request.params.id)
     if (!server) return reply.code(404).send({ error: 'no such server' })
     const result = await verifyServer(server, await oauth.accessToken(server))
     const saved = await opts.mcp.patch(server.id, {
@@ -528,7 +533,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     tokens,
     accounts: opts.accounts,
     mcpToken: async (serverId) => {
-      const server = opts.mcp.get(serverId)
+      const server = await opts.mcp.get(serverId)
       if (!server) return undefined
       // Refreshed here because this is the only place that can: the container is headless
       // and deliberately holds no refresh token. Reuses the same `oauth` the routes use, so

@@ -10,7 +10,7 @@ import type {
   OAuthClientInformationFull,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { startAuthorization } from '@modelcontextprotocol/sdk/client/auth.js'
-import type { McpRegistry } from './registry.js'
+import type { McpStore } from './store.js'
 import type { McpServerRecord } from './types.js'
 
 /**
@@ -66,7 +66,7 @@ export class McpOAuth {
    */
   private readonly refreshing = new Map<string, Promise<string | undefined>>()
 
-  constructor(private readonly registry: McpRegistry) {}
+  constructor(private readonly registry: McpStore) {}
 
   /**
    * Discover, register a client if needed, and build the URL to send the human to.
@@ -136,7 +136,7 @@ export class McpOAuth {
     }
     this.pending.delete(state)
 
-    const server = this.registry.get(flow.serverId)
+    const server = await this.registry.get(flow.serverId)
     if (!server?.oauth) throw new Error(`MCP server ${flow.serverId} is no longer registered`)
 
     const tokens = await exchangeAuthorization(flow.authorizationServerUrl, {
@@ -178,16 +178,28 @@ export class McpOAuth {
     if (server.auth === 'bearer') return server.token
     if (!server.oauth?.accessToken) return undefined
 
-    const expiresAt = server.oauth.expiresAt ? Date.parse(server.oauth.expiresAt) : 0
-    // A minute of slack, so a token does not expire between here and the upstream call.
-    const stale = !expiresAt || expiresAt - Date.now() < 60_000
-    if (!stale || !server.oauth.refreshToken) return server.oauth.accessToken
+    if (!isStale(server.oauth) || !server.oauth.refreshToken) return server.oauth.accessToken
 
     // Join a refresh already in flight rather than starting a second one.
+    //
+    // Two layers, and both are needed. This map collapses concurrent callers *inside* one
+    // process, which is the common case and costs nothing. The store's lock serialises across
+    // processes, which is the case that revokes a token family when it is missing.
     const existing = this.refreshing.get(server.id)
     if (existing) return existing
 
-    const attempt = this.refresh(server).finally(() => this.refreshing.delete(server.id))
+    const attempt = this.registry
+      .withServerLock(server.id, async () => {
+        // Re-read inside the lock. Whoever held it before may have just refreshed, in which
+        // case there is a fresh token to use and nothing to do — refreshing again would
+        // consume a rotated refresh token for no reason.
+        const current = (await this.registry.get(server.id)) ?? server
+        if (current.oauth?.accessToken && !isStale(current.oauth)) {
+          return current.oauth.accessToken
+        }
+        return await this.refresh(current)
+      })
+      .finally(() => this.refreshing.delete(server.id))
     this.refreshing.set(server.id, attempt)
     return attempt
   }
@@ -316,4 +328,17 @@ function loopbackVariants(redirectUri: string): string[] {
   const other = new URL(redirectUri)
   other.hostname = partner
   return [redirectUri, other.toString()]
+}
+
+/**
+ * Whether an access token is close enough to expiry to be worth replacing.
+ *
+ * A minute of slack, so a token does not expire between the check and the upstream call it is
+ * about to be used for. Shared by the pre-check and the re-check inside the lock, because those
+ * two disagreeing would mean a refresh that immediately decides it was unnecessary — or worse,
+ * one that decides it *was* necessary after somebody else already did it.
+ */
+function isStale(oauth: { expiresAt?: string }): boolean {
+  const expiresAt = oauth.expiresAt ? Date.parse(oauth.expiresAt) : 0
+  return !expiresAt || expiresAt - Date.now() < 60_000
 }

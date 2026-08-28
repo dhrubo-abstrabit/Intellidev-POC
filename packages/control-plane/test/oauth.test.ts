@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { McpOAuth } from '../src/mcp/oauth.js'
-import { McpRegistry } from '../src/mcp/registry.js'
+import { FileMcpStore } from '../src/mcp/registry.js'
 
 /**
  * Counts how many times the SDK's refresh was actually called.
@@ -38,7 +38,7 @@ vi.mock('@modelcontextprotocol/sdk/client/auth.js', () => ({
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'intellidev-oauth-'))
-  const registry = await McpRegistry.open(join(dir, 'servers.json'))
+  const registry = await FileMcpStore.open(join(dir, 'servers.json'))
   await registry.upsert({
     id: 'supabase',
     name: 'Supabase',
@@ -67,7 +67,7 @@ describe('concurrent token refresh', () => {
   it('refreshes once for parallel callers and gives both the same token', async () => {
     refreshCalls.length = 0
     const { oauth, registry } = await fixture()
-    const server = registry.get('supabase')!
+    const server = (await registry.get('supabase'))!
 
     const [a, b, c] = await Promise.all([
       oauth.accessToken(server),
@@ -85,14 +85,14 @@ describe('concurrent token refresh', () => {
     refreshCalls.length = 0
     const { oauth, registry } = await fixture()
 
-    await oauth.accessToken(registry.get('supabase')!)
+    await oauth.accessToken((await registry.get('supabase'))!)
     // Expire what the first refresh returned, so a second is genuinely due.
-    const current = registry.get('supabase')!
+    const current = (await registry.get('supabase'))!
     await registry.patch('supabase', {
       oauth: { ...current.oauth!, expiresAt: new Date(Date.now() - 1000).toISOString() },
     })
 
-    await oauth.accessToken(registry.get('supabase')!)
+    await oauth.accessToken((await registry.get('supabase'))!)
     // The second refresh uses the ROTATED token, not the original.
     expect(refreshCalls).toEqual(['original', 'rotated_1'])
   })
