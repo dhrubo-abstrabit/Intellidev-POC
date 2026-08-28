@@ -42,6 +42,15 @@ ALTER TABLE "public"."tasks" ALTER COLUMN "dedupe_hash" SET DEFAULT gen_random_u
 -- repository, so it requires manage-level access. Widening it later is easy; discovering that
 -- a viewer could dispatch runs would not be.
 
+-- Dropped first so this migration converges rather than assuming absence.
+--
+-- `pnpm db:baseline` snapshots the *live* schema, so once this has been applied the committed
+-- baseline contains this very policy — and `db:verify`, which replays baseline then migrations,
+-- would fail on "policy already exists". The ALTER COLUMN statements above are naturally
+-- idempotent; this one has to be made so. The end state is what matters, and db/verify/checks.sql
+-- is what asserts it.
+DROP POLICY IF EXISTS "tasks_insert" ON "public"."tasks";
+
 CREATE POLICY "tasks_insert" ON "public"."tasks"
     FOR INSERT TO "authenticated"
     WITH CHECK (

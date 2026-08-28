@@ -58,6 +58,20 @@ pnpm db:verify     # rebuild the whole database in Docker and assert the result
 Applying is deliberate, never automatic on boot: with more than one control-plane instance a
 rolling deploy would have several racing to alter the same tables.
 
+### Migrations must be idempotent
+
+Write every migration so it converges rather than assuming absence: `DROP POLICY IF EXISTS`
+before `CREATE POLICY`, `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` before adding
+one.
+
+This is not a style preference. `pnpm db:baseline` snapshots the **live** schema, so as soon as
+a migration touching `public` has been applied, the committed baseline contains its effects —
+and `db:verify`, which replays baseline then migrations, then fails with "already exists". The
+first version of `0001` did exactly that.
+
+The end state is what matters, and `db/verify/checks.sql` is what asserts it. A migration you
+can re-run is also one you can recover with.
+
 Session-mode pooler only (port 5432). The migrator holds a transaction and an advisory lock
 for its duration and neither survives transaction-mode pooling — `db:migrate` refuses port
 6543 rather than half-applying.

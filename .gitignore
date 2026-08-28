@@ -33,3 +33,8 @@ cdk.out/
 # keystroke away, and pushing from here would corrupt the product repo's
 # migration history. Nothing in this repo needs it — see db/README.md.
 supabase/
+
+# drizzle-kit writes these for `generate`'s schema diffing, which this repo does not
+# use — migrations are hand-written SQL. Only meta/_journal.json is needed, by the
+# migrator. Keeping snapshots would mean committing generated state that drifts.
+db/migrations/meta/*_snapshot.json
