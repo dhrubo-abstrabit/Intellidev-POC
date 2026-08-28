@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { AgentEvent } from '@intellidev/shared'
 import { InMemoryStore } from '../src/store/memory.js'
 import { PostgresStore } from '../src/store/postgres.js'
+import { unsafeToWipeReason } from './guard.js'
 import type { Store } from '../src/store/types.js'
 
 /**
@@ -417,7 +418,10 @@ contract(
 )
 
 const dsn = connectionString()
-if (dsn) {
+// Checked before a store is even constructed: these tests truncate, and the guard's whole
+// point is that nothing destructive runs against a database holding someone else's data.
+const unsafe = dsn ? await unsafeToWipeReason(dsn) : undefined
+if (dsn && !unsafe) {
   const live = new PostgresStore({ connectionString: dsn })
   contract('PostgresStore', live, {
     // `tasks` cascades to runs and run_events, so one statement empties all three — and it
@@ -431,7 +435,8 @@ if (dsn) {
     },
   })
 } else {
-  describe.skip('PostgresStore (no SUPABASE_CONNECTION_STRING_SESSION configured)', () => {
+  const why = unsafe ?? 'no SUPABASE_CONNECTION_STRING_SESSION configured'
+  describe.skip(`PostgresStore (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })
 }

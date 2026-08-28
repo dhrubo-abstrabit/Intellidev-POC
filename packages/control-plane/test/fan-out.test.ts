@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { AgentEvent } from '@intellidev/shared'
 import { PostgresStore } from '../src/store/postgres.js'
+import { unsafeToWipeReason } from './guard.js'
 
 /**
  * C6, proven the only way it can be: **two independent store instances**.
@@ -62,9 +63,11 @@ async function until(predicate: () => boolean, timeoutMs = 8000): Promise<void> 
 }
 
 const dsn = connectionString()
+const unsafe = dsn ? await unsafeToWipeReason(dsn) : undefined
 
-if (!dsn) {
-  describe.skip('cross-instance fan-out (no SUPABASE_CONNECTION_STRING_SESSION)', () => {
+if (!dsn || unsafe) {
+  const why = unsafe ?? 'no SUPABASE_CONNECTION_STRING_SESSION'
+  describe.skip(`cross-instance fan-out (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })
 } else {
