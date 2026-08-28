@@ -4,12 +4,12 @@ import { createClient } from "@/lib/supabase/server";
 /**
  * Resolved identity of a `/w/:workspaceId/p/:projectId` URL under the
  * 4-level schema (tenant -> workspace -> client_space -> project). A project
- * no longer owns its data directly — integrations, events, credentials,
+ * does not own most of its data directly — space_connections, events,
  * llm_runs, daily_summaries all key on `client_space_id` (see
- * supabase/migrations/20260820100600_client_spaces.sql and
- * 20260820100700_projects.sql) — so every page/action that used to filter by
- * `project_id` on those tables needs the project's client_space_id instead.
- * `timezone` also moved off `projects` onto `client_spaces`.
+ * supabase/migrations/20260901000500_client_spaces.sql and
+ * 20260901000600_projects.sql) — so pages/actions that filter those tables
+ * need the project's client_space_id, not project_id. `timezone` and
+ * `tenant_id` both live on `client_spaces`, not on `projects`.
  *
  * This app provisions exactly one client space per project (see
  * createProject in w/[workspaceId]/actions.ts), so resolving "the" client
@@ -23,6 +23,7 @@ export interface ProjectScope {
   workspaceId: string;
   projectId: string;
   clientSpaceId: string;
+  tenantId: string;
   timezone: string;
 }
 
@@ -39,17 +40,21 @@ export async function resolveProjectScope(workspaceId: string, projectId: string
   const supabase = await createClient();
   const { data } = await supabase
     .from("projects")
-    .select("id, workspace_id, client_space_id, client_spaces(timezone)")
+    .select("id, workspace_id, client_space_id, client_spaces(timezone, tenant_id)")
     .eq("id", projectId)
     .eq("workspace_id", workspaceId)
     .maybeSingle();
-  if (!data) return null;
+  // client_space_id is NOT NULL on projects and FK-guarantees a client_spaces
+  // row exists, so a missing embed here means something is actually wrong —
+  // fail scope resolution rather than fabricate a scope with no real tenant.
+  if (!data || !data.client_spaces) return null;
 
   return {
     workspaceId: data.workspace_id,
     projectId: data.id,
     clientSpaceId: data.client_space_id,
-    timezone: data.client_spaces?.timezone ?? "UTC",
+    tenantId: data.client_spaces.tenant_id,
+    timezone: data.client_spaces.timezone,
   };
 }
 

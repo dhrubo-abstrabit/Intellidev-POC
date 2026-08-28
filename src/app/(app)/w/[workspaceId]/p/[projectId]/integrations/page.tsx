@@ -45,10 +45,11 @@ const STATUS_VARIANT: Record<
 };
 
 /** Providers that merged into `google` and no longer have a connector
- * registered. Their enum values survive for historical rows, so a project
- * that connected one before the merge still has a live-looking integration
- * row that can never sync again — it gets a "reconnect as Google" banner
- * instead of Sync-now + a config form. */
+ * registered. Their enum values survive for historical rows — none can exist
+ * yet on this freshly-rebuilt v2 schema, but a project_connectors row with
+ * one of these providers would otherwise render a "connected" card that can
+ * never sync again. Kept as a defensive check, matching the same guard the
+ * pre-v2 design needed once real usage accumulates. */
 const RETIRED_GOOGLE_PROVIDERS = ["gmail", "google_drive", "google_chat"];
 
 /** Compact per-service readout for a merged Google integration's card —
@@ -73,8 +74,10 @@ export default async function IntegrationsPage({
 }) {
   const { workspaceId, projectId } = await params;
 
-  // Integrations key on client_space_id now, not project_id — resolve the
-  // project's client space once here (see src/lib/scope.ts).
+  // project_connectors is project-scoped now, unlike the old client-space-
+  // wide integrations table — still resolve the project's client space
+  // (needed by other pages/actions in this scope) but the query below
+  // filters on project_id directly (see src/lib/scope.ts).
   const scope = await resolveProjectScope(workspaceId, projectId);
   if (!scope) {
     notFound();
@@ -82,24 +85,42 @@ export default async function IntegrationsPage({
 
   const supabase = await createClient();
 
-  const { data: integrations } = await supabase
-    .from("integrations")
+  // Grant health/label live on space_connections (client-space scoped, one
+  // row per provider account); this project's own scoping (config, sync
+  // schedule/health) lives on project_connectors — see
+  // supabase/migrations/20260901000800_connectors.sql.
+  // enabled=false means this project disconnected it — the row (and its
+  // synced history, per raw_events/normalized_events' cascade FK to it)
+  // survives so a reconnect resumes rather than re-ingesting from scratch,
+  // but it must not show as "Connected" — see disconnectIntegration's own
+  // comment for why this is a soft disable, not a delete.
+  const { data: projectConnectorRows } = await supabase
+    .from("project_connectors")
     .select(
-      "id, provider, status, display_name, last_sync_succeeded_at, last_error, sync_enabled, config",
+      "id, provider, config, sync_enabled, last_sync_succeeded_at, last_error, space_connections(status, external_account_label)",
     )
-    .eq("client_space_id", scope.clientSpaceId)
+    .eq("project_id", projectId)
+    .eq("enabled", true)
     .order("created_at", { ascending: true });
 
-  // A disconnected/revoked row is history, not an active occupant of that
-  // provider slot — otherwise disconnecting an integration would permanently
-  // remove it from "Available" with no way to ever reconnect.
-  const activeProviders = new Set(
-    (integrations ?? [])
-      .filter((i) => i.status !== "disconnected" && i.status !== "revoked")
-      .map((i) => i.provider),
-  );
+  const integrations = (projectConnectorRows ?? []).map((row) => ({
+    id: row.id,
+    provider: row.provider,
+    status: row.space_connections?.status ?? "pending",
+    displayName: row.space_connections?.external_account_label ?? null,
+    lastSyncSucceededAt: row.last_sync_succeeded_at,
+    lastError: row.last_error,
+    syncEnabled: row.sync_enabled,
+    config: row.config,
+  }));
+
+  // A project_connectors row existing at all means this project is
+  // connected to that provider — disconnecting deletes the row (see
+  // disconnectIntegration), so unlike the old status-flag design there is no
+  // "disconnected but still listed" state left to filter out here.
+  const connectedProviders = new Set(integrations.map((i) => i.provider));
   const availableConnectors = listConnectors().filter(
-    (c) => !activeProviders.has(c.id),
+    (c) => !connectedProviders.has(c.id),
   );
   // Only a Nango-backed provider can have an orphaned connection (one that
   // exists on Nango's side with no local row yet — see reconcileConnections'
@@ -131,9 +152,6 @@ export default async function IntegrationsPage({
                 string,
                 unknown
               >;
-              const isActive =
-                integration.status !== "disconnected" &&
-                integration.status !== "revoked";
               const isRetired = RETIRED_GOOGLE_PROVIDERS.includes(
                 integration.provider,
               );
@@ -148,7 +166,7 @@ export default async function IntegrationsPage({
                       <div className="flex flex-row items-start justify-between gap-2">
                         <div>
                           <CardTitle className="text-base">
-                            {integration.display_name ?? integration.provider}
+                            {integration.displayName ?? integration.provider}
                           </CardTitle>
                           <CardDescription className="capitalize">
                             {integration.provider}
@@ -164,7 +182,7 @@ export default async function IntegrationsPage({
                           </Badge>
                           <CollapsibleTrigger
                             className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                            aria-label={`Toggle ${integration.display_name ?? integration.provider} details`}
+                            aria-label={`Toggle ${integration.displayName ?? integration.provider} details`}
                             data-testid={`toggle-${integration.provider}`}
                           >
                             <ChevronDownIcon className="size-4 transition-transform group-data-panel-open:rotate-180" />
@@ -172,64 +190,62 @@ export default async function IntegrationsPage({
                         </div>
                       </div>
                       <div>
-                        {isActive ? (
-                          <div className="flex gap-2">
-                            {/* A retired provider has no connector left to run,
-                              so Sync now is hidden — Disconnect still works
-                              (disconnectIntegration already best-effort
-                              catches a failed revoke, including the
-                              getConnector throw for these providers). */}
-                            {isRetired ? null : (
-                              <AsyncButton
-                                action={syncNow.bind(
-                                  null,
-                                  workspaceId,
-                                  projectId,
-                                  integration.id,
-                                )}
-                                loadingMessage="Queuing sync…"
-                                size="sm"
-                                data-testid={`sync-${integration.provider}`}
-                              >
-                                Sync now
-                              </AsyncButton>
-                            )}
-                            <ConfirmActionButton
-                              action={disconnectIntegration.bind(
+                        <div className="flex gap-2">
+                          {/* A retired provider has no connector left to run,
+                            so Sync now is hidden — Disconnect still works
+                            (disconnectIntegration already best-effort
+                            catches a failed revoke, including the
+                            getConnector throw for these providers). */}
+                          {isRetired ? null : (
+                            <AsyncButton
+                              action={syncNow.bind(
                                 null,
                                 workspaceId,
                                 projectId,
                                 integration.id,
                               )}
-                              triggerLabel="Disconnect"
-                              triggerVariant="default"
-                              confirmLabel="Disconnect"
-                              loadingMessage="Disconnecting…"
-                              title={`Disconnect ${integration.display_name ?? integration.provider}?`}
-                              description="This revokes access and stops future syncs. You can reconnect later."
-                              data-testid={`disconnect-${integration.provider}`}
-                            />
-                          </div>
-                        ) : null}
+                              loadingMessage="Queuing sync…"
+                              size="sm"
+                              data-testid={`sync-${integration.provider}`}
+                            >
+                              Sync now
+                            </AsyncButton>
+                          )}
+                          <ConfirmActionButton
+                            action={disconnectIntegration.bind(
+                              null,
+                              workspaceId,
+                              projectId,
+                              integration.id,
+                            )}
+                            triggerLabel="Disconnect"
+                            triggerVariant="default"
+                            confirmLabel="Disconnect"
+                            loadingMessage="Disconnecting…"
+                            title={`Disconnect ${integration.displayName ?? integration.provider}?`}
+                            description="This detaches the connector from this project. Other projects sharing the same connection are unaffected; you can reconnect later."
+                            data-testid={`disconnect-${integration.provider}`}
+                          />
+                        </div>
                       </div>
                     </CardHeader>
                     <CollapsiblePanel keepMounted>
                       <CardContent className="space-y-3 text-xs text-muted-foreground mt-2">
-                        {integration.last_sync_succeeded_at ? (
+                        {integration.lastSyncSucceededAt ? (
                           <p>
                             Last synced{" "}
                             {new Date(
-                              integration.last_sync_succeeded_at,
+                              integration.lastSyncSucceededAt,
                             ).toLocaleString()}
                           </p>
                         ) : null}
-                        {integration.last_error ? (
+                        {integration.lastError ? (
                           <p className="text-destructive">
-                            {integration.last_error}
+                            {integration.lastError}
                           </p>
                         ) : null}
 
-                        {isRetired && isActive ? (
+                        {isRetired ? (
                           <p
                             className="rounded-md border border-brand-warning/30 bg-brand-warning/10 px-3 py-2 text-brand-warning"
                             data-testid={`retired-${integration.provider}`}
@@ -242,7 +258,7 @@ export default async function IntegrationsPage({
                           </p>
                         ) : null}
 
-                        {integration.provider === "google" && isActive ? (
+                        {integration.provider === "google" ? (
                           <p data-testid="google-service-summary">
                             {googleServiceSummary(config).join(" · ")}
                           </p>
@@ -258,7 +274,7 @@ export default async function IntegrationsPage({
                           when the data changed — never on every render (e.g.
                           while showing a validation error after a failed save,
                           where config didn't change and the key stays stable). */}
-                        {entry && isActive ? (
+                        {entry ? (
                           integration.provider === "google" ? (
                             <GoogleIntegrationConfigForm
                               key={JSON.stringify(config)}

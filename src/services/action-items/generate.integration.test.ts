@@ -20,7 +20,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
   let userId: string;
   let tenantId: string;
   let clientSpaceId: string;
-  let integrationId: string;
+  let projectConnectorId: string;
 
   beforeAll(async () => {
     const email = `llm-integration-test-${Date.now()}@example.com`;
@@ -33,11 +33,16 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     userId = authUser.user.id;
 
     // Full 4-level chain: a workspace can't exist without a tenant above it,
-    // and an integration can't exist without a client space above it (see
-    // src/lib/scope.ts).
+    // and a project connector can't exist without a client space above it
+    // (see src/lib/scope.ts). Neither tenants nor workspaces carries
+    // owner_id — ownership is tenant_members.role='owner'/
+    // workspace_members.role='admin', normally granted atomically by
+    // handle_new_tenant/handle_new_workspace, which both no-op under a
+    // service-role insert (auth.uid() is null with no session) — harmless
+    // here since nothing in this test's path FKs to those roster tables.
     const { data: tenant, error: tenantError } = await service
       .from("tenants")
-      .insert({ name: "LLM Integration Test", slug: `llm-itest-${Date.now()}`, owner_id: userId })
+      .insert({ name: "LLM Integration Test", slug: `llm-itest-${Date.now()}` })
       .select("id")
       .single();
     if (tenantError || !tenant) throw new Error(`Failed to create test tenant: ${tenantError?.message}`);
@@ -45,7 +50,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
 
     const { data: workspace, error: workspaceError } = await service
       .from("workspaces")
-      .insert({ tenant_id: tenantId, name: "LLM Integration Test", slug: `llm-itest-${Date.now()}`, owner_id: userId })
+      .insert({ tenant_id: tenantId, name: "LLM Integration Test", slug: `llm-itest-${Date.now()}` })
       .select("id")
       .single();
     if (workspaceError || !workspace) throw new Error(`Failed to create test workspace: ${workspaceError?.message}`);
@@ -65,30 +70,51 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
       .select("id")
       .single();
     if (projectError || !project) throw new Error(`Failed to create test project: ${projectError?.message}`);
+    const projectId = project.id;
 
-    const { data: integration, error: integrationError } = await service
-      .from("integrations")
+    // Two writes, not one: space_connections (the grant, client-space scoped)
+    // and project_connectors (this project's scoping of it) — see
+    // supabase/migrations/20260901000800_connectors.sql.
+    const { data: connection, error: connectionError } = await service
+      .from("space_connections")
       .insert({
         client_space_id: clientSpaceId,
-        workspace_id: workspaceId,
         provider: "mock",
+        auth_mode: "none",
+        external_account_id: "mock",
+        external_account_label: "Mock workspace",
         status: "connected",
-        display_name: "Mock (sample data)",
         connected_by: userId,
       })
       .select("id")
       .single();
-    if (integrationError || !integration) throw new Error(`Failed to create test integration: ${integrationError?.message}`);
-    integrationId = integration.id;
+    if (connectionError || !connection) throw new Error(`Failed to create test space connection: ${connectionError?.message}`);
+
+    const { data: projectConnector, error: projectConnectorError } = await service
+      .from("project_connectors")
+      .insert({
+        client_space_id: clientSpaceId,
+        project_id: projectId,
+        connection_id: connection.id,
+        provider: "mock",
+        sync_enabled: true,
+        created_by: userId,
+      })
+      .select("id")
+      .single();
+    if (projectConnectorError || !projectConnector) {
+      throw new Error(`Failed to create test project connector: ${projectConnectorError?.message}`);
+    }
+    projectConnectorId = projectConnector.id;
 
     // Populate normalized_events for the LLM step to consume.
-    const syncResult = await runSync(integrationId, "manual");
+    const syncResult = await runSync(projectConnectorId, "manual");
     if (syncResult.status !== "succeeded") throw new Error(`Setup sync failed: ${syncResult.error}`);
   }, 30000);
 
   afterAll(async () => {
     // Deleting the tenant cascades through workspaces, client_spaces,
-    // projects, integrations, and everything keyed under them.
+    // projects, and everything keyed under them.
     await service.from("tenants").delete().eq("id", tenantId);
     await service.auth.admin.deleteUser(userId);
   });
@@ -102,9 +128,18 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     expect(result.status).toBe("succeeded");
     expect(result.error).toBeUndefined();
 
+    // input_event_ids was dropped from llm_runs in the v2 rebuild in favor
+    // of task_sources, which records provenance per TASK, not per run — see
+    // generate.ts's own comment on llm_runs.kind. That's a narrower
+    // guarantee than "every event was fed to the model" (an event the model
+    // judged not task-worthy never appears in task_sources at all), so it's
+    // not a like-for-like replacement here. The assertion below on
+    // processed_at is what's left to prove every seeded event was actually
+    // sent to the model, deterministically, regardless of what it decided to
+    // do with each one.
     const { data: run } = await service
       .from("llm_runs")
-      .select("status, model, prompt_tokens, completion_tokens, cost_usd, input_event_ids")
+      .select("status, model, prompt_tokens, completion_tokens, cost_usd")
       .eq("client_space_id", clientSpaceId)
       .single();
     expect(run?.status).toBe("succeeded");
@@ -112,12 +147,12 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
     expect(run?.prompt_tokens).toBeGreaterThan(0);
     expect(run?.completion_tokens).toBeGreaterThan(0);
     expect(run?.cost_usd).toBeGreaterThan(0);
-    expect(run?.input_event_ids).toHaveLength(5);
 
     // All 5 mock events were "seen" by the model even if not every one
     // produced an action item — the whole point of processed_at is that
     // the backlog doesn't get re-sent forever.
     const { data: events } = await service.from("normalized_events").select("processed_at").eq("client_space_id", clientSpaceId);
+    expect(events).toHaveLength(5);
     expect(events?.every((e) => e.processed_at !== null)).toBe(true);
   }, 30000);
 
@@ -132,7 +167,7 @@ describe("generateActionItems (real Anthropic call, real local DB)", () => {
       .select("id", { count: "exact", head: true })
       .eq("client_space_id", clientSpaceId);
 
-    const syncResult = await runSync(integrationId, "manual");
+    const syncResult = await runSync(projectConnectorId, "manual");
     expect(syncResult.status).toBe("succeeded");
 
     const result = await generateActionItems(clientSpaceId, projectToday("UTC"));

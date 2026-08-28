@@ -62,11 +62,11 @@ export interface RunSyncResult {
 
 /**
  * Runs the full fetch -> raw_events -> normalize -> normalized_events
- * pipeline for one integration, exactly once, then advances its cursor.
- * Safe to call repeatedly (raw/normalized inserts are dedupe-on-conflict);
- * NOT safe to call concurrently for the same integration — the
- * `sync_jobs_one_active_per_integration` partial unique index enforces that
- * by making the initial insert fail, which this function treats as a
+ * pipeline for one project connector, exactly once, then advances its
+ * cursor. Safe to call repeatedly (raw/normalized inserts are
+ * dedupe-on-conflict); NOT safe to call concurrently for the same connector
+ * — the `sync_jobs_one_active_per_connector` partial unique index enforces
+ * that by making the initial insert fail, which this function treats as a
  * deliberate no-op ("skipped"), not an error.
  */
 export async function runSync(
@@ -163,9 +163,7 @@ export async function runSync(
       // match a partial index exactly, which PostgREST's upsert has no way
       // to express, so it fails with "no unique or exclusion constraint
       // matching the ON CONFLICT specification". Pre-filter against what's
-      // already stored instead of relying on ON CONFLICT. This is race-safe
-      // because sync_jobs_one_active_per_integration guarantees no other
-      // sync for this same integration is running concurrently.
+      // already stored instead of relying on ON CONFLICT.
       //
       // Chunked at DEDUPE_CHUNK_SIZE: a single .in() over more than
       // max_rows (supabase/config.toml, currently 1000) is silently
@@ -173,7 +171,9 @@ export async function runSync(
       // and makes the dedupe index reject the whole insert batch below —
       // and a single huge .in() also risks a 414 from the gateway. Each
       // chunk is a real request, so a chunk failure throws rather than
-      // silently dropping rows.
+      // silently dropping rows. Race-safe because
+      // sync_jobs_one_active_per_connector guarantees no other sync for this
+      // same connector is running concurrently.
       const candidateProviderEventIds = rawRows.map((r) => r.provider_event_id).filter((id): id is string => id !== null);
       const alreadySeen = new Set<string>();
       for (const idChunk of chunk(candidateProviderEventIds, DEDUPE_CHUNK_SIZE)) {

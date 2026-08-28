@@ -56,8 +56,8 @@ export default async function ProjectDataPage({
   const filters = parseProjectDataSearchParams(rawSearchParams);
 
   // timezone moved off `projects` onto `client_spaces` (see
-  // src/lib/scope.ts) — normalized_events and integrations key on
-  // client_space_id now too, not project_id.
+  // src/lib/scope.ts) — normalized_events key on client_space_id;
+  // project_connectors keys on project_id directly.
   const scope = await resolveProjectScope(workspaceId, projectId);
   if (!scope) {
     notFound();
@@ -68,7 +68,7 @@ export default async function ProjectDataPage({
 
   const lookbackCutoff = isoDaysAgo(DAY_INDEX_LOOKBACK_DAYS);
 
-  const [{ data: dayIndexRows }, { data: integrationRows }] = await Promise.all([
+  const [{ data: dayIndexRows }, { data: projectConnectorRows }] = await Promise.all([
     supabase
       .from("normalized_events")
       .select("occurred_at, provider")
@@ -76,10 +76,15 @@ export default async function ProjectDataPage({
       .gte("occurred_at", lookbackCutoff)
       .order("occurred_at", { ascending: false })
       .limit(DAY_INDEX_ROW_LIMIT),
+    // project-scoped, not client-space-wide: two projects in this space can
+    // each scope the same connection with independent config, and this
+    // strip must only reflect THIS project's connectors (see
+    // supabase/migrations/20260901000800_connectors.sql).
     supabase
-      .from("integrations")
-      .select("id, provider, status, display_name, config")
-      .eq("client_space_id", clientSpaceId)
+      .from("project_connectors")
+      .select("id, provider, config, space_connections(status, external_account_label)")
+      .eq("project_id", projectId)
+      .eq("enabled", true)
       .order("provider"),
   ]);
 
@@ -103,11 +108,11 @@ export default async function ProjectDataPage({
 
   const truncated = (dayIndexRows?.length ?? 0) >= DAY_INDEX_ROW_LIMIT;
 
-  const integrations: IntegrationSummary[] = (integrationRows ?? []).map((row) => ({
+  const integrations: IntegrationSummary[] = (projectConnectorRows ?? []).map((row) => ({
     id: row.id,
     provider: row.provider,
-    status: row.status,
-    displayName: row.display_name,
+    status: row.space_connections?.status ?? "pending",
+    displayName: row.space_connections?.external_account_label ?? null,
     googleServices: row.provider === "google" ? enabledGoogleServices(row.config) : [],
   }));
 

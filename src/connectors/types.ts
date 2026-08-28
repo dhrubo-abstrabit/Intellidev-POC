@@ -24,8 +24,9 @@ export interface ConnectorCredentials {
 }
 
 /** One page of newly-fetched provider data, plus the cursor to resume from
- * next time. `cursor` is provider-specific — see integration_cursors' column
- * comment in the migration for why it's an untyped bag, not a shared shape. */
+ * next time. `cursor` is provider-specific — see project_connector_cursors'
+ * column comment in the migration for why it's an untyped bag, not a shared
+ * shape. */
 export interface FetchResult<TCursor> {
   rawPayloads: RawPayload[];
   nextCursor: TCursor;
@@ -53,12 +54,12 @@ export interface FetchDeadline {
 
 /** Per-call context passed to fetchSince alongside credentials/cursor. */
 export interface FetchContext {
-  /** integrations.config, verbatim, as jsonb. THIS IS CLIENT-WRITABLE — the
-   * `integrations` table grants `authenticated` a column-scoped UPDATE that
-   * includes `config` (see the integrations migration), so any workspace
-   * owner/admin can PATCH it directly via PostgREST. Every connector MUST
-   * parse this with Zod and fall back to safe defaults; NEVER trust its
-   * shape, and never let a numeric field here be unbounded (it's a
+  /** project_connectors.config, verbatim, as jsonb. THIS IS CLIENT-WRITABLE —
+   * the `project_connectors` table grants `authenticated` a column-scoped
+   * UPDATE that includes `config` (see the connectors migration), so any
+   * workspace owner/admin can PATCH it directly via PostgREST. Every
+   * connector MUST parse this with Zod and fall back to safe defaults; NEVER
+   * trust its shape, and never let a numeric field here be unbounded (it's a
    * quota-exhaustion / function-stall primitive otherwise). */
   config: Record<string, unknown>;
   deadline: FetchDeadline;
@@ -76,7 +77,7 @@ export interface NormalizedEventDraft {
   body?: string;
   occurredAt: Date;
   metadata?: Record<string, unknown>;
-  /** Provider-stable, used for the (integration_id, dedupe_key) unique
+  /** Provider-stable, used for the (project_connector_id, dedupe_key) unique
    * constraint — must be deterministic for the same underlying event across
    * re-syncs (e.g. `${type}:${resource}:${revision}`). */
   dedupeKey: string;
@@ -142,12 +143,17 @@ export interface Connector<TCursor = unknown> {
    * `team.id`) and a human-readable label. Needed because Nango assigns
    * connection ids as random UUIDs the caller can't choose, so THIS is what
    * the connect flow uses to look up (or create) the right
-   * connector_credentials row for a given (client space, provider, external
-   * account) — see D-008's scoped reuse. */
-  identify?(credentials: ConnectorCredentials): Promise<{ externalAccountId: string; externalAccountLabel?: string }>;
+   * space_connections row for a given (client space, provider, external
+   * account) — see D-008's scoped reuse. `accountDomain` is optional and only
+   * meaningful for providers whose events need it to build a click-through
+   * URL (Slack's team subdomain, for message permalinks) — see
+   * space_connections.account_domain's column comment. */
+  identify?(
+    credentials: ConnectorCredentials,
+  ): Promise<{ externalAccountId: string; externalAccountLabel?: string; accountDomain?: string }>;
 
   /** Cheap liveness check — called after connect and periodically to flip
-   * `integrations.status` between 'connected' and 'degraded'/'error'. */
+   * `space_connections.status` between 'connected' and 'degraded'/'error'. */
   validate(credentials: ConnectorCredentials): Promise<boolean>;
 
   /** Fetch everything new since `cursor` (null on first sync). Must be safe
