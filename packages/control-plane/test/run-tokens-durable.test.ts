@@ -74,9 +74,10 @@ if (!dsn || !liveProjectId) {
      * surfaces later as a repository nobody remembers adding.
      */
     async function cleanUp(store: PostgresStore): Promise<void> {
-      await store.truncateAll()
       const found = await store.findProject(liveProjectId!)
-      if (found) await store.removeProjectRepo(found, 'acme', 'widget')
+      if (!found) return
+      await store.truncateAll(found)
+      await store.removeProjectRepo(found, 'acme', 'widget')
     }
 
     it('verifies on a second instance a token the first one minted', async () => {

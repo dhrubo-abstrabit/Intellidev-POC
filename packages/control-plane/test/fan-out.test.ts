@@ -86,7 +86,7 @@ if (!dsn || !liveProjectId) {
     const reader = new PostgresStore({ connectionString: dsn, crossInstanceFanOut: true })
 
     beforeEach(async () => {
-      await writer.truncateAll()
+      await writer.truncateAll(await scope())
     })
 
     /** Resolved from the database, because the run's tenancy has to be real. */
@@ -97,7 +97,7 @@ if (!dsn || !liveProjectId) {
     }
 
     afterAll(async () => {
-      await writer.truncateAll()
+      await writer.truncateAll(await scope())
       // Leaves the shared database as it was found.
       await writer.removeProjectRepo(await scope(), 'acme', 'widget')
       await writer.close()

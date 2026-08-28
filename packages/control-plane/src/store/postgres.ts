@@ -692,23 +692,25 @@ export class PostgresStore implements Store {
    * away, and this runs before every contract test.
    */
   /**
-   * Empties everything this system created, and nothing else.
+   * Empties this project's runner tasks, and nothing else.
    *
-   * Deliberately a targeted DELETE and not `truncate tasks cascade`, which is what this used to
-   * be. Unqualified, that resolved through `search_path` to `public.tasks` — the product's own
-   * table, shared with an ingest pipeline — so the test suite was aimed at another team's data
-   * and happened to survive only because the table was empty.
+   * Scoped, after two separate incidents. The first version was
+   * `truncate table tasks cascade` against an unqualified name, which resolved to the product's
+   * own `public.tasks`. Narrowing it to tasks holding a runner spec fixed that — but left it
+   * deleting *every* project's runner tasks, so pointing the tests at their own project changed
+   * nothing and a live Fargate run was destroyed mid-flight a second time.
    *
-   * The predicate is the safe one: a task with a spec row is agent work by definition, so this
-   * cannot reach an ingest-generated observation. Runs, events and specs go with it through the
-   * cascades already declared in the migration.
+   * Both mistakes had the same shape: a delete whose blast radius was wider than the thing
+   * asking for it. Requiring a scope makes the radius impossible to leave unstated.
    */
-  async truncateAll(): Promise<void> {
+  async truncateAll(scope: ProjectScope): Promise<void> {
     // Written out rather than built, because the builder emits a bare `"tasks"` — drizzle
-    // refuses to let `public` be named as a schema — and a bare name is precisely what made
-    // this dangerous. Explicit here, and guarded by `PostgresStore destructive safety`.
+    // refuses to let `public` be named as a schema — and a bare name is what made this
+    // dangerous in the first place. Guarded by `PostgresStore destructive safety`.
     await this.db.execute(
-      sql`delete from public.tasks where id in (select task_id from runner.task_specs)`,
+      sql`delete from public.tasks
+           where project_id = ${scope.projectId}
+             and id in (select task_id from runner.task_specs)`,
     )
   }
 

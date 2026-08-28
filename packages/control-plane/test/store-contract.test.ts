@@ -489,10 +489,10 @@ if (dsn && liveProjectId) {
   } else {
     contract('PostgresStore', live, found, {
       reset: async () => {
-        await live.truncateAll()
+        await live.truncateAll(found)
       },
       dispose: async () => {
-        await live.truncateAll()
+        await live.truncateAll(found)
         // `truncateAll` clears tasks, not the allowlist, and this runs against the same shared
         // database the product team uses — a leftover entry surfaces later as a repository
         // nobody remembers adding.
@@ -533,7 +533,7 @@ if (dsn && liveProjectId) {
             [id, found.clientSpaceId, found.workspaceId, found.projectId, 'ingest-owned, not ours'],
           )
 
-          await own.truncateAll()
+          await own.truncateAll(found)
 
           const after = await pool.query('select id from public.tasks where id = $1', [id])
           expect(after.rows).toHaveLength(1)

@@ -28,6 +28,23 @@ describe('destructive suites use the test project', () => {
     expect(truncating.length).toBeGreaterThan(0)
   })
 
+  it("scopes the delete to a project, so it cannot reach another project's runs", () => {
+    // The check the previous version of this file missed. Pointing tests at their own project
+    // achieved nothing while `truncateAll` deleted every runner task in the database regardless
+    // of project — a live Fargate run was destroyed a second time before that was noticed.
+    // Asserted on the SQL rather than on the caller, because the blast radius is the statement's.
+    const source = readFileSync(
+      new URL('../src/store/postgres.ts', import.meta.url).pathname,
+      'utf8',
+    )
+    const statement = source.slice(
+      source.indexOf('async truncateAll('),
+      source.indexOf('async close('),
+    )
+    expect(statement).toContain('project_id =')
+    expect(statement).toContain('runner.task_specs')
+  })
+
   it('never reads INTELLIDEV_PROJECT_ID, which is the one being dispatched into', () => {
     const offenders = suites.filter((file) => {
       const source = readFileSync(`${dir}${file}`, 'utf8')
