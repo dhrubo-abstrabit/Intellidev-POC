@@ -5,6 +5,7 @@ import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
 import { LocalSecretCipher } from './secrets/cipher.js'
+import { JwtVerifier } from './auth/jwt.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { FileSeatStore } from './harness/accounts.js'
 import { FileMcpStore } from './mcp/registry.js'
@@ -195,6 +196,9 @@ async function resolveScope(): Promise<ProjectScope> {
   return found
 }
 
+/** The Supabase project tokens are issued by. Absent means no authentication is possible. */
+const supabaseUrl = process.env['SUPABASE_URL']
+
 const scope = await resolveScope()
 
 /**
@@ -251,8 +255,25 @@ if (devRepo) {
   })
 }
 
+/**
+ * Authentication, when there is a Supabase project to authenticate against.
+ *
+ * Absent for the in-memory local loop, which has no way to issue a token — and the banner says
+ * so, because a server that is open should never be quietly open. Requires a database too: the
+ * access check asks the product's own helper functions who may see what, and there is nothing to
+ * ask without one.
+ */
+const auth =
+  supabaseUrl && store instanceof PostgresStore
+    ? {
+        verifier: new JwtVerifier({ projectUrl: supabaseUrl }),
+        access: store.projectAccess(),
+      }
+    : undefined
+
 const app = await buildServer({
   store,
+  ...(auth ? { auth } : {}),
   scope,
   tokens,
   dispatch: {
@@ -379,6 +400,7 @@ process.stderr.write(
     }`,
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
     `  seats   ${connectedSeats.join(', ') || 'no harness connected'}`,
+    `  auth    ${auth ? `supabase (${new URL(supabaseUrl!).hostname})` : 'OPEN — no SUPABASE_URL, anyone reaching this port can dispatch'}`,
     ``,
   ].join('\n'),
 )

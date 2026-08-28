@@ -12,6 +12,8 @@ import {
 } from './harness/accounts.js'
 import { HarnessLogin, loginSupported } from './harness/login.js'
 import type { SeatStore } from './harness/seat-store.js'
+import type { JwtVerifier } from './auth/jwt.js'
+import type { ProjectAccessChecker } from './auth/access.js'
 import { McpOAuth } from './mcp/oauth.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpStore } from './mcp/store.js'
@@ -40,6 +42,17 @@ import { gitHubAppFromEnv } from './github/app.js'
  */
 export interface ServerOptions {
   store?: Store
+  /**
+   * Who may call the human-facing API.
+   *
+   * Optional, and its absence is what keeps the local loop working: a developer with no Supabase
+   * project has no way to obtain a token, and requiring one would make the in-memory path
+   * unusable. When it is absent the server says so in its banner rather than being quietly open.
+   */
+  auth?: {
+    readonly verifier: JwtVerifier
+    readonly access: ProjectAccessChecker
+  }
   /**
    * Which project this server serves.
    *
@@ -115,6 +128,50 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * in exactly one client space, and two sources for the same fact is how they come to disagree.
    */
   const seatScope = { clientSpaceId: opts.scope.clientSpaceId }
+
+  /**
+   * The gate on everything a person calls.
+   *
+   * Split by prefix rather than by listing routes: `/internal/*` is what a run container talks
+   * to and authenticates with its own run token, and `/api/*` is what a browser or the CLI
+   * talks to. A prefix cannot be forgotten when a route is added, which a list can.
+   *
+   * Registered as `onRequest`, so an unauthenticated call is refused before a body is parsed or
+   * a handler allocates anything.
+   */
+  if (opts.auth) {
+    const { verifier, access } = opts.auth
+    app.addHook('onRequest', async (request, reply) => {
+      const url = request.url.split('?')[0] ?? ''
+      if (!url.startsWith('/api/')) return
+
+      let user
+      try {
+        user = await verifier.verify(request.headers.authorization)
+      } catch {
+        // No detail: which part of the token was wrong helps someone probing and helps a real
+        // user not at all, since signing in again is the only remedy either way.
+        return reply.code(401).send({ error: 'authentication required' })
+      }
+
+      const granted = await access.check(user, opts.scope.projectId)
+      if (granted === 'none') {
+        // 404 rather than 403. A project someone has no access to should not be confirmed to
+        // exist by the shape of the refusal.
+        return reply.code(404).send({ error: 'no such project' })
+      }
+
+      // Reads are open to anyone with access; anything that changes state or spends compute
+      // needs manage. Methods rather than a per-route table, so a new route is safe by default.
+      const mutating = request.method !== 'GET' && request.method !== 'HEAD'
+      if (mutating && granted !== 'manage') {
+        return reply.code(403).send({ error: 'you may view this project but not change it' })
+      }
+
+      // Handlers that need to know who is calling read it from here rather than re-verifying.
+      ;(request as { user?: typeof user }).user = user
+    })
+  }
 
   await app.register(websocket)
   const oauth = new McpOAuth(opts.mcp)

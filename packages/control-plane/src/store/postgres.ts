@@ -24,6 +24,7 @@ import { productTasks, projectRepos, runEvents, runTokens, runs, taskSpecs } fro
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
 import { PostgresSeatStore } from '../harness/postgres-seats.js'
 import { PostgresMcpStore } from '../mcp/postgres-mcp.js'
+import { ProjectAccessChecker } from '../auth/access.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 
 interface Subscription {
@@ -206,6 +207,32 @@ export class PostgresStore implements Store {
    */
   seats(cipher: SecretCipher): PostgresSeatStore {
     return new PostgresSeatStore(this.db, cipher)
+  }
+
+  /**
+   * Looks a user up by email.
+   *
+   * Only used by tests and operator scripts — the request path takes the user's id from a
+   * verified token and never from an address, because an email is something a caller can claim
+   * and a signature is not.
+   */
+  async findUserByEmail(email: string): Promise<{ id: string } | undefined> {
+    const [row] = await this.db
+      .select({ id: sql<string>`u.id` })
+      .from(sql`public.users u`)
+      .where(sql`lower(u.email::text) = lower(${email})`)
+      .limit(1)
+    return row
+  }
+
+  /**
+   * The project-access checker, sharing this pool.
+   *
+   * It asks the product's own `current_project_ids()` and `manageable_project_ids()` with the
+   * caller's claims installed, so authorization stays one definition rather than two.
+   */
+  projectAccess(): ProjectAccessChecker {
+    return new ProjectAccessChecker(this.db)
   }
 
   /** An MCP store sharing this connection pool, for the same reason `seats` does. */

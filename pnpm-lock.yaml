@@ -107,6 +107,9 @@ importers:
       fastify:
         specifier: ^5.2.0
         version: 5.12.0
+      jose:
+        specifier: ^6.2.10
+        version: 6.2.10
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -2413,10 +2416,10 @@ packages:
         integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==,
       }
 
-  jose@6.2.8:
+  jose@6.2.10:
     resolution:
       {
-        integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==,
+        integrity: sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g==,
       }
 
   json-schema-ref-resolver@3.0.0:
@@ -3959,7 +3962,7 @@ snapshots:
       express: 5.2.1
       express-rate-limit: 8.6.2(express@5.2.1)
       hono: 4.13.1
-      jose: 6.2.8
+      jose: 6.2.10
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
@@ -4593,7 +4596,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  jose@6.2.8: {}
+  jose@6.2.10: {}
 
   json-schema-ref-resolver@3.0.0:
     dependencies:
