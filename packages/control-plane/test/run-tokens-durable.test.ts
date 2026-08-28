@@ -35,10 +35,18 @@ function connectionString(): string | undefined {
 }
 
 const dsn = connectionString()
-const liveProjectId = process.env['INTELLIDEV_PROJECT_ID']
+/**
+ * The project the tests own, which is not the one anyone dispatches into.
+ *
+ * These suites call `truncateAll()`, which deletes every task in their project. Pointing that at
+ * the development project destroyed a live Fargate run mid-flight — the run finished and opened
+ * its PR, and the row describing it was gone. `pnpm dev:seed` creates this second project for
+ * exactly that reason.
+ */
+const liveProjectId = process.env['INTELLIDEV_TEST_PROJECT_ID']
 
 if (!dsn || !liveProjectId) {
-  const why = !dsn ? 'no SUPABASE_CONNECTION_STRING_SESSION' : 'no INTELLIDEV_PROJECT_ID'
+  const why = !dsn ? 'no SUPABASE_CONNECTION_STRING_SESSION' : 'no INTELLIDEV_TEST_PROJECT_ID'
   describe.skip(`durable run tokens (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })

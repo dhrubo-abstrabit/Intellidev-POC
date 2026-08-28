@@ -468,12 +468,14 @@ contract(
 const dsn = connectionString()
 
 /**
- * The Postgres store runs against a real project, because its tables carry foreign keys onto
- * the product's tenancy and there is nothing to fake. `pnpm dev:seed` creates one and prints
- * the ids; without them this half of the contract is skipped rather than run against a project
- * that does not exist.
+ * The project the tests own, which is not the one anyone dispatches into.
+ *
+ * These suites call `truncateAll()`, which deletes every task in their project. Pointing that at
+ * the development project destroyed a live Fargate run mid-flight — the run finished and opened
+ * its PR, and the row describing it was gone. `pnpm dev:seed` creates this second project for
+ * exactly that reason.
  */
-const liveProjectId = process.env['INTELLIDEV_PROJECT_ID']
+const liveProjectId = process.env['INTELLIDEV_TEST_PROJECT_ID']
 
 if (dsn && liveProjectId) {
   const live = new PostgresStore({ connectionString: dsn })
@@ -546,7 +548,7 @@ if (dsn && liveProjectId) {
 } else {
   const why = !dsn
     ? 'no SUPABASE_CONNECTION_STRING_SESSION configured'
-    : 'no INTELLIDEV_PROJECT_ID — run `pnpm dev:seed`'
+    : 'no INTELLIDEV_TEST_PROJECT_ID — run `pnpm dev:seed`'
   describe.skip(`PostgresStore (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })

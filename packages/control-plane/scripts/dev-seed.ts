@@ -31,6 +31,16 @@ const WORKSPACE = { name: 'Ayush Dev', slug: 'ayush-dev' }
 const SPACE = { name: 'Runner Dev', slug: 'runner-dev' }
 const PROJECT = { name: 'Runner Sandbox', slug: 'runner-sandbox' }
 
+/**
+ * A second project, used only by the test suite.
+ *
+ * Separate because the contract tests call `truncateAll()`, which deletes every task in the
+ * project they run against — and that destroyed a live Fargate run mid-flight when they shared
+ * one. Tests need to be able to wipe freely; a project someone is dispatching into cannot be
+ * wiped at all. One project cannot be both.
+ */
+const TEST_PROJECT = { name: 'Runner Tests', slug: 'runner-tests' }
+
 /** Fixture actors. `.test` is reserved by RFC 2606, so these can never be real addresses. */
 const FIXTURES = [
   {
@@ -170,6 +180,17 @@ try {
   const projectId = pr.rows[0]!.id
   console.log(`  project    ${PROJECT.name}  ${projectId}`)
 
+  const tpr = await client.query<{ id: string }>(
+    `insert into public.projects
+       (workspace_id, client_space_id, name, slug, visibility, created_by)
+     values ($1, $2, $3, $4, 'space', $5)
+     on conflict (client_space_id, slug) do update set name = excluded.name
+     returning id`,
+    [workspaceId, spaceId, TEST_PROJECT.name, TEST_PROJECT.slug, ownerId],
+  )
+  const testProjectId = tpr.rows[0]!.id
+  console.log(`  tests      ${TEST_PROJECT.name}  ${testProjectId}`)
+
   /**
    * Memberships, inserted explicitly.
    *
@@ -193,12 +214,14 @@ try {
      on conflict (client_space_id, user_id) do update set role = 'admin'`,
     [spaceId, tenantId, ownerId],
   )
-  await client.query(
-    `insert into public.project_members (project_id, client_space_id, user_id, role)
-     values ($1, $2, $3, 'member')
-     on conflict (project_id, user_id) do update set role = 'member'`,
-    [projectId, spaceId, ownerId],
-  )
+  for (const id of [projectId, testProjectId]) {
+    await client.query(
+      `insert into public.project_members (project_id, client_space_id, user_id, role)
+       values ($1, $2, $3, 'member')
+       on conflict (project_id, user_id) do update set role = 'member'`,
+      [id, spaceId, ownerId],
+    )
+  }
   console.log(`  ${OWNER_EMAIL}: workspace=admin space=admin project=member`)
 
   await client.query('commit')
@@ -244,7 +267,8 @@ try {
 
   console.log(`\n  put these in .env:\n`)
   console.log(`  INTELLIDEV_CLIENT_SPACE_ID='${spaceId}'`)
-  console.log(`  INTELLIDEV_PROJECT_ID='${projectId}'\n`)
+  console.log(`  INTELLIDEV_PROJECT_ID='${projectId}'`)
+  console.log(`  INTELLIDEV_TEST_PROJECT_ID='${testProjectId}'\n`)
 } catch (error) {
   await client.query('rollback').catch(() => undefined)
   throw error

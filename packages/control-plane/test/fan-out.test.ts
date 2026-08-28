@@ -64,16 +64,17 @@ async function until(predicate: () => boolean, timeoutMs = 8000): Promise<void> 
 
 const dsn = connectionString()
 /**
- * A real project is required, not a placeholder.
+ * The project the tests own, which is not the one anyone dispatches into.
  *
- * `runner.runs` carries composite foreign keys onto the product's tenancy, so there is nothing
- * to invent here — a made-up project id is rejected by the database. `pnpm dev:seed` creates one
- * and prints the ids to set.
+ * These suites call `truncateAll()`, which deletes every task in their project. Pointing that at
+ * the development project destroyed a live Fargate run mid-flight — the run finished and opened
+ * its PR, and the row describing it was gone. `pnpm dev:seed` creates this second project for
+ * exactly that reason.
  */
-const liveProjectId = process.env['INTELLIDEV_PROJECT_ID']
+const liveProjectId = process.env['INTELLIDEV_TEST_PROJECT_ID']
 
 if (!dsn || !liveProjectId) {
-  const why = !dsn ? 'no SUPABASE_CONNECTION_STRING_SESSION' : 'no INTELLIDEV_PROJECT_ID'
+  const why = !dsn ? 'no SUPABASE_CONNECTION_STRING_SESSION' : 'no INTELLIDEV_TEST_PROJECT_ID'
   describe.skip(`cross-instance fan-out (skipped: ${why})`, () => {
     it('is skipped', () => {})
   })
