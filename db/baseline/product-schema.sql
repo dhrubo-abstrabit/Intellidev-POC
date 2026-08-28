@@ -1462,8 +1462,8 @@ CREATE TABLE IF NOT EXISTS "public"."tasks" (
     "description" "text",
     "priority" "public"."task_priority" DEFAULT 'medium'::"public"."task_priority" NOT NULL,
     "status" "public"."task_status" DEFAULT 'pending'::"public"."task_status" NOT NULL,
-    "confidence" numeric(4,3) NOT NULL,
-    "for_date" "date" NOT NULL,
+    "confidence" numeric(4,3) DEFAULT 1.0 NOT NULL,
+    "for_date" "date" DEFAULT CURRENT_DATE NOT NULL,
     "due_at" timestamp with time zone,
     "owner_hint" "text",
     "assignee_id" "uuid",
@@ -1471,7 +1471,7 @@ CREATE TABLE IF NOT EXISTS "public"."tasks" (
     "embedding" "public"."vector"(384),
     "embedding_model" "text",
     "embedding_src_hash" "bytea",
-    "dedupe_hash" "text" NOT NULL,
+    "dedupe_hash" "text" DEFAULT ("gen_random_uuid"())::"text" NOT NULL,
     "superseded_by" "uuid",
     "resolved_at" timestamp with time zone,
     "snoozed_until" timestamp with time zone,
@@ -2791,6 +2791,10 @@ CREATE POLICY "task_sources_select" ON "public"."task_sources" FOR SELECT TO "au
 
 
 ALTER TABLE "public"."tasks" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "tasks_insert" ON "public"."tasks" FOR INSERT TO "authenticated" WITH CHECK ((("client_space_id" IN ( SELECT "public"."manageable_client_space_ids"() AS "manageable_client_space_ids")) OR (("project_id" IS NOT NULL) AND ("project_id" IN ( SELECT "public"."manageable_project_ids"() AS "manageable_project_ids")))));
+
 
 
 CREATE POLICY "tasks_select" ON "public"."tasks" FOR SELECT TO "authenticated" USING ((("client_space_id" IN ( SELECT "public"."current_client_space_ids"() AS "current_client_space_ids")) AND (("project_id" IS NULL) OR ("project_id" IN ( SELECT "public"."current_project_ids"() AS "current_project_ids")))));

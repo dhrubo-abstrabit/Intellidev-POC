@@ -28,3 +28,8 @@ cdk.out/
 
 # local control-plane work root
 .intellidev-work/
+
+# `supabase link` recreates this; a linked dir makes `supabase db push` one
+# keystroke away, and pushing from here would corrupt the product repo's
+# migration history. Nothing in this repo needs it — see db/README.md.
+supabase/

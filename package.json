@@ -31,8 +31,9 @@
     "db:migrate": "pnpm --filter @intellidev/control-plane run db:migrate",
     "db:status": "pnpm --filter @intellidev/control-plane run db:status",
     "db:new": "pnpm --filter @intellidev/control-plane run db:new",
-    "db:baseline": "supabase db dump --linked --schema public -f db/baseline/product-schema.sql",
-    "db:verify": "bash db/verify/run.sh"
+    "db:baseline": "supabase db dump --db-url \"$SUPABASE_CONNECTION_STRING_SESSION\" --schema public -f db/baseline/product-schema.sql",
+    "db:verify": "bash db/verify/run.sh",
+    "db:contract": "pnpm --filter @intellidev/control-plane run db:contract"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

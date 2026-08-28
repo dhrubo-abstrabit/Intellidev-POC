@@ -81,6 +81,9 @@ done
 step 'seed'
 psql_run "$DB" < "$DIR/seed.sql" >/dev/null || fail 'seed failed'
 
+step 'contract'
+psql_run "$DB" < "$ROOT/db/contract.sql" 2>&1 | sed 's/^NOTICE:  /    /' || fail 'contract drifted'
+
 step 'checks'
 psql_run "$DB" < "$DIR/checks.sql" 2>&1 | sed 's/^NOTICE:  /    /'
 
