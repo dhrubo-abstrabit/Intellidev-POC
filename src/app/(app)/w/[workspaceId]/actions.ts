@@ -59,7 +59,13 @@ export async function createProject(
     // with).
     const { data: clientSpace, error: clientSpaceError } = await supabase
       .from("client_spaces")
-      .insert({ workspace_id: workspaceId, tenant_id: workspaceRow.tenant_id, name: parsed.data.name, slug })
+      .insert({
+        workspace_id: workspaceId,
+        tenant_id: workspaceRow.tenant_id,
+        name: parsed.data.name,
+        slug,
+        created_by: user.id,
+      })
       .select("id")
       .single();
 

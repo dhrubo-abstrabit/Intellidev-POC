@@ -7,6 +7,31 @@ export type Json =
   | Json[]
 
 export type Database = {
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
       audit_logs: {
@@ -1872,6 +1897,13 @@ export type Database = {
     Functions: {
       accept_invitation: { Args: { p_token: string }; Returns: string }
       ack_job: { Args: { p_msg_id: number }; Returns: boolean }
+      create_tenant_and_workspace: {
+        Args: { p_name: string; p_slug: string }
+        Returns: {
+          tenant_id: string
+          workspace_id: string
+        }[]
+      }
       current_client_space_ids: { Args: never; Returns: string[] }
       current_project_ids: { Args: never; Returns: string[] }
       current_tenant_ids: { Args: never; Returns: string[] }
@@ -2087,6 +2119,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       chunk_source: [
