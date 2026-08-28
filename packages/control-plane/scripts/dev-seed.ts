@@ -41,6 +41,16 @@ const PROJECT = { name: 'Runner Sandbox', slug: 'runner-sandbox' }
  */
 const TEST_PROJECT = { name: 'Runner Tests', slug: 'runner-tests' }
 
+/**
+ * The tests get their own client space, not just their own project.
+ *
+ * Seats and GitHub installations are space-scoped, so a test that connects or removes one
+ * reaches every project in that space. Sharing a space with the development project meant the
+ * seat-store suite's cleanup deleted the seat someone was dispatching with — the same isolation
+ * mistake as the shared project, one level up.
+ */
+const TEST_SPACE = { name: 'Runner Tests Space', slug: 'runner-tests-space' }
+
 /** Fixture actors. `.test` is reserved by RFC 2606, so these can never be real addresses. */
 const FIXTURES = [
   {
@@ -180,13 +190,23 @@ try {
   const projectId = pr.rows[0]!.id
   console.log(`  project    ${PROJECT.name}  ${projectId}`)
 
+  const tcs = await client.query<{ id: string }>(
+    `insert into public.client_spaces (tenant_id, workspace_id, name, slug, created_by)
+     values ($1, $2, $3, $4, $5)
+     on conflict (workspace_id, slug) do update set name = excluded.name
+     returning id`,
+    [tenantId, workspaceId, TEST_SPACE.name, TEST_SPACE.slug, ownerId],
+  )
+  const testSpaceId = tcs.rows[0]!.id
+  console.log(`  test space ${TEST_SPACE.name}  ${testSpaceId}`)
+
   const tpr = await client.query<{ id: string }>(
     `insert into public.projects
        (workspace_id, client_space_id, name, slug, visibility, created_by)
      values ($1, $2, $3, $4, 'space', $5)
      on conflict (client_space_id, slug) do update set name = excluded.name
      returning id`,
-    [workspaceId, spaceId, TEST_PROJECT.name, TEST_PROJECT.slug, ownerId],
+    [workspaceId, testSpaceId, TEST_PROJECT.name, TEST_PROJECT.slug, ownerId],
   )
   const testProjectId = tpr.rows[0]!.id
   console.log(`  tests      ${TEST_PROJECT.name}  ${testProjectId}`)
@@ -208,18 +228,23 @@ try {
      on conflict (workspace_id, user_id) do update set role = 'admin'`,
     [workspaceId, tenantId, ownerId],
   )
-  await client.query(
-    `insert into public.space_members (client_space_id, tenant_id, user_id, role)
-     values ($1, $2, $3, 'admin')
-     on conflict (client_space_id, user_id) do update set role = 'admin'`,
-    [spaceId, tenantId, ownerId],
-  )
-  for (const id of [projectId, testProjectId]) {
+  for (const id of [spaceId, testSpaceId]) {
+    await client.query(
+      `insert into public.space_members (client_space_id, tenant_id, user_id, role)
+       values ($1, $2, $3, 'admin')
+       on conflict (client_space_id, user_id) do update set role = 'admin'`,
+      [id, tenantId, ownerId],
+    )
+  }
+  for (const [id, space] of [
+    [projectId, spaceId],
+    [testProjectId, testSpaceId],
+  ] as const) {
     await client.query(
       `insert into public.project_members (project_id, client_space_id, user_id, role)
        values ($1, $2, $3, 'member')
        on conflict (project_id, user_id) do update set role = 'member'`,
-      [id, spaceId, ownerId],
+      [id, space, ownerId],
     )
   }
   console.log(`  ${OWNER_EMAIL}: workspace=admin space=admin project=member`)

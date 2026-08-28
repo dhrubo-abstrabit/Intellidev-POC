@@ -193,7 +193,15 @@ function contract(
           await store.updateRun(run.id, { status })
           ids[status] = run.id
         }
-        const unsettled = (await store.listUnsettledRuns()).map((r) => r.id).sort()
+        // Filtered to this test's own runs, because `listUnsettledRuns` is deliberately global:
+        // one control plane sweeps every project, so a run dispatched elsewhere while this suite
+        // is running legitimately appears in it. Asserting on the whole list made the test fail
+        // whenever a real Fargate run happened to be in flight.
+        const mine = new Set(Object.values(ids))
+        const unsettled = (await store.listUnsettledRuns())
+          .map((r) => r.id)
+          .filter((id) => mine.has(id))
+          .sort()
         expect(unsettled).toEqual([ids['queued']!, ids['provisioning']!, ids['running']!].sort())
       })
 

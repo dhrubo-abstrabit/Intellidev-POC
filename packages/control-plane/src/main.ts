@@ -278,6 +278,11 @@ const app = await buildServer({
   publicDir: resolve(import.meta.dirname, '..', 'public'),
 })
 
+const shutdownTasks: Array<() => void | Promise<void>> = []
+function onShutdown(task: () => void | Promise<void>): void {
+  shutdownTasks.push(task)
+}
+
 /**
  * The lifecycle reconciler, started only where there is something to reconcile.
  *
@@ -314,11 +319,6 @@ if (aws) {
  * the store closes second, since a request still completing needs it; and the exit is
  * unconditional, because a hung close must not turn a restart into a hang.
  */
-const shutdownTasks: Array<() => void | Promise<void>> = []
-function onShutdown(task: () => void | Promise<void>): void {
-  shutdownTasks.push(task)
-}
-
 let shuttingDown = false
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
