@@ -379,7 +379,9 @@ email_optional = false
 # set (in .env.local for `supabase start`; already live in Vercel/prod). GCP
 # console: APIs & Services -> Credentials -> OAuth client ID -> Web
 # application; authorized redirect URI is
-# http://127.0.0.1:54321/auth/v1/callback for local, or
+# http://127.0.0.1:54721/auth/v1/callback for local (NOT the Supabase CLI's
+# default 54321 — this project's [api] port was moved, see the port-range
+# comment at the top of this file), or
 # https://<project-ref>.supabase.co/auth/v1/callback for the cloud project.
 [auth.external.google]
 enabled = true
