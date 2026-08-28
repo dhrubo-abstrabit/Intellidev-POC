@@ -228,19 +228,7 @@ async function execute(args: {
 
   const persist = async (event: AgentEvent): Promise<void> => {
     await store.appendEvent(event)
-    // Stage records are rebuilt from the stream rather than taken from a return value,
-    // because in docker mode there is no return value to take them from — the container's
-    // events are all that crosses the boundary. Doing it here keeps both modes reporting
-    // the same stage list instead of docker runs showing an empty one.
-    await recordStage(store, runId, event)
-    if (event.type === 'run.started') {
-      await store.updateRun(runId, { status: 'running' })
-      // The task has to move too, not just the run. `dispatched → in_review` is not a
-      // legal transition, so without this step the task would be stuck on `dispatched`
-      // for the rest of its life while its run reported success.
-      await moveTask(store, taskId, 'running')
-    }
-    if (event.type === 'pr.opened') await store.updateRun(runId, { prUrl: event.data.url })
+    await projectRunEvent(store, runId, taskId, event)
   }
 
   if (config.mode === 'inline') {
@@ -488,6 +476,39 @@ function tailEvents(path: string, sink: (event: AgentEvent) => void): { stop: ()
  * template that loops on a failed gate shows each attempt rather than overwriting the
  * history with whichever ran last.
  */
+/**
+ * Derives a run's visible state from one event.
+ *
+ * FOUND BY RUNNING IT. This used to live inside dispatch's own sink, which the inline and docker
+ * paths feed by tailing an events file. On Fargate there is no file — the container dials out
+ * over a WebSocket and the server appends straight to the store — so none of it ran. A Fargate
+ * run therefore finished `succeeded` with **zero stage records and a null `pr_url`**, while its
+ * PR sat open on GitHub. The run worked; everything a person would want to look at afterwards
+ * was missing.
+ *
+ * Shared rather than duplicated, because the two paths differing in what they record is the
+ * exact bug this is fixing.
+ */
+export async function projectRunEvent(
+  store: Store,
+  runId: string,
+  taskId: string,
+  event: AgentEvent,
+): Promise<void> {
+  // Stage records are rebuilt from the stream rather than taken from a return value, because
+  // in container modes there is no return value to take them from — the events are all that
+  // crosses the boundary.
+  await recordStage(store, runId, event)
+  if (event.type === 'run.started') {
+    await store.updateRun(runId, { status: 'running' })
+    // The task has to move too, not just the run. `dispatched → in_review` is not a legal
+    // transition, so without this the task would be stuck on `dispatched` for the rest of its
+    // life while its run reported success.
+    await moveTask(store, taskId, 'running')
+  }
+  if (event.type === 'pr.opened') await store.updateRun(runId, { prUrl: event.data.url })
+}
+
 async function recordStage(store: Store, runId: string, event: AgentEvent): Promise<void> {
   if (event.type !== 'stage.entered' && event.type !== 'stage.exited') return
   const stage = event.stage

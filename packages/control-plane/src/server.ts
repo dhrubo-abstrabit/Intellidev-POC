@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { HarnessId } from '@intellidev/shared'
 import { z } from 'zod'
-import { dispatchTask, DispatchRefused, type DispatchConfig } from './dispatch.js'
+import { dispatchTask, DispatchRefused, projectRunEvent, type DispatchConfig } from './dispatch.js'
 import {
   HARNESS_AUTH,
   readCredentialFile,
@@ -650,6 +650,19 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
           // control-plane crash then lost — a permanent hole, which is the one thing the
           // sequence numbers exist to prevent.
           await store.appendEvent(parsed.data)
+          /**
+           * The same projection the inline path applies.
+           *
+           * Without it a Fargate run finished with no stage records and a null pr_url, because
+           * that projection lived in dispatch's sink — which is fed by tailing an events file
+           * that container runs do not have. The run worked; everything anyone would look at
+           * afterwards was missing.
+           *
+           * After the append and before the ack, so a projection failure leaves the event
+           * unacknowledged and the adapter replays it, rather than acking a half-recorded event.
+           */
+          const run = await store.getRun(authorisedRunId)
+          if (run) await projectRunEvent(store, run.id, run.taskId, parsed.data)
         } catch {
           // Not acked, so the adapter keeps holding it and replays on the next reconnect.
           // Silence here is deliberate: the run must not be told a transient write failure

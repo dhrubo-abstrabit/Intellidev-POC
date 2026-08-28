@@ -54,7 +54,21 @@ interface Subscription {
 
 export interface PostgresStoreOptions {
   readonly connectionString: string
-  /** Bounded: Supavisor has its own ceiling, and an unbounded pool finds it. */
+  /**
+   * Connections this store may hold. Small on purpose.
+   *
+   * Supabase's session-mode pooler allows **15 clients per project**, and that is the whole
+   * budget: every control-plane instance spends from it, plus one more each for the
+   * `LISTEN`/`NOTIFY` connection cross-instance fan-out needs.
+   *
+   * The default was 10, which one instance plus its listener turns into 11 of 15 — leaving no
+   * room for a second instance, a migration, or a psql session. It surfaced as
+   * `(EMAXCONNSESSION) max clients reached in session mode` from the test suite while a server
+   * was running, which reads like a code fault and is not one.
+   *
+   * Five leaves room for two instances (12 with listeners) and a person with a shell. Raise the
+   * pooler's limit in the Supabase dashboard before raising this.
+   */
   readonly maxConnections?: number
   readonly onDiagnostic?: (message: string) => void
   /**
@@ -86,7 +100,7 @@ export class PostgresStore implements Store {
   constructor(private readonly opts: PostgresStoreOptions) {
     this.pool = new pg.Pool({
       connectionString: opts.connectionString,
-      max: opts.maxConnections ?? 10,
+      max: opts.maxConnections ?? 5,
       // Supabase terminates TLS with a certificate chain node does not ship a root for.
       // The connection is still encrypted; what is not verified is the peer's identity,
       // which is a real if small gap and worth naming rather than hiding behind a flag.
