@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronRight, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Plus, Users } from "lucide-react";
+import { ChevronRight, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Plus, Shield, Users } from "lucide-react";
 import { signOut } from "@/app/(auth)/actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -85,6 +85,7 @@ export function WorkspaceSidebar({
   const base = `/w/${workspaceId}`;
   const isOverview = pathname === base;
   const isTeamMembers = pathname === `${base}/team-members`;
+  const isMembers = pathname === `${base}/members`;
   const isProjectActive = (projectId: string) => pathname.startsWith(`${base}/p/${projectId}`);
 
   const projectPrefix = `${base}/p/`;
@@ -155,6 +156,12 @@ export function WorkspaceSidebar({
             >
               Team Members
             </DropdownMenuItem>
+            <DropdownMenuItem
+              render={<Link href={`${base}/members`} />}
+              className={isMembers ? "bg-accent" : undefined}
+            >
+              Access
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             {projects.map((project) => (
               <DropdownMenuSub key={project.id}>
@@ -222,6 +229,9 @@ export function WorkspaceSidebar({
           </Link>
           <Link href={`${base}/team-members`} className={navRowClass(isTeamMembers)}>
             Team Members
+          </Link>
+          <Link href={`${base}/members`} className={navRowClass(isMembers)}>
+            Access
           </Link>
         </div>
 
@@ -310,6 +320,9 @@ export function WorkspaceSidebar({
             className={railIconClass(isTeamMembers)}
           >
             <Users className="size-4" />
+          </Link>
+          <Link href={`${base}/members`} title="Access" aria-label="Access" className={railIconClass(isMembers)}>
+            <Shield className="size-4" />
           </Link>
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
