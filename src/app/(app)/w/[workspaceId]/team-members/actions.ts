@@ -2,6 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUser, assertWorkspaceMembership } from "@/lib/auth";
+// The roster writes below go through the USER-scoped client, so
+// team_members_write (contact.manage) does enforce them. requirePermission is
+// here for the error message: without it a member gets a generic "could not
+// add" after the round trip, instead of being told what they lack.
+import { requirePermission, workspaceScope } from "@/lib/authz";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { teamMemberSchema } from "@/lib/validation/team-members";
@@ -52,6 +57,7 @@ export async function createTeamMember(
 ): Promise<TeamMemberActionResult> {
   const user = await requireUser();
   await assertWorkspaceMembership(workspaceId);
+  await requirePermission("contact.manage", workspaceScope(workspaceId));
 
   const parsed = parseTeamMemberForm(formData);
   if (!parsed.success) {
@@ -100,6 +106,7 @@ export async function updateTeamMember(
 ): Promise<TeamMemberActionResult> {
   const user = await requireUser();
   await assertWorkspaceMembership(workspaceId);
+  await requirePermission("contact.manage", workspaceScope(workspaceId));
 
   const parsed = parseTeamMemberForm(formData);
   if (!parsed.success) {
@@ -150,6 +157,7 @@ export async function updateTeamMember(
 export async function deleteTeamMember(workspaceId: string, teamMemberId: string): Promise<{ message: string }> {
   const user = await requireUser();
   await assertWorkspaceMembership(workspaceId);
+  await requirePermission("contact.manage", workspaceScope(workspaceId));
 
   const supabase = await createClient();
   // .select().maybeSingle() after the delete, not just checking `error`:
