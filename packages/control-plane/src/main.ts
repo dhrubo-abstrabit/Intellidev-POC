@@ -372,7 +372,19 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   })
 }
 
-await app.listen({ port, host: '127.0.0.1' })
+/**
+ * Which interface to listen on.
+ *
+ * Loopback locally, so a development server is not exposed on the network by accident. A
+ * container has to bind `0.0.0.0` or nothing outside it can connect — including the load
+ * balancer's health check, which would mark the task unhealthy and cycle it for ever.
+ *
+ * Configuration rather than a mode check, because "am I in a container" is not something this
+ * process can know reliably, and guessing it wrong fails in the direction of exposure.
+ */
+const host = process.env['INTELLIDEV_BIND_HOST'] ?? '127.0.0.1'
+
+await app.listen({ port, host })
 
 // Read before the banner is built, because listing seats is a database query now. Names only:
 // the listing decrypts nothing, which is what keeps a page load off the KMS path.
@@ -383,7 +395,7 @@ process.stderr.write(
   [
     ``,
     `  Intellidev control plane`,
-    `  → http://127.0.0.1:${port}`,
+    `  → http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`,
     ``,
     `  mode    ${mode}${mode === 'inline' ? '  (set INTELLIDEV_MODE=docker to run in a container)' : ''}`,
     `  bundle  ${bundleRoot}`,

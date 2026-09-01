@@ -5,6 +5,7 @@ import { NetworkStack } from './network-stack.js'
 import { ArtifactsStack } from './artifacts-stack.js'
 import { RegistryStack } from './registry-stack.js'
 import { SecretsStack } from './secrets-stack.js'
+import { AppSecretsStack } from './app-secrets-stack.js'
 import { RuntimeStack } from './runtime-stack.js'
 import { SmokeStack } from './smoke-stack.js'
 import { stackName } from './naming.js'
@@ -24,6 +25,7 @@ export interface BuiltApp {
   readonly network: NetworkStack
   readonly artifacts: ArtifactsStack
   readonly secrets: SecretsStack
+  readonly appSecrets: AppSecretsStack
   readonly registry: RegistryStack
   readonly runtime: RuntimeStack
   readonly smoke: SmokeStack
@@ -71,6 +73,12 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     description: `Intellidev ${config.name} credential encryption key`,
   })
 
+  const appSecrets = new AppSecretsStack(app, stackName(config.name, 'AppSecrets'), {
+    environment: config,
+    env: { account, region: config.region },
+    description: `Intellidev ${config.name} deployment-wide secrets`,
+  })
+
   const registry = new RegistryStack(app, stackName(config.name, 'Registry'), {
     environment: config,
     env: { account, region: config.region },
@@ -96,9 +104,9 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     description: `Intellidev ${config.name} egress proof`,
   })
 
-  for (const stack of [network, artifacts, secrets, registry, runtime, smoke])
+  for (const stack of [network, artifacts, secrets, appSecrets, registry, runtime, smoke])
     applyTags(stack, config)
   Aspects.of(app).add(new NoNatGateways())
 
-  return { app, network, artifacts, secrets, registry, runtime, smoke }
+  return { app, network, artifacts, secrets, appSecrets, registry, runtime, smoke }
 }

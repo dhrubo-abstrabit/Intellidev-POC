@@ -189,6 +189,31 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return reply.type('text/html; charset=utf-8').send(html)
   })
 
+  /**
+   * What a load balancer asks before sending traffic.
+   *
+   * Deliberately outside `/api/*`, so it is not behind the authentication gate: a health check
+   * arrives without a token, and gating it would mark every healthy target unhealthy.
+   *
+   * It checks the database rather than only that the process is alive. An instance that cannot
+   * reach Postgres can accept a request and fail it — every dispatch, every task list, every
+   * event read — so it should be taken out of the pool rather than left to serve errors. That
+   * is the difference between a liveness check and a useful one.
+   */
+  app.get('/healthz', async (_request, reply) => {
+    try {
+      await store.listProjectRepos(opts.scope)
+    } catch (error) {
+      // 503 rather than 500: this instance is unavailable, not broken in a way retrying
+      // elsewhere will not fix.
+      return reply.code(503).send({
+        status: 'unhealthy',
+        reason: error instanceof Error ? error.message.slice(0, 200) : 'store unreachable',
+      })
+    }
+    return { status: 'ok' }
+  })
+
   app.get('/api/config', async () => ({
     mode: opts.dispatch.mode,
     image: opts.dispatch.image,
