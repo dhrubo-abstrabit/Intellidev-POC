@@ -6,6 +6,15 @@ import { InMemoryRunTokens, RunTokenRegistry } from '../src/runs/tokens.js'
 import { allowTestRepo, TEST_TASK } from './fixtures.js'
 
 /**
+ * Connections one test store may hold.
+ *
+ * Supabase's session pooler allows fifteen per project, and these suites open two or three
+ * stores each — at the production default of five that is the whole budget, and the symptom is
+ * `(EMAXCONNSESSION) max clients reached` appearing as thirty unrelated test failures.
+ */
+const TEST_POOL = 2
+
+/**
  * Run tokens must survive a process, because behind a load balancer they have to.
  *
  * The registry was two in-process Maps. That is correct for exactly one control plane: a token
@@ -81,8 +90,8 @@ if (!dsn || !liveProjectId) {
     }
 
     it('verifies on a second instance a token the first one minted', async () => {
-      const minting = new PostgresStore({ connectionString: dsn })
-      const verifying = new PostgresStore({ connectionString: dsn })
+      const minting = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
+      const verifying = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
       try {
         const runId = await seedRun(minting)
         const { token } = await new RunTokenRegistry({ store: minting }).mint(runId)
@@ -107,8 +116,8 @@ if (!dsn || !liveProjectId) {
     })
 
     it('revokes across instances, so settling on one kills the token everywhere', async () => {
-      const settling = new PostgresStore({ connectionString: dsn })
-      const other = new PostgresStore({ connectionString: dsn })
+      const settling = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
+      const other = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
       try {
         const runId = await seedRun(settling)
         const { token } = await new RunTokenRegistry({ store: settling }).mint(runId)
@@ -125,7 +134,7 @@ if (!dsn || !liveProjectId) {
     it('refuses an expired token even though the row is still there', async () => {
       // Expiry is enforced by the registry as well as by the query, so a store returning a
       // stale row cannot extend a token's life.
-      const store = new PostgresStore({ connectionString: dsn })
+      const store = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
       try {
         const runId = await seedRun(store)
         let now = 1_000

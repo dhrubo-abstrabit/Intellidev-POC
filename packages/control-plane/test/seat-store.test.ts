@@ -6,6 +6,15 @@ import { LocalSecretCipher } from '../src/secrets/cipher.js'
 import type { HarnessAccount } from '../src/harness/accounts.js'
 
 /**
+ * Connections one test store may hold.
+ *
+ * Supabase's session pooler allows fifteen per project, and these suites open two or three
+ * stores each — at the production default of five that is the whole budget, and the symptom is
+ * `(EMAXCONNSESSION) max clients reached` appearing as thirty unrelated test failures.
+ */
+const TEST_POOL = 2
+
+/**
  * Harness seats, stored in the database with their material encrypted.
  *
  * The seat was a JSON file under the work root. That is correct for one process on one laptop
@@ -62,7 +71,7 @@ if (!dsn || !testProjectId) {
         store: PostgresStore
       }) => Promise<T>,
     ): Promise<T> {
-      const store = new PostgresStore({ connectionString: dsn! })
+      const store = new PostgresStore({ connectionString: dsn!, maxConnections: TEST_POOL })
       try {
         const project = await store.findProject(testProjectId!)
         if (!project) throw new Error(`project ${testProjectId} is not in this database`)
@@ -133,7 +142,7 @@ if (!dsn || !testProjectId) {
       await withStore(async ({ seats, scope }) => {
         await seats.connect(scope, SEAT)
         // A separate store and pool, standing in for another control-plane process.
-        const other = new PostgresStore({ connectionString: dsn! })
+        const other = new PostgresStore({ connectionString: dsn!, maxConnections: TEST_POOL })
         try {
           const material = await other
             .seats(new LocalSecretCipher('seat-store-test'))

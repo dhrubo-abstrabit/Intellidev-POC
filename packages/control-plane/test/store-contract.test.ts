@@ -9,6 +9,15 @@ import type { ProjectScope } from '../src/store/types.js'
 import type { Store } from '../src/store/types.js'
 
 /**
+ * Connections one test store may hold.
+ *
+ * Supabase's session pooler allows fifteen per project, and these suites open two or three
+ * stores each — at the production default of five that is the whole budget, and the symptom is
+ * `(EMAXCONNSESSION) max clients reached` appearing as thirty unrelated test failures.
+ */
+const TEST_POOL = 2
+
+/**
  * One suite, both implementations.
  *
  * This is what makes "the same API tests pass against Postgres" — B1's done-condition —
@@ -486,7 +495,7 @@ const dsn = connectionString()
 const liveProjectId = process.env['INTELLIDEV_TEST_PROJECT_ID']
 
 if (dsn && liveProjectId) {
-  const live = new PostgresStore({ connectionString: dsn })
+  const live = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
   const found = await live.findProject(liveProjectId)
 
   if (!found) {
@@ -525,7 +534,7 @@ if (dsn && liveProjectId) {
       it('leaves a product task with no runner spec untouched', async () => {
         // Its own store and pool: the contract suite's `dispose` closes `live` when its own
         // tests finish, which is before this sibling block runs.
-        const own = new PostgresStore({ connectionString: dsn })
+        const own = new PostgresStore({ connectionString: dsn, maxConnections: TEST_POOL })
         const pool = new pg.Pool({
           connectionString: dsn,
           max: 1,

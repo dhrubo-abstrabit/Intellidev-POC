@@ -5,6 +5,15 @@ import { PostgresStore } from '../src/store/postgres.js'
 import { allowRepoFor, TEST_REPO_URL } from './fixtures.js'
 
 /**
+ * Connections one test store may hold.
+ *
+ * Supabase's session pooler allows fifteen per project, and these suites open two or three
+ * stores each — at the production default of five that is the whole budget, and the symptom is
+ * `(EMAXCONNSESSION) max clients reached` appearing as thirty unrelated test failures.
+ */
+const TEST_POOL = 2
+
+/**
  * C6, proven the only way it can be: **two independent store instances**.
  *
  * A single-instance test cannot show anything here — in-process fan-out already works, and
@@ -82,8 +91,16 @@ if (!dsn || !liveProjectId) {
   describe('cross-instance fan-out', () => {
     // `writer` stands for the instance the adapter's socket landed on; `reader` for the one
     // serving the browser. Separate objects, separate connections, as separate processes.
-    const writer = new PostgresStore({ connectionString: dsn, crossInstanceFanOut: true })
-    const reader = new PostgresStore({ connectionString: dsn, crossInstanceFanOut: true })
+    const writer = new PostgresStore({
+      connectionString: dsn,
+      crossInstanceFanOut: true,
+      maxConnections: TEST_POOL,
+    })
+    const reader = new PostgresStore({
+      connectionString: dsn,
+      crossInstanceFanOut: true,
+      maxConnections: TEST_POOL,
+    })
 
     beforeEach(async () => {
       await writer.truncateAll(await scope())

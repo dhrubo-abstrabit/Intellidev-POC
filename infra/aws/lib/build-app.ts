@@ -6,6 +6,7 @@ import { ArtifactsStack } from './artifacts-stack.js'
 import { RegistryStack } from './registry-stack.js'
 import { SecretsStack } from './secrets-stack.js'
 import { AppSecretsStack } from './app-secrets-stack.js'
+import { ControlPlaneStack } from './control-plane-stack.js'
 import { RuntimeStack } from './runtime-stack.js'
 import { SmokeStack } from './smoke-stack.js'
 import { stackName } from './naming.js'
@@ -29,6 +30,7 @@ export interface BuiltApp {
   readonly registry: RegistryStack
   readonly runtime: RuntimeStack
   readonly smoke: SmokeStack
+  readonly controlPlane: ControlPlaneStack
 }
 
 /**
@@ -104,9 +106,37 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     description: `Intellidev ${config.name} egress proof`,
   })
 
-  for (const stack of [network, artifacts, secrets, appSecrets, registry, runtime, smoke])
+  const controlPlane = new ControlPlaneStack(app, stackName(config.name, 'ControlPlane'), {
+    environment: config,
+    vpc: network.vpc,
+    repository: registry.repository,
+    artifacts: artifacts.bucket,
+    credentialKey: secrets.key,
+    taskEvents: runtime.taskEvents,
+    runTaskRole: runtime.taskRole,
+    runExecutionRole: runtime.executionRole,
+    runCluster: runtime.cluster,
+    secrets: {
+      githubAppKey: appSecrets.githubAppKey,
+      databaseUrl: appSecrets.databaseUrl,
+      supabaseServiceKey: appSecrets.supabaseServiceKey,
+    },
+    env: { account, region: config.region },
+    description: `Intellidev ${config.name} hosted control plane`,
+  })
+
+  for (const stack of [
+    network,
+    artifacts,
+    secrets,
+    appSecrets,
+    registry,
+    runtime,
+    smoke,
+    controlPlane,
+  ])
     applyTags(stack, config)
   Aspects.of(app).add(new NoNatGateways())
 
-  return { app, network, artifacts, secrets, appSecrets, registry, runtime, smoke }
+  return { app, network, artifacts, secrets, appSecrets, registry, runtime, smoke, controlPlane }
 }
