@@ -34,11 +34,15 @@ export async function createProject(
   // A project cannot exist without a client space above it — projects.
   // client_space_id is NOT NULL, and its composite FK requires a real
   // client_spaces row already scoped to this workspace (see
-  // supabase/migrations/20260820100600_client_spaces.sql /
-  // 20260820100700_projects.sql). This app provisions exactly one client
-  // space per project, created together and never surfaced in the UI — see
-  // src/lib/scope.ts for the full rationale. Need the workspace's tenant_id
-  // for the client space insert's own NOT NULL column.
+  // supabase/migrations/20260901000500_client_spaces.sql /
+  // 20260901000600_projects.sql). This app still provisions exactly one
+  // client space per project, created together and never surfaced in the UI
+  // — see src/lib/scope.ts. Need the workspace's tenant_id for the client
+  // space insert's own NOT NULL column, and for audit_logs below.
+  //
+  // NOTE: handle_new_client_space makes the creator that space's admin, which
+  // is what grants them access to the data underneath. Workspace authority
+  // alone no longer does — space_members is the data boundary now.
   const { data: workspaceRow } = await supabase.from("workspaces").select("tenant_id").eq("id", workspaceId).maybeSingle();
   if (!workspaceRow) {
     return { error: "Could not create project. You may not have access to this workspace." };
@@ -55,7 +59,13 @@ export async function createProject(
     // with).
     const { data: clientSpace, error: clientSpaceError } = await supabase
       .from("client_spaces")
-      .insert({ workspace_id: workspaceId, tenant_id: workspaceRow.tenant_id, name: parsed.data.name, slug })
+      .insert({
+        workspace_id: workspaceId,
+        tenant_id: workspaceRow.tenant_id,
+        name: parsed.data.name,
+        slug,
+        created_by: user.id,
+      })
       .select("id")
       .single();
 
@@ -86,9 +96,13 @@ export async function createProject(
       return { error: "Could not create project. Please try again." };
     }
 
+    // audit_logs.tenant_id is NOT NULL — the trail is scoped to the billing
+    // boundary so it survives a workspace being deleted (none of the other
+    // scope columns carry an FK, deliberately, for the same reason).
     const audit = createServiceClient();
     await audit.from("audit_logs").insert([
       {
+        tenant_id: workspaceRow.tenant_id,
         workspace_id: workspaceId,
         actor_user_id: user.id,
         actor_type: "user",
@@ -97,6 +111,7 @@ export async function createProject(
         target_id: clientSpace.id,
       },
       {
+        tenant_id: workspaceRow.tenant_id,
         workspace_id: workspaceId,
         client_space_id: clientSpace.id,
         project_id: project.id,

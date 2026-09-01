@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 interface AttachmentsJobPayload {
-  integrationId: string;
+  projectConnectorId: string;
   /** Project-local calendar day this run's attachments belong to — set by
    * run-sync.ts (or this route's own chaining) at enqueue time, exactly like
    * SyncJobPayload.batchDate. Never recomputed here: this job's whole reason
@@ -25,14 +25,14 @@ interface AttachmentsJobPayload {
 
 async function handler(request: NextRequest) {
   const body = (await request.json()) as Partial<AttachmentsJobPayload>;
-  if (typeof body.integrationId !== "string") {
-    return NextResponse.json({ error: "integrationId is required" }, { status: 400 });
+  if (typeof body.projectConnectorId !== "string") {
+    return NextResponse.json({ error: "projectConnectorId is required" }, { status: 400 });
   }
   if (typeof body.batchDate !== "string") {
     return NextResponse.json({ error: "batchDate is required" }, { status: 400 });
   }
 
-  const result = await runAttachmentExtraction(body.integrationId, body.batchDate, body.chainDepth ?? 0);
+  const result = await runAttachmentExtraction(body.projectConnectorId, body.batchDate, body.chainDepth ?? 0);
   // Non-2xx tells the queue backend to retry — only "failed" (an actual
   // error) should trigger that; "skipped" (attachments disabled, or this
   // connector has no downloader) is a legitimate no-op, same convention as

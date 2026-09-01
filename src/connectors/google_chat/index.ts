@@ -154,8 +154,9 @@ export const googleChatConnector: Connector<GoogleChatCursor> = {
     const config = parsedConfig.data;
 
     // Defensive re-parse rather than trusting the generic's static type:
-    // integration_cursors.cursor is an untyped jsonb column at runtime, so a
-    // corrupted or stale-shape value must degrade to "start over", not throw.
+    // project_connector_cursors.cursor is an untyped jsonb column at runtime,
+    // so a corrupted or stale-shape value must degrade to "start over", not
+    // throw.
     const previousCursors = parseCursor(cursor).spaceCursors;
     // Drop cursor entries for spaces no longer configured — a stale cursor
     // for a removed space would just accumulate forever otherwise.

@@ -7,7 +7,7 @@ import { publicEnv, supabaseServerEnv } from "@/lib/env";
  * Service-role Supabase client — BYPASSES ROW LEVEL SECURITY ENTIRELY.
  *
  * This is the trust boundary for the whole app: everything that reads
- * connector_credentials, raw_events, llm_runs, or integration_cursors goes
+ * space_connections, raw_events, llm_runs, or project_connector_cursors goes
  * through this client, and nothing else should. The `server-only` import
  * above makes it a build-time error (not just a convention) to pull this
  * into a Client Component bundle.

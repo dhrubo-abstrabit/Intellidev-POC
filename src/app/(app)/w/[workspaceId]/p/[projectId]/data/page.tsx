@@ -56,8 +56,8 @@ export default async function ProjectDataPage({
   const filters = parseProjectDataSearchParams(rawSearchParams);
 
   // timezone moved off `projects` onto `client_spaces` (see
-  // src/lib/scope.ts) — normalized_events and integrations key on
-  // client_space_id now too, not project_id.
+  // src/lib/scope.ts) — normalized_events key on client_space_id;
+  // project_connectors keys on project_id directly.
   const scope = await resolveProjectScope(workspaceId, projectId);
   if (!scope) {
     notFound();
@@ -68,7 +68,7 @@ export default async function ProjectDataPage({
 
   const lookbackCutoff = isoDaysAgo(DAY_INDEX_LOOKBACK_DAYS);
 
-  const [{ data: dayIndexRows }, { data: integrationRows }] = await Promise.all([
+  const [{ data: dayIndexRows }, { data: projectConnectorRows }] = await Promise.all([
     supabase
       .from("normalized_events")
       .select("occurred_at, provider")
@@ -76,10 +76,15 @@ export default async function ProjectDataPage({
       .gte("occurred_at", lookbackCutoff)
       .order("occurred_at", { ascending: false })
       .limit(DAY_INDEX_ROW_LIMIT),
+    // project-scoped, not client-space-wide: two projects in this space can
+    // each scope the same connection with independent config, and this
+    // strip must only reflect THIS project's connectors (see
+    // supabase/migrations/20260901000800_connectors.sql).
     supabase
-      .from("integrations")
-      .select("id, provider, status, display_name, config")
-      .eq("client_space_id", clientSpaceId)
+      .from("project_connectors")
+      .select("id, provider, config, space_connections(status, external_account_label)")
+      .eq("project_id", projectId)
+      .eq("enabled", true)
       .order("provider"),
   ]);
 
@@ -103,11 +108,11 @@ export default async function ProjectDataPage({
 
   const truncated = (dayIndexRows?.length ?? 0) >= DAY_INDEX_ROW_LIMIT;
 
-  const integrations: IntegrationSummary[] = (integrationRows ?? []).map((row) => ({
+  const integrations: IntegrationSummary[] = (projectConnectorRows ?? []).map((row) => ({
     id: row.id,
     provider: row.provider,
-    status: row.status,
-    displayName: row.display_name,
+    status: row.space_connections?.status ?? "pending",
+    displayName: row.space_connections?.external_account_label ?? null,
     googleServices: row.provider === "google" ? enabledGoogleServices(row.config) : [],
   }));
 
@@ -166,22 +171,22 @@ export default async function ProjectDataPage({
   }));
 
   // Action points are grouped by *source message day*, not by
-  // action_items.for_date (the day the LLM run happened) — an item citing
+  // tasks.for_date (the day the LLM run happened) — an item citing
   // messages from two days will legitimately appear on both; that's correct
   // given the message->action-point provenance this tab exists to show, not
   // a bug to "fix" by switching back to for_date.
   let dayActionPoints: DayActionPoint[] = [];
   if (dayEventIds.length > 0) {
     const { data: sourceRows } = await supabase
-      .from("action_item_source_events")
+      .from("task_sources")
       .select(
-        "normalized_event_id, action_items!inner(id, title, description, kind, priority, confidence_score, status, for_date, due_at, owner_hint)",
+        "normalized_event_id, tasks!inner(id, title, description, kind, priority, confidence, status, for_date, due_at, owner_hint)",
       )
       .in("normalized_event_id", dayEventIds);
 
     const itemsById = new Map<string, DayActionPoint>();
     for (const row of sourceRows ?? []) {
-      const item = row.action_items;
+      const item = row.tasks;
       if (!item) continue;
       const existing = itemsById.get(item.id);
       if (existing) {
@@ -194,7 +199,7 @@ export default async function ProjectDataPage({
         description: item.description,
         kind: item.kind,
         priority: item.priority,
-        confidenceScore: item.confidence_score,
+        confidenceScore: item.confidence,
         status: item.status,
         forDate: item.for_date,
         dueAt: item.due_at,

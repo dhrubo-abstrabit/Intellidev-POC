@@ -7,10 +7,10 @@ import { createClient } from "@/lib/supabase/server";
 import { decodeAssigneeValue } from "@/components/items/assignee";
 import type { Database } from "@/lib/db/database.types";
 
-type ActionItemPriority = Database["public"]["Enums"]["action_item_priority"];
+type ActionItemPriority = Database["public"]["Enums"]["task_priority"];
 // snoozed is excluded here — it needs a snoozed_until date, which this
 // generic status setter doesn't collect. See snoozeActionItem below.
-type BoardStatus = Exclude<Database["public"]["Enums"]["action_item_status"], "snoozed">;
+type BoardStatus = Exclude<Database["public"]["Enums"]["task_status"], "snoozed">;
 
 function revalidateTaskManagement(workspaceId: string, projectId: string) {
   revalidatePath(`/w/${workspaceId}/p/${projectId}/task-management`);
@@ -25,13 +25,13 @@ export async function updateActionItemStatus(
 ): Promise<{ message: string }> {
   await requireUser();
 
-  // User-scoped client — the action_items_update RLS policy plus the
+  // User-scoped client — the tasks_update RLS policy plus the
   // column-scoped grant (status/assignee_id/snoozed_until/resolved_at/
   // priority only) is exactly the right boundary here, same as
   // items/actions.ts's setStatus.
   const supabase = await createClient();
   const { error } = await supabase
-    .from("action_items")
+    .from("tasks")
     .update({
       status,
       resolved_at: status === "done" || status === "dismissed" ? new Date().toISOString() : null,
@@ -58,7 +58,7 @@ export async function updateActionItemPriority(
 
   const supabase = await createClient();
   const { error } = await supabase
-    .from("action_items")
+    .from("tasks")
     .update({ priority })
     .eq("id", itemId)
     .eq("project_id", projectId)
@@ -116,11 +116,11 @@ export async function updateActionItemAssignee(
     }
   }
 
-  // Both columns, every time — action_items_single_assignee_chk rejects a
+  // Both columns, every time — tasks_single_assignee_chk rejects a
   // write that leaves the previous assignee's column populated when
   // switching between a user and a roster contact.
   const { error } = await supabase
-    .from("action_items")
+    .from("tasks")
     .update({
       assignee_id: target?.kind === "user" ? target.id : null,
       assignee_team_member_id: target?.kind === "team_member" ? target.id : null,
@@ -159,7 +159,7 @@ export async function snoozeActionItem(
 
   const supabase = await createClient();
   const { error } = await supabase
-    .from("action_items")
+    .from("tasks")
     .update({ status: "snoozed", snoozed_until: snoozedUntilIso, resolved_at: null })
     .eq("id", itemId)
     .eq("project_id", projectId)

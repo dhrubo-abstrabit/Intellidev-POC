@@ -17,12 +17,13 @@ export class ConnectorAuthError extends Error {
   }
 }
 
-/** integrations.config failed a connector's Zod parse in a way that can't be
- * safely defaulted away (e.g. a malformed source id, too many entries). This
- * is deliberately a hard failure rather than a silent empty sync — it lands
- * in integrations.last_error (rendered on the Integrations page) and flips
- * status via run-sync's existing backoff path, instead of looking like a
- * working integration that quietly produces nothing. */
+/** project_connectors.config failed a connector's Zod parse in a way that
+ * can't be safely defaulted away (e.g. a malformed source id, too many
+ * entries). This is deliberately a hard failure rather than a silent empty
+ * sync — it lands in project_connectors.last_error (rendered on the
+ * Integrations page) and flips its backoff via run-sync's existing failure
+ * path, instead of looking like a working integration that quietly produces
+ * nothing. */
 export class ConnectorConfigError extends Error {
   constructor(message: string) {
     super(message);

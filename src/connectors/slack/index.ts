@@ -46,6 +46,7 @@ interface SlackApiResponse {
   error?: string;
   team?: string; // auth.test's team NAME (not the {id,name} object oauth.v2.access used to return)
   team_id?: string;
+  url?: string; // auth.test's `https://<subdomain>.slack.com/` — the team's permalink domain
   channels?: Array<{ id: string; name?: string; is_member?: boolean }>;
   messages?: Array<{ ts: string } & Record<string, unknown>>;
   members?: Array<{
@@ -132,10 +133,10 @@ function resolveMentions(text: string, directory: Map<string, { displayName?: st
     .replace(SPECIAL_MENTION_PATTERN, (_match, kind: string) => `@${kind}`);
 }
 
-/** One cursor per integration (scope_key='default'), internally tracking
- * each channel's own resume point — Slack channels post at very different
- * rates, so a single flat timestamp would either re-fetch quiet channels
- * constantly or miss messages in busy ones. */
+/** One cursor per project connector (scope_key='default'), internally
+ * tracking each channel's own resume point — Slack channels post at very
+ * different rates, so a single flat timestamp would either re-fetch quiet
+ * channels constantly or miss messages in busy ones. */
 interface SlackCursor {
   provider: "slack";
   channelCursors: Record<string, string>; // channelId -> oldest `ts` seen
@@ -220,7 +221,13 @@ export const slackConnector: Connector<SlackCursor> = {
     if (!data.ok || !data.team_id) {
       throw new Error(`Slack auth.test failed: ${data.error ?? "no team_id in response"}`);
     }
-    return { externalAccountId: data.team_id, externalAccountLabel: data.team };
+    return {
+      externalAccountId: data.team_id,
+      externalAccountLabel: data.team,
+      // Trim the trailing slash so it composes cleanly into a permalink path
+      // (`${accountDomain}/archives/${channelId}/p${ts}`).
+      accountDomain: data.url?.replace(/\/$/, ""),
+    };
   },
 
   async validate(credentials: ConnectorCredentials): Promise<boolean> {

@@ -38,22 +38,48 @@ export async function GET(request: NextRequest) {
   }
 
   const service = createServiceClient();
-  const { data: dueIntegrations, error } = await service
-    .from("integrations")
-    .select("id, client_space_id, workspace_id")
+
+  // The dispatch unit is the PROJECT CONNECTOR now. This predicate matches
+  // project_connectors_due_for_sync_idx (partial, on next_sync_at where
+  // enabled and sync_enabled) so the scan cost tracks due work, not table
+  // size.
+  //
+  // `status` is deliberately NOT here: it lives on space_connections, because
+  // a grant's health is a property of the grant, shared by every project in
+  // the space. Filtering it needs a second read rather than an embedded
+  // filter — the FK to space_connections is composite (connection_id,
+  // client_space_id), which PostgREST cannot reliably auto-embed, and a wrong
+  // guess there fails as a confusing 400 rather than a missing filter.
+  const { data: dueConnectors, error } = await service
+    .from("project_connectors")
+    .select("id, client_space_id, connection_id")
     .lte("next_sync_at", new Date().toISOString())
-    .eq("sync_enabled", true)
-    .in("status", ["connected", "degraded"]);
+    .eq("enabled", true)
+    .eq("sync_enabled", true);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const byClientSpace = new Map<string, { workspaceId: string; integrationIds: string[] }>();
-  for (const integration of dueIntegrations ?? []) {
-    const group = byClientSpace.get(integration.client_space_id);
-    if (group) group.integrationIds.push(integration.id);
-    else byClientSpace.set(integration.client_space_id, { workspaceId: integration.workspace_id, integrationIds: [integration.id] });
+  // Drop connectors whose grant is unusable. A revoked or errored connection
+  // would fail every fetch, and dispatching them would burn the whole batch
+  // budget on guaranteed failures.
+  const connectionIds = [...new Set((dueConnectors ?? []).map((c) => c.connection_id))];
+  const { data: connections } = connectionIds.length
+    ? await service.from("space_connections").select("id, status, revoked_at").in("id", connectionIds)
+    : { data: [] as { id: string; status: string; revoked_at: string | null }[] };
+  const usableConnectionIds = new Set(
+    (connections ?? [])
+      .filter((c) => c.revoked_at === null && (c.status === "connected" || c.status === "degraded"))
+      .map((c) => c.id),
+  );
+  const due = (dueConnectors ?? []).filter((c) => usableConnectionIds.has(c.connection_id));
+
+  const byClientSpace = new Map<string, { projectConnectorIds: string[] }>();
+  for (const connector of due) {
+    const group = byClientSpace.get(connector.client_space_id);
+    if (group) group.projectConnectorIds.push(connector.id);
+    else byClientSpace.set(connector.client_space_id, { projectConnectorIds: [connector.id] });
   }
 
   // Seed one batch per client space (needs each client space's timezone,
@@ -73,10 +99,9 @@ export async function GET(request: NextRequest) {
     const timezone = timezoneByClientSpace.get(clientSpaceId) ?? "UTC";
     const batchDate = projectToday(timezone);
     const batchId = await seedBatchForClientSpace(service, {
-      workspaceId: group.workspaceId,
       clientSpaceId,
       batchDate,
-      integrationIds: group.integrationIds,
+      projectConnectorIds: group.projectConnectorIds,
     });
     batchByClientSpace.set(clientSpaceId, { batchId, batchDate });
     await enqueueJob("/api/jobs/batch-timeout", { batchId }, { delaySeconds: BATCH_TIMEOUT_DELAY_SECONDS }).catch((err) => {
@@ -85,19 +110,19 @@ export async function GET(request: NextRequest) {
   }
 
   const results = await Promise.allSettled(
-    (dueIntegrations ?? []).map(async (integration) => {
+    due.map(async (connector) => {
       try {
-        await enqueueJob("/api/jobs/sync", { integrationId: integration.id, trigger: "schedule" });
+        await enqueueJob("/api/jobs/sync", { projectConnectorId: connector.id, trigger: "schedule" });
       } catch (err) {
-        const batch = batchByClientSpace.get(integration.client_space_id);
+        const batch = batchByClientSpace.get(connector.client_space_id);
         if (batch) {
           const settled = await markMemberEnqueueFailed(service, {
-            clientSpaceId: integration.client_space_id,
-            integrationId: integration.id,
+            clientSpaceId: connector.client_space_id,
+            projectConnectorId: connector.id,
             batchDate: batch.batchDate,
           });
           if (settled.inBatch && settled.firedLlmJob) {
-            await triggerDailyExtraction(service, integration.client_space_id, batch.batchDate);
+            await triggerDailyExtraction(service, connector.client_space_id, batch.batchDate);
           }
         }
         throw err;
@@ -106,7 +131,11 @@ export async function GET(request: NextRequest) {
   );
 
   return NextResponse.json({
-    due: dueIntegrations?.length ?? 0,
+    due: due.length,
+    // Connectors that were due but whose grant is revoked/errored, so were
+    // deliberately not dispatched. Surfaced rather than silently dropped —
+    // "due: 0, skipped: 5" is a diagnosable state; a bare "due: 0" is not.
+    skippedUnusableConnection: (dueConnectors?.length ?? 0) - due.length,
     dispatched: results.filter((r) => r.status === "fulfilled").length,
     failed: results.filter((r) => r.status === "rejected").length,
   });

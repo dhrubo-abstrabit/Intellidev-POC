@@ -29,13 +29,24 @@ export async function createWorkspace(
 
   // A workspace cannot exist without a tenant above it — workspaces.tenant_id
   // is NOT NULL, and the workspaces_insert policy requires the caller to
-  // already be a super_admin of that tenant (see
-  // supabase/migrations/20260820100400_tenancy.sql). This app has no
+  // already hold tenant_role 'owner' (see
+  // supabase/migrations/20260901000400_tenancy.sql). This app has no
   // tenant/billing UI yet, so "create a workspace" provisions a brand-new
   // tenant behind the scenes, one per workspace, invisible to the user.
-  // handle_new_tenant makes the creator that tenant's super_admin atomically,
-  // so the workspace insert right after satisfies its own RLS check without
-  // a second round trip.
+  //
+  // Both inserts happen inside the create_tenant_and_workspace RPC (see
+  // supabase/migrations/20260901001900_workspace_onboarding_rpc.sql), not as
+  // two separate `.from(...).insert()` calls: an INSERT ... RETURNING run as
+  // the authenticated user can never see the tenant it just created, because
+  // the SELECT policy that would allow it depends on a tenant_members row
+  // written by an AFTER INSERT trigger — which fires too late to satisfy
+  // that same statement's RETURNING check. The RPC is SECURITY DEFINER, so
+  // it bypasses RLS for both inserts entirely and sidesteps the race, while
+  // the same AFTER INSERT triggers still fire and grant tenant_members.role
+  // = 'owner' / workspace_members.role = 'admin' from auth.uid() exactly as
+  // before. Neither insert passes an owner id: `tenants` and `workspaces`
+  // have no owner_id column, precisely so those trigger-written role rows
+  // stay the only source of truth for ownership.
   //
   // `tenants.slug` is globally unique — and because RLS scopes every SELECT
   // to tenants this user already administers, a pre-check ("does this slug
@@ -48,50 +59,42 @@ export async function createWorkspace(
   for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
     const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
 
-    const { data: tenant, error: tenantError } = await supabase
-      .from("tenants")
-      .insert({ name: parsed.data.name, slug, owner_id: user.id })
-      .select("id")
+    const { data: result, error: rpcError } = await supabase
+      .rpc("create_tenant_and_workspace", { p_name: parsed.data.name, p_slug: slug })
       .single();
 
-    if (tenantError) {
-      if (tenantError.code !== POSTGRES_UNIQUE_VIOLATION) {
+    if (rpcError) {
+      if (rpcError.code !== POSTGRES_UNIQUE_VIOLATION) {
         return { error: "Could not create workspace. Please try again." };
       }
       continue; // slug collision, retry with a randomized suffix
     }
-
-    const { data: workspace, error: workspaceError } = await supabase
-      .from("workspaces")
-      .insert({ tenant_id: tenant.id, name: parsed.data.name, slug, owner_id: user.id })
-      .select("id")
-      .single();
-    if (workspaceError || !workspace) {
+    if (!result) {
       return { error: "Could not create workspace. Please try again." };
     }
 
     const audit = createServiceClient();
     await audit.from("audit_logs").insert([
       {
-        tenant_id: tenant.id,
+        tenant_id: result.tenant_id,
         actor_user_id: user.id,
         actor_type: "user",
         action: "tenant.created",
         target_type: "tenant",
-        target_id: tenant.id,
+        target_id: result.tenant_id,
       },
       {
-        tenant_id: tenant.id,
-        workspace_id: workspace.id,
+        tenant_id: result.tenant_id,
+        workspace_id: result.workspace_id,
         actor_user_id: user.id,
         actor_type: "user",
         action: "workspace.created",
         target_type: "workspace",
-        target_id: workspace.id,
+        target_id: result.workspace_id,
       },
     ]);
 
-    redirect(`/w/${workspace.id}`);
+    redirect(`/w/${result.workspace_id}`);
   }
 
   return { error: "Could not create a unique workspace URL. Please try a different name." };

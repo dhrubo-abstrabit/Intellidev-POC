@@ -139,22 +139,24 @@ function missingScopes(provider: ConnectorId, grantedScopeString: string | undef
  * Shared by both finalizeConnection (the client-driven happy path) and
  * reconcileConnections (the fallback for a Connect UI session whose
  * `connect` event never reached us — see D-011: free self-hosted Nango has
- * no webhooks). Does the actual identify -> scope-check -> upsert-credential
- * -> validate -> upsert-integration work; callers are responsible for
+ * no webhooks). Does the actual identify -> scope-check -> upsert-grant ->
+ * validate -> upsert-project-connector work; callers are responsible for
  * confirming the connectionId is legitimately this client space's BEFORE
  * calling this.
  *
- * Scoped to `clientSpaceId`, not `projectId`: connector_credentials and
- * integrations both key on client_space_id now (see
- * supabase/migrations/20260820100600_client_spaces.sql /
- * 20260820100800_integrations.sql) — a project has no data of its own to
- * scope a connection to. `projectId` is threaded through only so the
- * `audit_logs` row can record which project's Integrations page the
- * connect happened from.
+ * Two writes, not one: space_connections (the OAuth grant — client-space
+ * scoped, since a client space corresponds to one distinct provider account)
+ * and project_connectors (this project's scoping of that grant — see
+ * supabase/migrations/20260901000800_connectors.sql). A grant reused by a
+ * second project just gets a second project_connectors row pointing at the
+ * same space_connections id; `projectId` is what that second write — and the
+ * `audit_logs` row recording which project's Integrations page the connect
+ * happened from — is scoped to.
  */
 async function finalizeConnectionCore(
   workspaceId: string,
   clientSpaceId: string,
+  tenantId: string,
   projectId: string,
   provider: ConnectorId,
   connectionId: string,
@@ -176,7 +178,7 @@ async function finalizeConnectionCore(
     },
   };
 
-  let identity: { externalAccountId: string; externalAccountLabel?: string };
+  let identity: { externalAccountId: string; externalAccountLabel?: string; accountDomain?: string };
   try {
     identity = connector.identify
       ? await connector.identify(placeholderCredentials)
@@ -204,85 +206,108 @@ async function finalizeConnectionCore(
   const service = createServiceClient();
 
   // Reconnecting the SAME external account reuses that row's existing id —
-  // scoped to client_space_id, not workspace_id: connector_credentials'
-  // unique(client_space_id, provider, external_account_id) is the actual
-  // uniqueness boundary now (see 20260820100800_integrations.sql) — under
-  // the pre-4-level design one Slack team backed every project in a
-  // workspace from one row; each project's client space now needs its own
-  // grant, so reuse only applies within this one client space.
-  const { data: existingCredential } = await service
-    .from("connector_credentials")
+  // scoped to client_space_id: space_connections' unique(client_space_id,
+  // provider, external_account_id) is the actual uniqueness boundary (see
+  // 20260901000800_connectors.sql). One grant here can now legitimately back
+  // several projects' project_connectors rows.
+  const { data: existingConnection } = await service
+    .from("space_connections")
     .select("id")
     .eq("client_space_id", clientSpaceId)
     .eq("provider", provider)
     .eq("external_account_id", identity.externalAccountId)
     .maybeSingle();
 
-  const credentialId = existingCredential?.id ?? uuidv7();
-  const credentialFields = {
+  const connectionId_ = existingConnection?.id ?? uuidv7();
+  const connectionFields = {
     client_space_id: clientSpaceId,
-    workspace_id: workspaceId,
     provider,
+    auth_mode: "nango" as const,
     external_account_id: identity.externalAccountId,
     external_account_label: identity.externalAccountLabel,
+    account_domain: identity.accountDomain,
     nango_connection_id: connectionId,
     nango_provider_config_key: providerConfigKey,
     revoked_at: null,
-    created_by: userId,
+    connected_by: userId,
   };
 
-  const { data: upsertedCredential, error: credentialError } = existingCredential
-    ? await service.from("connector_credentials").update(credentialFields).eq("id", credentialId).select("id").single()
+  const { data: upsertedConnection, error: connectionError } = existingConnection
+    ? await service.from("space_connections").update(connectionFields).eq("id", connectionId_).select("id").single()
     : await service
-        .from("connector_credentials")
-        .insert({ id: credentialId, ...credentialFields })
+        .from("space_connections")
+        .insert({ id: connectionId_, ...connectionFields })
         .select("id")
         .single();
 
-  if (credentialError || !upsertedCredential) {
+  if (connectionError || !upsertedConnection) {
     throw new Error("Connected, but saving the credential failed. Please try again.");
   }
 
   const finalCredentials: ConnectorCredentials = { ...placeholderCredentials, externalAccountId: identity.externalAccountId };
   const isValid = await connector.validate(finalCredentials);
 
-  // Google connectors land "pending", not "connected": they need a scope
-  // (Chat space ids, a Drive folder/drive URL) the user hasn't supplied yet,
-  // and syncing before that would just be a no-op every cron tick. Slack
-  // needs no such scoping, so it goes straight to "connected" as before.
-  const initialStatus = !isValid ? "error" : provider === "slack" ? "connected" : "pending";
+  await service
+    .from("space_connections")
+    .update({ status: isValid ? "connected" : "error", last_validated_at: new Date().toISOString() })
+    .eq("id", upsertedConnection.id);
 
-  // Deliberately omit `config` from this upsert: PostgREST only updates the
-  // keys present in the payload, so leaving it out preserves a previously
-  // saved scope (Chat space ids, Drive sources, Gmail query) across a
-  // disconnect+reconnect. The column default `'{}'` covers a fresh insert.
-  const { error: integrationError } = await service.from("integrations").upsert(
-    {
-      client_space_id: clientSpaceId,
-      workspace_id: workspaceId,
-      credential_id: upsertedCredential.id,
-      provider,
-      status: initialStatus,
-      display_name: identity.externalAccountLabel ?? connector.displayName,
-      connected_by: userId,
-      last_error: isValid ? null : "Post-connect validation failed",
-    },
-    { onConflict: "client_space_id,provider,credential_id" },
-  );
+  // Google needs a scope (Chat space ids, a Drive folder/drive URL) the user
+  // hasn't supplied yet, and syncing before that would just be a no-op every
+  // cron tick — this project's connector starts with sync disabled until
+  // saveIntegrationConfig flips it on (see the pending->connected flip that
+  // used to live on the old integrations.status). Every other provider needs
+  // no such scoping, so it starts enabled, as before.
+  const initialSyncEnabled = provider !== "google";
 
-  if (integrationError) {
+  // Reuse this project's existing connector row on a reconnect instead of
+  // creating a duplicate — unique(project_id, connection_id) is the actual
+  // boundary. Deliberately omit `config` from the update path: PostgREST
+  // only updates keys present in the payload, so leaving it out preserves a
+  // previously saved scope (Chat space ids, Drive sources, Gmail query)
+  // across a disconnect+reconnect. The column default `'{}'` covers a fresh
+  // insert.
+  const { data: existingProjectConnector } = await service
+    .from("project_connectors")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("connection_id", upsertedConnection.id)
+    .maybeSingle();
+
+  const { data: projectConnector, error: projectConnectorError } = existingProjectConnector
+    ? await service
+        .from("project_connectors")
+        .update({ enabled: true, sync_enabled: initialSyncEnabled })
+        .eq("id", existingProjectConnector.id)
+        .select("id")
+        .single()
+    : await service
+        .from("project_connectors")
+        .insert({
+          client_space_id: clientSpaceId,
+          project_id: projectId,
+          connection_id: upsertedConnection.id,
+          provider,
+          sync_enabled: initialSyncEnabled,
+          created_by: userId,
+        })
+        .select("id")
+        .single();
+
+  if (projectConnectorError || !projectConnector) {
     throw new Error("Connected, but saving the integration failed. Please try again.");
   }
 
   await service.from("audit_logs").insert({
+    tenant_id: tenantId,
     workspace_id: workspaceId,
     client_space_id: clientSpaceId,
     project_id: projectId,
     actor_user_id: userId,
     actor_type: "user",
     action: "integration.connected",
-    target_type: "integration",
-    target_id: upsertedCredential.id,
+    target_type: "project_connector",
+    target_id: projectConnector.id,
     metadata: { provider },
   });
 
@@ -366,6 +391,7 @@ export async function finalizeConnection(
   const result = await finalizeConnectionCore(
     workspaceId,
     scope.clientSpaceId,
+    scope.tenantId,
     projectId,
     provider,
     connectionId,
@@ -386,7 +412,7 @@ export interface ReconcileConnectionsResult {
 
 /**
  * Sweeps Nango connections tagged for this client space and finalizes any
- * that have no local connector_credentials row yet — the fallback for a
+ * that have no local space_connections row yet — the fallback for a
  * Connect UI session that succeeded on Nango's side but whose `connect`
  * event never reached finalizeConnection (tab closed mid-flow, a network
  * blip). Best-effort per connection: one orphan failing to finalize must not
@@ -422,9 +448,9 @@ export async function reconcileConnections(
 
   // One query for every candidate's existence, not one per connection in a
   // loop — the partial unique index on nango_connection_id (see
-  // 20260820102000_nango_credentials.sql) already covers this lookup.
+  // 20260901000800_connectors.sql) already covers this lookup.
   const { data: existingRows } = await service
-    .from("connector_credentials")
+    .from("space_connections")
     .select("nango_connection_id")
     .in(
       "nango_connection_id",
@@ -446,6 +472,7 @@ export async function reconcileConnections(
     await finalizeConnectionCore(
       workspaceId,
       scope.clientSpaceId,
+      scope.tenantId,
       projectId,
       conn.providerConfigKey,
       conn.connectionId,
@@ -479,60 +506,75 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
 
   const service = createServiceClient();
 
-  // NOT an upsert with onConflict: "client_space_id,provider,credential_id"
-  // — that constraint is a standard (non-partial) unique index, and
-  // standard unique indexes treat every NULL as distinct from every other
-  // NULL, so it can never actually detect a conflict on mock's permanently-
-  // null credential_id (see the migration adding
-  // integrations_client_space_provider_no_credential_idx, a partial index
-  // that DOES cover this case, added specifically because that gap let a
-  // double-click create two "connected" mock rows). PostgREST's upsert
-  // helper can't target a partial index through `onConflict`, so this is a
-  // plain select-then-insert-or-update instead, with the insert's
-  // unique-violation caught as "someone else won the race" rather than
-  // surfaced as an error — same idiom as createWorkspace's slug retry and
-  // settleBatchMembership's compare-and-swap.
-  const { data: existing } = await service
-    .from("integrations")
+  // space_connections.external_account_id is NOT NULL — mock gets a real
+  // (constant) value here, so unlike the old design's permanently-null
+  // credential_id, the standard unique(client_space_id, provider,
+  // external_account_id) index already catches a concurrent duplicate on its
+  // own; no partial-index workaround needed. Still select-then-insert-or-
+  // update rather than an upsert, with the insert's unique-violation caught
+  // as "someone else won the race" — same idiom as createWorkspace's slug
+  // retry and settleBatchMembership's compare-and-swap.
+  const { data: existingConnection } = await service
+    .from("space_connections")
     .select("id")
     .eq("client_space_id", scope.clientSpaceId)
     .eq("provider", "mock")
-    .is("credential_id", null)
     .maybeSingle();
 
-  const fields = {
+  const connectionId = existingConnection?.id ?? uuidv7();
+  const connectionFields = {
     status: "connected" as const,
-    display_name: "Mock (sample data)",
+    external_account_label: "Mock workspace",
     connected_by: user.id,
-    last_error: null,
+    revoked_at: null,
   };
-
-  const { error } = existing
-    ? await service.from("integrations").update(fields).eq("id", existing.id)
-    : await service.from("integrations").insert({
+  const { error: connectionError } = existingConnection
+    ? await service.from("space_connections").update(connectionFields).eq("id", connectionId)
+    : await service.from("space_connections").insert({
+        id: connectionId,
         client_space_id: scope.clientSpaceId,
-        workspace_id: workspaceId,
-        credential_id: null,
         provider: "mock",
-        ...fields,
+        auth_mode: "none",
+        external_account_id: "mock",
+        ...connectionFields,
       });
+  if (connectionError && connectionError.code !== "23505") {
+    throw new Error("Could not connect the mock integration.");
+  }
 
+  const { data: existingProjectConnector } = await service
+    .from("project_connectors")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("connection_id", connectionId)
+    .maybeSingle();
+  const { error: projectConnectorError } = existingProjectConnector
+    ? await service.from("project_connectors").update({ enabled: true, sync_enabled: true }).eq("id", existingProjectConnector.id)
+    : await service.from("project_connectors").insert({
+        client_space_id: scope.clientSpaceId,
+        project_id: projectId,
+        connection_id: connectionId,
+        provider: "mock",
+        sync_enabled: true,
+        created_by: user.id,
+      });
   // 23505 (unique_violation) here means a concurrent call already inserted
   // the row between the select above and this insert — that's the mock
   // integration ending up connected, exactly what this call wanted, so it's
   // a success, not an error.
-  if (error && error.code !== "23505") {
+  if (projectConnectorError && projectConnectorError.code !== "23505") {
     throw new Error("Could not connect the mock integration.");
   }
 
   await service.from("audit_logs").insert({
+    tenant_id: scope.tenantId,
     workspace_id: workspaceId,
     client_space_id: scope.clientSpaceId,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",
     action: "integration.connected",
-    target_type: "integration",
+    target_type: "project_connector",
     metadata: { provider: "mock" },
   });
 
@@ -541,7 +583,7 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
   return { message: "Mock connector connected" };
 }
 
-export async function syncNow(workspaceId: string, projectId: string, integrationId: string): Promise<{ message: string }> {
+export async function syncNow(workspaceId: string, projectId: string, projectConnectorId: string): Promise<{ message: string }> {
   await requireUser();
   await assertProjectScope(workspaceId, projectId);
 
@@ -552,7 +594,7 @@ export async function syncNow(workspaceId: string, projectId: string, integratio
   // seeded — see supabase/local-dispatch-secrets.sql) is caught and surfaced
   // as a normal thrown error rather than an unhandled rejection.
   try {
-    await enqueueJob("/api/jobs/sync", { integrationId, trigger: "manual" });
+    await enqueueJob("/api/jobs/sync", { projectConnectorId, trigger: "manual" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not queue a sync: ${message}`);
@@ -562,53 +604,78 @@ export async function syncNow(workspaceId: string, projectId: string, integratio
   return { message: "Sync queued" };
 }
 
+/**
+ * Detaches THIS PROJECT from a connector — it does not necessarily revoke
+ * the underlying grant. A space_connections row can back several projects'
+ * project_connectors rows (see finalizeConnectionCore), and disconnecting
+ * from one project's Integrations page must not break sync for a sibling
+ * project still using the same grant. Only when this was the LAST
+ * project_connectors row referencing that connection does this also revoke
+ * it with the provider and mark it locally revoked.
+ */
 export async function disconnectIntegration(
   workspaceId: string,
   projectId: string,
-  integrationId: string,
+  projectConnectorId: string,
 ): Promise<{ message: string }> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
-  const { data: integration } = await service
-    .from("integrations")
-    .select("id, provider, credential_id")
-    .eq("id", integrationId)
+  const { data: projectConnector } = await service
+    .from("project_connectors")
+    .select("id, provider, connection_id")
+    .eq("id", projectConnectorId)
+    .eq("project_id", projectId)
     .eq("client_space_id", scope.clientSpaceId)
-    .eq("workspace_id", workspaceId)
     .maybeSingle();
-  if (!integration) {
+  if (!projectConnector) {
     throw new Error("Integration not found.");
   }
 
-  if (integration.credential_id) {
-    const { data: credentialRow } = await service
-      .from("connector_credentials")
+  // Disable, NOT delete: raw_events/normalized_events/event_attachments all
+  // three-column-FK to project_connectors ON DELETE CASCADE (see
+  // 20260901001000_events.sql / 20260901001800_event_attachments_connector.sql)
+  // — deleting this row would silently wipe every message this project ever
+  // ingested through it, and orphan task_sources for tasks that survive
+  // (tasks itself has no FK to project_connectors). "Disconnect" promising
+  // "you can reconnect later" means keep the history, stop the syncing.
+  // finalizeConnectionCore already re-enables this exact row on a genuine
+  // reconnect rather than inserting a duplicate.
+  await service.from("project_connectors").update({ enabled: false, sync_enabled: false }).eq("id", projectConnector.id);
+
+  const { count: remainingUsers } = await service
+    .from("project_connectors")
+    .select("id", { count: "exact", head: true })
+    .eq("connection_id", projectConnector.connection_id)
+    .eq("enabled", true);
+
+  if (!remainingUsers) {
+    const { data: connectionRow } = await service
+      .from("space_connections")
       .select("id, nango_connection_id, nango_provider_config_key")
-      .eq("id", integration.credential_id)
-      .eq("workspace_id", workspaceId)
+      .eq("id", projectConnector.connection_id)
       .maybeSingle();
 
-    if (credentialRow?.nango_connection_id && credentialRow.nango_provider_config_key) {
+    if (connectionRow?.nango_connection_id && connectionRow.nango_provider_config_key) {
       // Best-effort, in order: a provider-specific revoke on top of Nango's
       // own connection deletion (see Connector.disconnect's doc comment —
       // most providers need nothing beyond Nango's own delete; only kept
       // where a provider needs an explicit extra revoke call).
       try {
-        if (isNangoConnector(integration.provider)) {
-          const connector = getConnector(integration.provider);
+        if (isNangoConnector(projectConnector.provider)) {
+          const connector = getConnector(projectConnector.provider);
           let cachedAccessToken: string | undefined;
           await connector
             .disconnect?.({
-              connectionId: credentialRow.nango_connection_id,
-              providerConfigKey: credentialRow.nango_provider_config_key,
+              connectionId: connectionRow.nango_connection_id,
+              providerConfigKey: connectionRow.nango_provider_config_key,
               externalAccountId: "",
               async getAccessToken() {
                 if (cachedAccessToken) return cachedAccessToken;
                 const connection = await getNangoConnection(
-                  credentialRow.nango_connection_id!,
-                  credentialRow.nango_provider_config_key!,
+                  connectionRow.nango_connection_id!,
+                  connectionRow.nango_provider_config_key!,
                 );
                 cachedAccessToken = connection.accessToken;
                 return cachedAccessToken;
@@ -617,36 +684,39 @@ export async function disconnectIntegration(
             .catch(() => {});
         }
       } catch (err) {
-        console.error(`Failed to run provider-specific revoke for credential ${credentialRow.id}:`, err);
+        console.error(`Failed to run provider-specific revoke for connection ${connectionRow.id}:`, err);
       }
 
-      await deleteNangoConnection(credentialRow.nango_connection_id, credentialRow.nango_provider_config_key).catch((err) => {
-        console.error(`Failed to delete Nango connection for credential ${credentialRow.id}:`, err);
+      await deleteNangoConnection(connectionRow.nango_connection_id, connectionRow.nango_provider_config_key).catch((err) => {
+        console.error(`Failed to delete Nango connection for connection ${connectionRow.id}:`, err);
       });
+    } else if (projectConnector.provider === "mock") {
+      await getConnector("mock").disconnect?.(mockCredentials());
     }
-    // A credential row with no nango_connection_id at all is a pre-Nango
-    // row nobody reconnected — nothing to revoke with the provider or with
-    // Nango; it's still marked revoked below so it stops being offered.
+    // A connection row with no nango_connection_id at all (mock, or a
+    // pre-Nango row nobody reconnected) has nothing to revoke with the
+    // provider or with Nango; it's still marked revoked below so it stops
+    // being offered.
 
-    if (credentialRow) {
-      await service.from("connector_credentials").update({ revoked_at: new Date().toISOString() }).eq("id", credentialRow.id);
+    if (connectionRow) {
+      await service
+        .from("space_connections")
+        .update({ status: "revoked", revoked_at: new Date().toISOString() })
+        .eq("id", connectionRow.id);
     }
-  } else if (integration.provider === "mock") {
-    await getConnector("mock").disconnect?.(mockCredentials());
   }
 
-  await service.from("integrations").update({ status: "disconnected" }).eq("id", integration.id);
-
   await service.from("audit_logs").insert({
+    tenant_id: scope.tenantId,
     workspace_id: workspaceId,
     client_space_id: scope.clientSpaceId,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",
     action: "integration.disconnected",
-    target_type: "integration",
-    target_id: integration.id,
-    metadata: { provider: integration.provider },
+    target_type: "project_connector",
+    target_id: projectConnector.id,
+    metadata: { provider: projectConnector.provider },
   });
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
@@ -655,9 +725,9 @@ export async function disconnectIntegration(
 }
 
 /**
- * Saves a connector's per-integration scope (Chat space ids, Drive
+ * Saves a connector's per-project scope (Chat space ids, Drive
  * folder/shared-drive URLs, a Gmail search query, ...) into
- * integrations.config. useActionState-shaped, following
+ * project_connectors.config. useActionState-shaped, following
  * create-project-form.tsx's pattern — the first action in this file to take
  * FormData, because AsyncButton's `() => Promise<{message}>` signature has
  * no room for it.
@@ -665,7 +735,7 @@ export async function disconnectIntegration(
 export async function saveIntegrationConfig(
   workspaceId: string,
   projectId: string,
-  integrationId: string,
+  projectConnectorId: string,
   _prev: SaveIntegrationConfigResult,
   formData: FormData,
 ): Promise<SaveIntegrationConfigResult> {
@@ -673,29 +743,29 @@ export async function saveIntegrationConfig(
   const scope = await assertProjectScope(workspaceId, projectId);
 
   const service = createServiceClient();
-  const { data: integration } = await service
-    .from("integrations")
-    .select("id, workspace_id, client_space_id, provider, credential_id, status, config")
-    .eq("id", integrationId)
+  const { data: projectConnector } = await service
+    .from("project_connectors")
+    .select("id, client_space_id, project_id, provider, connection_id, sync_enabled, config")
+    .eq("id", projectConnectorId)
+    .eq("project_id", projectId)
     .eq("client_space_id", scope.clientSpaceId)
-    .eq("workspace_id", workspaceId)
     .maybeSingle();
-  if (!integration) {
+  if (!projectConnector) {
     return { error: "Integration not found." };
   }
 
-  const entry = getConfigSchema(integration.provider);
+  const entry = getConfigSchema(projectConnector.provider);
   if (!entry) {
-    return { error: `"${integration.provider}" has no configurable options.` };
+    return { error: `"${projectConnector.provider}" has no configurable options.` };
   }
 
   // Google submits three namespaced sections at once (see
   // GoogleIntegrationConfigForm); every other connector submits one flat set
   // of `entry.fields`. Both converge on the same parsed object from here
   // down — validation, resolve(), scope-change detection, the
-  // pending -> connected flip and the audit log are all shared.
+  // sync_enabled flip and the audit log are all shared.
   const raw =
-    integration.provider === "google"
+    projectConnector.provider === "google"
       ? parseGoogleFieldsFromFormData(formData)
       : parseFieldsFromFormData(entry.fields, formData);
   const parsed = entry.schema.safeParse(raw);
@@ -706,7 +776,7 @@ export async function saveIntegrationConfig(
   if (entry.resolve) {
     let credentials;
     try {
-      credentials = await loadCredentials(service, integration);
+      credentials = await loadCredentials(service, projectConnector);
     } catch (err) {
       return { error: `Could not load this integration's credentials: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -721,20 +791,22 @@ export async function saveIntegrationConfig(
   // old one — e.g. Drive's modifiedTimeFloor from a completely different
   // folder tree is meaningless (and could even skip real activity) once
   // replayed against a new one.
-  const previousConfig = (integration.config ?? {}) as Record<string, unknown>;
+  const previousConfig = (projectConnector.config ?? {}) as Record<string, unknown>;
   const scopeChanged = scopeFingerprint(entry, previousConfig) !== scopeFingerprint(entry, parsed.data);
 
   const nowConfigured = isConfigScoped(entry, parsed.data);
-  const update: Database["public"]["Tables"]["integrations"]["Update"] = { config: parsed.data as Json };
-  // Google connectors land "pending" straight out of connect (see
-  // finalizeConnection above) until a scope is supplied — flip to
-  // "connected" the moment that happens so the cron actually picks it up.
-  if (integration.status === "pending" && nowConfigured) {
-    update.status = "connected";
-    update.last_error = null;
+  const update: Database["public"]["Tables"]["project_connectors"]["Update"] = { config: parsed.data as Json };
+  // Google connectors start with sync disabled straight out of connect (see
+  // finalizeConnectionCore) until a scope is supplied — flip it on the
+  // moment that happens so the cron actually picks this connector up. There
+  // is no `status` column on project_connectors to also clear here — a
+  // connector's own health only ever comes from sync bookkeeping
+  // (last_error/consecutive_failures), not from this save.
+  if (!projectConnector.sync_enabled && nowConfigured) {
+    update.sync_enabled = true;
   }
 
-  const { error: updateError } = await service.from("integrations").update(update).eq("id", integration.id);
+  const { error: updateError } = await service.from("project_connectors").update(update).eq("id", projectConnector.id);
   if (updateError) {
     return { error: "Could not save the configuration." };
   }
@@ -748,9 +820,9 @@ export async function saveIntegrationConfig(
     let prunedCursor: Record<string, unknown> | null = null;
     if (entry.pruneCursorOnScopeChange) {
       const { data: cursorRow } = await service
-        .from("integration_cursors")
+        .from("project_connector_cursors")
         .select("cursor")
-        .eq("integration_id", integration.id)
+        .eq("project_connector_id", projectConnector.id)
         .eq("scope_key", "default")
         .maybeSingle();
       const currentCursor = cursorRow?.cursor;
@@ -766,28 +838,33 @@ export async function saveIntegrationConfig(
     if (prunedCursor) {
       // UPDATE, not upsert: a non-null return means the hook was handed an
       // existing cursor to prune, so the row is already there — and
-      // inventing one for an integration that has never synced would just
-      // be a lie about its resume position.
+      // inventing one for a connector that has never synced would just be a
+      // lie about its resume position.
       await service
-        .from("integration_cursors")
+        .from("project_connector_cursors")
         .update({ cursor: prunedCursor as Json })
-        .eq("integration_id", integration.id)
+        .eq("project_connector_id", projectConnector.id)
         .eq("scope_key", "default");
     } else {
-      await service.from("integration_cursors").delete().eq("integration_id", integration.id).eq("scope_key", "default");
+      await service
+        .from("project_connector_cursors")
+        .delete()
+        .eq("project_connector_id", projectConnector.id)
+        .eq("scope_key", "default");
     }
   }
 
   await service.from("audit_logs").insert({
+    tenant_id: scope.tenantId,
     workspace_id: workspaceId,
-    client_space_id: integration.client_space_id,
+    client_space_id: projectConnector.client_space_id,
     project_id: projectId,
     actor_user_id: user.id,
     actor_type: "user",
     action: "integration.configured",
-    target_type: "integration",
-    target_id: integration.id,
-    metadata: { provider: integration.provider },
+    target_type: "project_connector",
+    target_id: projectConnector.id,
+    metadata: { provider: projectConnector.provider },
   });
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);

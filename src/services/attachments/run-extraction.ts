@@ -38,9 +38,9 @@ const MAX_EXTRACTED_TEXT_CHARS = 8000;
 // must not fan out indefinitely.
 const MAX_ATTACHMENT_CHAIN_DEPTH = 5;
 
-type IntegrationRow = Pick<
-  Database["public"]["Tables"]["integrations"]["Row"],
-  "id" | "workspace_id" | "client_space_id" | "provider" | "credential_id" | "config"
+type ConnectorRow = Pick<
+  Database["public"]["Tables"]["project_connectors"]["Row"],
+  "id" | "client_space_id" | "project_id" | "provider" | "connection_id" | "config"
 >;
 
 type PendingAttachmentRow = Pick<
@@ -59,10 +59,10 @@ export interface RunAttachmentExtractionResult {
  * LLM job — the same handoff run-sync.ts used to do itself before attachment
  * processing existed, now owned by this job so extraction never fires before
  * this run's attachments have had a chance to be downloaded/parsed. */
-async function settleAndTrigger(service: ServiceClient, integration: Pick<IntegrationRow, "id" | "client_space_id">, batchDate: string): Promise<void> {
+async function settleAndTrigger(service: ServiceClient, integration: Pick<ConnectorRow, "id" | "client_space_id">, batchDate: string): Promise<void> {
   const settled = await settleBatchMembership(service, {
     clientSpaceId: integration.client_space_id,
-    integrationId: integration.id,
+    projectConnectorId: integration.id,
     batchDate,
     outcome: "succeeded",
   });
@@ -98,19 +98,19 @@ async function settleAndTrigger(service: ServiceClient, integration: Pick<Integr
  * why this job, not run-sync, now owns that responsibility.
  */
 export async function runAttachmentExtraction(
-  integrationId: string,
+  projectConnectorId: string,
   batchDate: string,
   chainDepth = 0,
 ): Promise<RunAttachmentExtractionResult> {
   const service = createServiceClient();
 
   const { data: integration } = await service
-    .from("integrations")
-    .select("id, workspace_id, client_space_id, provider, credential_id, config")
-    .eq("id", integrationId)
+    .from("project_connectors")
+    .select("id, client_space_id, project_id, provider, connection_id, config")
+    .eq("id", projectConnectorId)
     .maybeSingle();
   if (!integration) {
-    return { status: "failed", processed: 0, hasMore: false, error: "Integration not found" };
+    return { status: "failed", processed: 0, hasMore: false, error: "Project connector not found" };
   }
 
   try {
@@ -145,7 +145,7 @@ export async function runAttachmentExtraction(
     const { data: pending, error: pendingError } = await service
       .from("event_attachments")
       .select("id, normalized_event_id, provider_attachment_id, filename, mime_type, size_bytes, download_ref")
-      .eq("integration_id", integration.id)
+      .eq("project_connector_id", integration.id)
       .eq("status", "pending")
       .order("created_at", { ascending: true })
       .limit(maxAttachmentsPerRun);
@@ -167,7 +167,7 @@ export async function runAttachmentExtraction(
     const { count: remainingCount } = await service
       .from("event_attachments")
       .select("id", { count: "exact", head: true })
-      .eq("integration_id", integration.id)
+      .eq("project_connector_id", integration.id)
       .eq("status", "pending");
     const hasMore = (remainingCount ?? 0) > 0;
 
@@ -176,7 +176,7 @@ export async function runAttachmentExtraction(
       // the batch (and the LLM trigger) must wait for that follow-up, same
       // as run-sync.ts's own hasMore chaining branch.
       await enqueueJob("/api/jobs/attachments", {
-        integrationId: integration.id,
+        projectConnectorId: integration.id,
         batchDate,
         chainDepth: chainDepth + 1,
       }).catch((err) => {
@@ -195,13 +195,13 @@ export async function runAttachmentExtraction(
     return { status: "succeeded", processed, hasMore };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[attachments] run failed for integration ${integrationId}:`, err);
+    console.error(`[attachments] run failed for connector ${projectConnectorId}:`, err);
     // A broken run must not hang the rest of the project's batch forever —
     // settle now so the day's extraction still fires (without this run's
     // attachment text, but with everything else already written), mirroring
     // run-sync.ts's own catch block settling on failure.
     await settleAndTrigger(service, integration, batchDate).catch((settleErr) => {
-      console.error(`[attachments] settle-on-failure also failed for integration ${integrationId}:`, settleErr);
+      console.error(`[attachments] settle-on-failure also failed for connector ${projectConnectorId}:`, settleErr);
     });
     return { status: "failed", processed: 0, hasMore: false, error: message };
   }
@@ -211,7 +211,7 @@ async function processOne(
   service: ServiceClient,
   connector: Connector,
   credentials: ConnectorCredentials,
-  integration: IntegrationRow,
+  integration: ConnectorRow,
   attachment: PendingAttachmentRow,
   budget: { deadline: ReturnType<typeof createDeadline>; maxAttachmentsPerRun: number; extractionsSoFar: number },
 ): Promise<void> {

@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/db/database.types";
 
-type ActionItemStatus = Database["public"]["Enums"]["action_item_status"];
+type ActionItemStatus = Database["public"]["Enums"]["task_status"];
 
 async function setStatus(
   workspaceId: string,
@@ -15,13 +15,13 @@ async function setStatus(
 ): Promise<{ message: string }> {
   await requireUser();
 
-  // User-scoped client, not service — action_items_update's RLS policy plus
+  // User-scoped client, not service — tasks_update's RLS policy plus
   // the column-scoped grant (status/assignee_id/snoozed_until/resolved_at/
   // priority only) is exactly the right boundary here: no service client
   // needed, and the client physically cannot touch title/confidence/etc.
   const supabase = await createClient();
   const { error } = await supabase
-    .from("action_items")
+    .from("tasks")
     .update({ status, resolved_at: status === "done" || status === "dismissed" ? new Date().toISOString() : null })
     .eq("id", itemId)
     .eq("project_id", projectId)
