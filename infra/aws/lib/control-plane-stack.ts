@@ -186,6 +186,23 @@ export class ControlPlaneStack extends Stack {
         // What a run container is told to dial back to. Wrong here means every run starts and
         // then cannot report anything, which looks like the runner failing.
         INTELLIDEV_PUBLIC_URL: `https://${hostname}`,
+        /**
+         * Which project this serves, and where tokens come from.
+         *
+         * Both are configuration rather than secrets, so they belong in SSM with every other
+         * resolved name. Without them the process exits at boot — the project id because a
+         * database-backed store refuses to guess one, and the Supabase URL because its absence
+         * means "no authentication is possible", which would leave the API open on a public
+         * load balancer.
+         */
+        INTELLIDEV_PROJECT_ID: ssm.StringParameter.valueForStringParameter(
+          this,
+          ssmPath(env.name, 'control-plane', 'project-id'),
+        ),
+        SUPABASE_URL: ssm.StringParameter.valueForStringParameter(
+          this,
+          ssmPath(env.name, 'control-plane', 'supabase-url'),
+        ),
       },
       secrets: {
         // Injected by ECS from Secrets Manager, so no value passes through a template, a

@@ -127,6 +127,33 @@ describe('the control plane service', () => {
     expect(environment).not.toContain('postgresql://')
   })
 
+  it('passes every variable the process refuses to start without', () => {
+    /**
+     * FOUND BY DEPLOYING IT. The first deploy rolled back on the circuit breaker because the
+     * task exited 1 at boot — twice, for two different missing pieces. The task definition is
+     * the only place these can come from, and nothing else notices they are absent until a
+     * container has already been started and killed.
+     *
+     * `INTELLIDEV_PROJECT_ID` because a database-backed store refuses to guess one, and
+     * `SUPABASE_URL` because its absence means "no authentication is possible" — which on a
+     * public load balancer would leave the API open rather than merely broken.
+     */
+    const defs = Object.values(template().findResources('AWS::ECS::TaskDefinition'))
+    const environment = defs[0]?.Properties?.ContainerDefinitions?.[0]?.Environment ?? []
+    const names = environment.map((e: { Name: string }) => e.Name)
+    for (const required of [
+      'INTELLIDEV_ENV',
+      'INTELLIDEV_MODE',
+      'INTELLIDEV_PROJECT_ID',
+      'INTELLIDEV_PUBLIC_URL',
+      'INTELLIDEV_BIND_HOST',
+      'SUPABASE_URL',
+      'AWS_REGION',
+    ]) {
+      expect(names).toContain(required)
+    }
+  })
+
   it('rolls back a deploy that never becomes healthy', () => {
     // Without the circuit breaker a bad image cycles tasks until someone notices.
     template().hasResourceProperties('AWS::ECS::Service', {

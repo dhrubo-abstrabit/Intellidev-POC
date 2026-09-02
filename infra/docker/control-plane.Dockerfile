@@ -61,6 +61,19 @@ COPY --chown=control:control packages/control-plane ./packages/control-plane
 # racing to alter the same tables.
 COPY --chown=control:control db ./db
 
+# A writable work root outside the application tree.
+#
+# `main.ts` creates one at boot for run scratch space, and defaults it to `.intellidev-work`
+# under the repo — which is `/app` here, owned by root because the code is copied in as root and
+# the process runs as `control`. The container exited 1 with `EACCES: mkdir /app/.intellidev-work`
+# before this existed.
+#
+# Outside `/app` on purpose rather than chowning it: scratch data does not belong in the
+# application tree, and a writable code directory is a larger blast radius than a writable
+# scratch one.
+RUN mkdir -p /var/lib/intellidev && chown control:control /var/lib/intellidev
+ENV INTELLIDEV_WORK_ROOT=/var/lib/intellidev
+
 USER control
 
 # 0.0.0.0 because a container that binds loopback is unreachable from its own load balancer, and
