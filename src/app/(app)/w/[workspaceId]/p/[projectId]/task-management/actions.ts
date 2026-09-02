@@ -3,6 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
+// These write through the user-scoped client, so tasks_update's RLS policy is
+// the real boundary and always has been. requirePermission is here because RLS
+// refuses an UPDATE by matching ZERO ROWS, with no error - so without it a
+// space viewer clicked "Done", got "Status updated", and nothing changed. The
+// zero-row guards below close the same gap from the other side.
+import { requirePermission, projectScope } from "@/lib/authz";
 import { createClient } from "@/lib/supabase/server";
 import { decodeAssigneeValue } from "@/components/items/assignee";
 import type { Database } from "@/lib/db/database.types";
@@ -24,13 +30,14 @@ export async function updateActionItemStatus(
   status: BoardStatus,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("task.update", projectScope(projectId));
 
   // User-scoped client — the tasks_update RLS policy plus the
   // column-scoped grant (status/assignee_id/snoozed_until/resolved_at/
   // priority only) is exactly the right boundary here, same as
   // items/actions.ts's setStatus.
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("tasks")
     .update({
       status,
@@ -39,9 +46,14 @@ export async function updateActionItemStatus(
     })
     .eq("id", itemId)
     .eq("project_id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not update status: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not update this task. You may not have permission to change it.");
   }
 
   revalidateTaskManagement(workspaceId, projectId);
@@ -55,16 +67,22 @@ export async function updateActionItemPriority(
   priority: ActionItemPriority,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("task.update", projectScope(projectId));
 
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("tasks")
     .update({ priority })
     .eq("id", itemId)
     .eq("project_id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not update priority: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not update this task. You may not have permission to change it.");
   }
 
   revalidateTaskManagement(workspaceId, projectId);
@@ -78,6 +96,7 @@ export async function updateActionItemAssignee(
   assigneeValue: string | null,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("task.assign", projectScope(projectId));
 
   const supabase = await createClient();
 
@@ -119,7 +138,7 @@ export async function updateActionItemAssignee(
   // Both columns, every time — tasks_single_assignee_chk rejects a
   // write that leaves the previous assignee's column populated when
   // switching between a user and a roster contact.
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("tasks")
     .update({
       assignee_id: target?.kind === "user" ? target.id : null,
@@ -127,9 +146,14 @@ export async function updateActionItemAssignee(
     })
     .eq("id", itemId)
     .eq("project_id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not update assignee: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not assign this task. You may not have permission to change it.");
   }
 
   revalidateTaskManagement(workspaceId, projectId);
@@ -147,6 +171,7 @@ export async function snoozeActionItem(
   snoozedUntilDate: string,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("task.update", projectScope(projectId));
 
   const parsed = snoozeSchema.safeParse({ snoozedUntil: snoozedUntilDate });
   if (!parsed.success) {
@@ -158,14 +183,19 @@ export async function snoozeActionItem(
   const snoozedUntilIso = new Date(`${parsed.data.snoozedUntil}T23:59:59`).toISOString();
 
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("tasks")
     .update({ status: "snoozed", snoozed_until: snoozedUntilIso, resolved_at: null })
     .eq("id", itemId)
     .eq("project_id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not snooze: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not snooze this task. You may not have permission to change it.");
   }
 
   revalidateTaskManagement(workspaceId, projectId);
