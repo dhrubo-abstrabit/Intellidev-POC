@@ -5,6 +5,7 @@ import { createDeadline } from "@/connectors/deadline";
 import { loadCredentials } from "@/services/sync/credentials";
 import { enqueueJob } from "@/lib/queue";
 import { settleBatchMembership, triggerDailyExtraction } from "@/services/sync/batch";
+import { insertChunksForSource } from "@/services/search/ingest";
 import { planAttachmentExtraction } from "./extract";
 import { parseAttachmentText } from "./parse";
 import { attachmentStoragePath, uploadAttachmentBytes } from "./storage";
@@ -46,7 +47,13 @@ type ConnectorRow = Pick<
 type PendingAttachmentRow = Pick<
   Database["public"]["Tables"]["event_attachments"]["Row"],
   "id" | "normalized_event_id" | "provider_attachment_id" | "filename" | "mime_type" | "size_bytes" | "download_ref"
->;
+> & {
+  // Embedded via the FK to normalized_events — this attachment's PARENT
+  // event's own occurred_at/resource_url, used to stamp its search_chunks
+  // rows with when the file was actually SHARED, not when it happened to
+  // get parsed (see insertChunksForSource's call site in processOne).
+  normalized_events: Pick<Database["public"]["Tables"]["normalized_events"]["Row"], "occurred_at" | "resource_url"> | null;
+};
 
 export interface RunAttachmentExtractionResult {
   status: "succeeded" | "failed" | "skipped";
@@ -144,7 +151,7 @@ export async function runAttachmentExtraction(
 
     const { data: pending, error: pendingError } = await service
       .from("event_attachments")
-      .select("id, normalized_event_id, provider_attachment_id, filename, mime_type, size_bytes, download_ref")
+      .select("id, normalized_event_id, provider_attachment_id, filename, mime_type, size_bytes, download_ref, normalized_events(occurred_at, resource_url)")
       .eq("project_connector_id", integration.id)
       .eq("status", "pending")
       .order("created_at", { ascending: true })
@@ -153,15 +160,27 @@ export async function runAttachmentExtraction(
 
     const deadline = createDeadline(FETCH_BUDGET_MS);
     let processed = 0;
+    let chunksPending = 0;
 
     for (const attachment of (pending ?? []) as PendingAttachmentRow[]) {
       if (deadline.remainingMs() < PER_ATTACHMENT_RESERVE_MS) break;
-      await processOne(service, connector, credentials, integration, attachment, {
+      chunksPending += await processOne(service, connector, credentials, integration, attachment, {
         deadline,
         maxAttachmentsPerRun,
         extractionsSoFar: processed,
       });
       processed++;
+    }
+
+    // Independent of the chained-vs-terminal branching below, same
+    // reasoning as run-sync.ts's own embed enqueue: nothing downstream of
+    // this job waits on embeddings, so this fires as soon as there's
+    // anything to embed rather than only once the whole attachment backlog
+    // drains.
+    if (chunksPending > 0) {
+      await enqueueJob("/api/jobs/embed", { clientSpaceId: integration.client_space_id }).catch((err) => {
+        console.error(`[attachments] failed to enqueue embed job for client space ${integration.client_space_id}:`, err);
+      });
     }
 
     const { count: remainingCount } = await service
@@ -214,7 +233,7 @@ async function processOne(
   integration: ConnectorRow,
   attachment: PendingAttachmentRow,
   budget: { deadline: ReturnType<typeof createDeadline>; maxAttachmentsPerRun: number; extractionsSoFar: number },
-): Promise<void> {
+): Promise<number> {
   const plan = planAttachmentExtraction(
     {
       mimeType: attachment.mime_type ?? undefined,
@@ -235,7 +254,7 @@ async function processOne(
       .update({ status: "skipped", skip_reason: plan.reason })
       .eq("id", attachment.id)
       .eq("status", "pending");
-    return;
+    return 0;
   }
 
   // downloadAttachment is guaranteed to exist by the caller (getConnector's
@@ -247,7 +266,7 @@ async function processOne(
       .update({ status: "failed", error: "download failed or returned no data" })
       .eq("id", attachment.id)
       .eq("status", "pending");
-    return;
+    return 0;
   }
 
   const storagePath = attachmentStoragePath({
@@ -282,7 +301,7 @@ async function processOne(
       })
       .eq("id", attachment.id)
       .eq("status", "pending");
-    return;
+    return 0;
   }
 
   await service
@@ -296,4 +315,19 @@ async function processOne(
     })
     .eq("id", attachment.id)
     .eq("status", "pending");
+
+  // Stamped with the PARENT EVENT's occurred_at/resource_url, not extraction
+  // time — this is when the file was actually shared, which is what keeps
+  // search_chunks_space_time_idx meaningful for attachment-sourced chunks.
+  return insertChunksForSource(service, {
+    clientSpaceId: integration.client_space_id,
+    projectId: integration.project_id,
+    sourceKind: "event_attachment",
+    sourceId: attachment.id,
+    provider: integration.provider,
+    occurredAt: attachment.normalized_events?.occurred_at ?? new Date().toISOString(),
+    title: attachment.filename,
+    sourceUrl: attachment.normalized_events?.resource_url,
+    text: parsed.text,
+  });
 }

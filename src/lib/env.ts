@@ -23,6 +23,21 @@ const llmSchema = z.object({
 });
 
 /**
+ * OpenAI credential for EMBEDDINGS (services/search/embed.ts,
+ * text-embedding-3-small) — unconditionally required, independent of
+ * llmSchema/LLM_PROVIDER above. Retrieval-augmented extraction always
+ * embeds via OpenAI even when the chat/extraction provider is Anthropic,
+ * so this is its own concern, not folded into llmSchema.
+ *
+ * Same OPENAI_API_KEY env var llmSchema will also gain once a second chat
+ * provider exists — OpenAI issues one key per project, so there's no reason
+ * to ask for two. embeddingEnv() is what embed.ts actually calls.
+ */
+const embeddingSchema = z.object({
+  OPENAI_API_KEY: z.string().min(1),
+});
+
+/**
  * Self-hosted Nango (see NANGO_MIGRATION_LOG.md) — owns the OAuth handshake
  * and token storage entirely now for the Slack and Google CONNECTORS
  * (distinct from Google *sign-in*, which is Supabase Auth and never reads
@@ -37,6 +52,7 @@ const nangoSchema = z.object({
 const serverSchema = supabaseServerSchema
   .extend(cronSchema.shape)
   .extend(llmSchema.shape)
+  .extend(embeddingSchema.shape)
   .extend(nangoSchema.shape);
 
 const publicSchema = z.object({
@@ -96,6 +112,13 @@ export function cronEnv() {
 /** Just the LLM provider config. */
 export function llmEnv() {
   return parseWith(llmSchema, "LLM");
+}
+
+/** Just the OpenAI embeddings credential — always required, independent of
+ * which chat provider llmEnv() resolves. Call this from services/search/
+ * embed.ts, never llmEnv(), which has no opinion on embeddings at all. */
+export function embeddingEnv() {
+  return parseWith(embeddingSchema, "embedding");
 }
 
 /** Just the self-hosted Nango server URL + secret key. Never import from a

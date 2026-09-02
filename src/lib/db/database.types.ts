@@ -7,31 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       audit_logs: {
@@ -990,7 +965,7 @@ export type Database = {
           embed_error: string | null
           embed_status: Database["public"]["Enums"]["embed_status"]
           embedded_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           fts: unknown
           id: string
@@ -1013,7 +988,7 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
@@ -1036,7 +1011,7 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
@@ -1439,7 +1414,7 @@ export type Database = {
           dedupe_hash: string
           description: string | null
           due_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           embedding_src_hash: string | null
           for_date: string
@@ -1467,7 +1442,7 @@ export type Database = {
           dedupe_hash: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date: string
@@ -1495,7 +1470,7 @@ export type Database = {
           dedupe_hash?: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date?: string
@@ -1941,6 +1916,30 @@ export type Database = {
       }
       manageable_client_space_ids: { Args: never; Returns: string[] }
       manageable_project_ids: { Args: never; Returns: string[] }
+      match_search_chunks: {
+        Args: {
+          p_client_space_id: string
+          p_embedding: string
+          p_embedding_model?: string
+          p_exclude_source_ids?: string[]
+          p_limit?: number
+          p_max_distance?: number
+          p_one_per_source?: boolean
+          p_project_id?: string
+        }
+        Returns: {
+          chunk_id: string
+          citable_event_id: string
+          content: string
+          distance: number
+          occurred_at: string
+          provider: Database["public"]["Enums"]["connector_provider"]
+          source_id: string
+          source_kind: Database["public"]["Enums"]["chunk_source"]
+          source_url: string
+          title: string
+        }[]
+      }
       prune_event_attachments: {
         Args: { p_older_than_days?: number }
         Returns: {
@@ -2119,9 +2118,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {
       chunk_source: [
