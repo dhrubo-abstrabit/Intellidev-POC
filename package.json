@@ -36,7 +36,8 @@
     "db:contract": "pnpm --filter @intellidev/control-plane run db:contract",
     "dev:seed": "pnpm --filter @intellidev/control-plane run dev:seed",
     "task": "pnpm --filter @intellidev/control-plane run task",
-    "control-plane:push": "pnpm --filter @intellidev/infra-aws run push-control-plane"
+    "control-plane:push": "pnpm --filter @intellidev/infra-aws run push-control-plane",
+    "seat:connect": "pnpm --filter @intellidev/control-plane run seat:connect"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

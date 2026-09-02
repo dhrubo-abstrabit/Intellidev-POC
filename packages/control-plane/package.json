@@ -18,7 +18,8 @@
     "db:new": "drizzle-kit generate --custom --name",
     "db:contract": "tsx scripts/db-contract.ts",
     "dev:seed": "tsx scripts/dev-seed.ts",
-    "task": "tsx scripts/task-cli.ts"
+    "task": "tsx scripts/task-cli.ts",
+    "seat:connect": "tsx scripts/connect-seat.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ecs": "^3.1114.0",

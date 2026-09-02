@@ -11,126 +11,396 @@
     -->
     <style>
       :root {
-        --app: #ffffff; --main: #ffffff; --panel: #fafbfa; --card: #ffffff;
-        --inset: #f5f7f5; --field: #f5f7f5; --input: #f2f5f2; --chip: #f2f5f2;
-        --hover: #f1f4f1; --active: #e9f1eb; --btn2: #f0f4f1; --btn2h: #e4ece7;
-        --bd-soft: #e9ede9; --bd-strong: #ccd5ce; --bd-hover: #a5b6aa; --bd-input: #d8dfd9;
-        --bd-danger: #f0c8c4; --bd-warn: #e9d9a6;
-        --fg: #10201a; --fg2: #31403a; --fg3: #56655d; --fg4: #697870;
-        --green: #12915a; --green2: #0f7a4b; --green-bd: #2f7d4f; --on-green: #ffffff;
-        --amber: #b06a08; --blue: #2563eb; --red: #d13b3b;
-        --sans: Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
-        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        --app: #ffffff;
+        --main: #ffffff;
+        --panel: #fafbfa;
+        --card: #ffffff;
+        --inset: #f5f7f5;
+        --field: #f5f7f5;
+        --input: #f2f5f2;
+        --chip: #f2f5f2;
+        --hover: #f1f4f1;
+        --active: #e9f1eb;
+        --btn2: #f0f4f1;
+        --btn2h: #e4ece7;
+        --bd-soft: #e9ede9;
+        --bd-strong: #ccd5ce;
+        --bd-hover: #a5b6aa;
+        --bd-input: #d8dfd9;
+        --bd-danger: #f0c8c4;
+        --bd-warn: #e9d9a6;
+        --fg: #10201a;
+        --fg2: #31403a;
+        --fg3: #56655d;
+        --fg4: #697870;
+        --green: #12915a;
+        --green2: #0f7a4b;
+        --green-bd: #2f7d4f;
+        --on-green: #ffffff;
+        --amber: #b06a08;
+        --blue: #2563eb;
+        --red: #d13b3b;
+        --sans: Manrope, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       :root[data-theme='dark'] {
-        --app: #0d100e; --main: #0c100e; --panel: #0e1210; --card: #121614;
-        --inset: #0f1311; --field: #161a18; --input: #141816; --chip: #171c19;
-        --hover: #191e1b; --active: #1a211d; --btn2: #1f2724; --btn2h: #28332e;
-        --bd-soft: #1d2320; --bd-strong: #2a302c; --bd-hover: #3a463f; --bd-input: #262d29;
-        --bd-danger: #3d2725; --bd-warn: #3a3524;
-        --fg: #e6ece8; --fg2: #c6d0ca; --fg3: #9aa8a1; --fg4: #7f8a84;
-        --green: #4ade80; --green2: #7dd3a0; --green-bd: #3d9a63; --on-green: #06210f;
-        --amber: #f59e0b; --blue: #4c8dff; --red: #f87171;
+        --app: #0d100e;
+        --main: #0c100e;
+        --panel: #0e1210;
+        --card: #121614;
+        --inset: #0f1311;
+        --field: #161a18;
+        --input: #141816;
+        --chip: #171c19;
+        --hover: #191e1b;
+        --active: #1a211d;
+        --btn2: #1f2724;
+        --btn2h: #28332e;
+        --bd-soft: #1d2320;
+        --bd-strong: #2a302c;
+        --bd-hover: #3a463f;
+        --bd-input: #262d29;
+        --bd-danger: #3d2725;
+        --bd-warn: #3a3524;
+        --fg: #e6ece8;
+        --fg2: #c6d0ca;
+        --fg3: #9aa8a1;
+        --fg4: #7f8a84;
+        --green: #4ade80;
+        --green2: #7dd3a0;
+        --green-bd: #3d9a63;
+        --on-green: #06210f;
+        --amber: #f59e0b;
+        --blue: #4c8dff;
+        --red: #f87171;
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
-        margin: 0; background: var(--app); color: var(--fg);
-        font-family: var(--sans); font-size: 14px; line-height: 1.5;
+        margin: 0;
+        background: var(--app);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
         -webkit-font-smoothing: antialiased;
       }
       header {
-        display: flex; align-items: center; gap: 12px;
-        padding: 14px 20px; border-bottom: 1px solid var(--bd-soft); background: var(--panel);
-        position: sticky; top: 0; z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--bd-soft);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 5;
       }
-      header h1 { font-size: 15px; margin: 0; letter-spacing: -0.01em; }
-      header .spacer { flex: 1; }
-      .meta { font-family: var(--mono); font-size: 11px; color: var(--fg4); }
-      .layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: calc(100vh - 53px); }
-      @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
-      .side { border-right: 1px solid var(--bd-soft); background: var(--panel); padding: 16px; }
-      .main { padding: 16px 20px; min-width: 0; }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      header .spacer {
+        flex: 1;
+      }
+      .meta {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg4);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 380px minmax(0, 1fr);
+        min-height: calc(100vh - 53px);
+      }
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      .side {
+        border-right: 1px solid var(--bd-soft);
+        background: var(--panel);
+        padding: 16px;
+      }
+      .main {
+        padding: 16px 20px;
+        min-width: 0;
+      }
       h2 {
-        font-family: var(--mono); font-size: 11px; text-transform: uppercase;
-        letter-spacing: 0.11em; color: var(--fg3); margin: 0 0 10px;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.11em;
+        color: var(--fg3);
+        margin: 0 0 10px;
       }
-      label { display: block; font-size: 12px; color: var(--fg3); margin: 10px 0 4px; }
-      input, textarea, select {
-        width: 100%; padding: 8px 10px; font: inherit; color: var(--fg);
-        background: var(--input); border: 1px solid var(--bd-input); border-radius: 6px;
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--fg3);
+        margin: 10px 0 4px;
       }
-      textarea { min-height: 64px; resize: vertical; font-family: inherit; }
-      input:focus, textarea:focus, select:focus { outline: 2px solid var(--green-bd); outline-offset: 1px; }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        padding: 8px 10px;
+        font: inherit;
+        color: var(--fg);
+        background: var(--input);
+        border: 1px solid var(--bd-input);
+        border-radius: 6px;
+      }
+      textarea {
+        min-height: 64px;
+        resize: vertical;
+        font-family: inherit;
+      }
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: 2px solid var(--green-bd);
+        outline-offset: 1px;
+      }
       button {
-        font: inherit; font-weight: 600; padding: 9px 14px; border-radius: 6px; cursor: pointer;
-        background: var(--green); color: var(--on-green); border: 1px solid var(--green-bd);
+        font: inherit;
+        font-weight: 600;
+        padding: 9px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        background: var(--green);
+        color: var(--on-green);
+        border: 1px solid var(--green-bd);
       }
-      button:hover:not(:disabled) { background: var(--green2); }
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-      button.secondary { background: var(--btn2); color: var(--fg); border-color: var(--bd-strong); }
-      button.secondary:hover:not(:disabled) { background: var(--btn2h); }
-      .row { display: flex; gap: 8px; align-items: center; }
-      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
-      .dot.ok { background: var(--green); }
-      .dot.unauthorized { background: var(--amber); }
-      .dot.error { background: var(--red); }
-      .dot.unknown { background: var(--fg5); }
-      .srv { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0;
-             border-bottom: 1px solid var(--bd-soft); }
-      .srv:last-child { border-bottom: 0; }
-      .srv .grow { flex: 1; min-width: 0; }
-      .srv .name { font-weight: 600; font-size: 13px; }
-      .srv .meta { color: var(--fg3); font-size: 12px; margin: 2px 0 0;
-                   overflow-wrap: anywhere; }
-      .srv button { padding: 3px 8px; font-size: 12px; font-weight: 500; }
-      .checks label { display: flex; gap: 7px; align-items: center; font-weight: 400;
-                      margin: 0 0 5px; text-transform: none; letter-spacing: 0; font-size: 13px;
-                      color: var(--fg); }
-      .checks input { width: auto; margin: 0; }
+      button:hover:not(:disabled) {
+        background: var(--green2);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: var(--btn2);
+        color: var(--fg);
+        border-color: var(--bd-strong);
+      }
+      button.secondary:hover:not(:disabled) {
+        background: var(--btn2h);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        flex: none;
+      }
+      .dot.ok {
+        background: var(--green);
+      }
+      .dot.unauthorized {
+        background: var(--amber);
+      }
+      .dot.error {
+        background: var(--red);
+      }
+      .dot.unknown {
+        background: var(--fg5);
+      }
+      .srv {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .srv:last-child {
+        border-bottom: 0;
+      }
+      .srv .grow {
+        flex: 1;
+        min-width: 0;
+      }
+      .srv .name {
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .srv .meta {
+        color: var(--fg3);
+        font-size: 12px;
+        margin: 2px 0 0;
+        overflow-wrap: anywhere;
+      }
+      .srv button {
+        padding: 3px 8px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .checks label {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        font-weight: 400;
+        margin: 0 0 5px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+        color: var(--fg);
+      }
+      .checks input {
+        width: auto;
+        margin: 0;
+      }
       .card {
-        background: var(--card); border: 1px solid var(--bd-soft); border-radius: 8px;
-        padding: 12px; margin-bottom: 8px;
+        background: var(--card);
+        border: 1px solid var(--bd-soft);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 8px;
       }
-      .task { cursor: pointer; }
-      .task:hover { border-color: var(--bd-hover); background: var(--hover); }
-      .task.selected { border-color: var(--green-bd); background: var(--active); }
-      .task h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
-      .task p { margin: 0; font-size: 12px; color: var(--fg3); }
+      .task {
+        cursor: pointer;
+      }
+      .task:hover {
+        border-color: var(--bd-hover);
+        background: var(--hover);
+      }
+      .task.selected {
+        border-color: var(--green-bd);
+        background: var(--active);
+      }
+      .task h3 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .task p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--fg3);
+      }
       /* State is encoded in form as well as colour: a pill plus a dot, so it reads without
          relying on hue alone. */
       .pill {
-        display: inline-flex; align-items: center; gap: 5px;
-        font-family: var(--mono); font-size: 10px; text-transform: uppercase;
-        letter-spacing: 0.07em; padding: 2px 7px; border-radius: 999px;
-        background: var(--chip); border: 1px solid var(--bd-strong); color: var(--fg3);
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--chip);
+        border: 1px solid var(--bd-strong);
+        color: var(--fg3);
       }
-      .pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-      .pill.running, .pill.dispatched, .pill.provisioning { color: var(--green); border-color: var(--green-bd); }
-      .pill.succeeded, .pill.in_review, .pill.done { color: var(--green); border-color: var(--green-bd); }
-      .pill.failed, .pill.blocked { color: var(--red); border-color: var(--bd-danger); }
-      .pill.waiting_capacity, .pill.parked { color: var(--amber); border-color: var(--bd-warn); }
-      .stages { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+      .pill::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .pill.running,
+      .pill.dispatched,
+      .pill.provisioning {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .pill.succeeded,
+      .pill.in_review,
+      .pill.done {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .pill.failed,
+      .pill.blocked {
+        color: var(--red);
+        border-color: var(--bd-danger);
+      }
+      .pill.waiting_capacity,
+      .pill.parked {
+        color: var(--amber);
+        border-color: var(--bd-warn);
+      }
+      .stages {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 10px 0;
+      }
       .stage {
-        font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 5px;
-        background: var(--inset); border: 1px solid var(--bd-soft); color: var(--fg4);
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 5px;
+        background: var(--inset);
+        border: 1px solid var(--bd-soft);
+        color: var(--fg4);
       }
-      .stage.active { border-color: var(--green-bd); color: var(--green); background: var(--active); }
-      .stage.passed { color: var(--green); border-color: var(--green-bd); }
-      .stage.failed { color: var(--red); border-color: var(--bd-danger); }
+      .stage.active {
+        border-color: var(--green-bd);
+        color: var(--green);
+        background: var(--active);
+      }
+      .stage.passed {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .stage.failed {
+        color: var(--red);
+        border-color: var(--bd-danger);
+      }
       #log {
-        font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
-        background: var(--inset); border: 1px solid var(--bd-soft); border-radius: 8px;
-        padding: 10px 12px; height: calc(100vh - 320px); min-height: 240px;
-        overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        line-height: 1.65;
+        background: var(--inset);
+        border: 1px solid var(--bd-soft);
+        border-radius: 8px;
+        padding: 10px 12px;
+        height: calc(100vh - 320px);
+        min-height: 240px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
-      #log .seq { color: var(--fg4); }
-      #log .st { color: var(--blue); }
-      #log .ok { color: var(--green); }
-      #log .bad { color: var(--red); }
-      #log .warn { color: var(--amber); }
-      .empty { color: var(--fg4); font-size: 13px; padding: 20px 0; }
-      a { color: var(--green); }
-      .hint { font-size: 11px; color: var(--fg4); margin-top: 6px; }
+      #log .seq {
+        color: var(--fg4);
+      }
+      #log .st {
+        color: var(--blue);
+      }
+      #log .ok {
+        color: var(--green);
+      }
+      #log .bad {
+        color: var(--red);
+      }
+      #log .warn {
+        color: var(--amber);
+      }
+      .empty {
+        color: var(--fg4);
+        font-size: 13px;
+        padding: 20px 0;
+      }
+      a {
+        color: var(--green);
+      }
+      .hint {
+        font-size: 11px;
+        color: var(--fg4);
+        margin-top: 6px;
+      }
     </style>
   </head>
   <body>
@@ -147,7 +417,11 @@
         <h2>New task</h2>
         <form id="form">
           <label for="repoUrl">Repository</label>
-          <input id="repoUrl" required placeholder="/path/to/origin.git or https://github.com/me/repo" />
+          <input
+            id="repoUrl"
+            required
+            placeholder="/path/to/origin.git or https://github.com/me/repo"
+          />
           <label for="title">Title</label>
           <input id="title" required placeholder="Add a hello function" />
           <label for="description">Description</label>
@@ -174,7 +448,9 @@
         <div id="loginPanel" class="card" hidden style="margin-top: 8px">
           <div class="name" id="loginTitle"></div>
           <p class="hint" id="loginHint"></p>
-          <p style="margin: 8px 0"><a id="loginLink" target="_blank" rel="noopener noreferrer"></a></p>
+          <p style="margin: 8px 0">
+            <a id="loginLink" target="_blank" rel="noopener noreferrer"></a>
+          </p>
           <div id="loginCodeRow" hidden>
             <label for="loginCode">Code from that page</label>
             <input id="loginCode" placeholder="paste it here" />
@@ -188,7 +464,9 @@
 
         <h2 style="margin-top: 22px">
           MCP servers
-          <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">Add</button>
+          <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">
+            Add
+          </button>
         </h2>
         <div id="servers"><p class="empty">Nothing connected.</p></div>
 
@@ -209,7 +487,11 @@
           </select>
           <div id="sTokenRow" hidden>
             <label for="sToken">Bearer token</label>
-            <input id="sToken" type="password" placeholder="stored locally, never sent to the agent" />
+            <input
+              id="sToken"
+              type="password"
+              placeholder="stored locally, never sent to the agent"
+            />
           </div>
           <div id="sScopeRow">
             <label for="sScope">Scopes (space separated)</label>
@@ -234,9 +516,123 @@
 
     <script type="module">
       const $ = (id) => document.getElementById(id)
+
+      /**
+       * Sign in, and make every later request carry the token.
+       *
+       * `fetch` is wrapped once rather than the twenty call sites being edited, because the
+       * failure mode of missing one is a 401 that reads as a broken feature rather than as a
+       * missing header — which is exactly what happened when the gate was added and this page
+       * had no login at all.
+       *
+       * The token lives in `sessionStorage`, not `localStorage`: it is a bearer credential, and
+       * a tab closing should end the session rather than leave it on disk indefinitely.
+       */
+      const auth = await (await fetch('/auth-config')).json()
+
+      const TOKEN_KEY = 'intellidev.token'
+      const nativeFetch = window.fetch.bind(window)
+
+      window.fetch = async (input, init = {}) => {
+        const url = String(typeof input === 'string' ? input : (input.url ?? ''))
+        const token = sessionStorage.getItem(TOKEN_KEY)
+        // Only our own API, and never the ungated config route — sending a stale token to
+        // Supabase's own endpoints would be wrong, and to /auth-config pointless.
+        const ours = url.startsWith('/api/') || url.startsWith('/internal/')
+        const res = await nativeFetch(input, {
+          ...init,
+          headers: {
+            ...(init.headers ?? {}),
+            ...(ours && token ? { authorization: `Bearer ${token}` } : {}),
+          },
+        })
+        if (res.status === 401 && ours) {
+          // The token expired mid-session. Signing in again is the only remedy, so ask rather
+          // than let every panel render empty.
+          sessionStorage.removeItem(TOKEN_KEY)
+          location.reload()
+        }
+        return res
+      }
+
+      async function signIn(email, password) {
+        const res = await nativeFetch(`${auth.supabaseUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: { apikey: auth.supabaseAnonKey, 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body.error_description ?? body.msg ?? 'sign-in failed')
+        }
+        const { access_token } = await res.json()
+        sessionStorage.setItem(TOKEN_KEY, access_token)
+      }
+
+      /**
+       * Blocks the page until there is a token.
+       *
+       * A form drawn here rather than a separate route, so the whole app stays one file and the
+       * rest of the script can assume it is authenticated by the time it runs.
+       */
+      async function requireSignIn() {
+        if (!auth.required) return
+        // Verify a stored token rather than trusting it: an expired one would otherwise let the
+        // page render and then fail every panel with a 401.
+        if (sessionStorage.getItem(TOKEN_KEY)) {
+          const probe = await fetch('/api/config')
+          if (probe.ok) return
+          sessionStorage.removeItem(TOKEN_KEY)
+        }
+
+        document.body.innerHTML = `
+          <div style="max-width:22rem;margin:6rem auto;font:14px system-ui">
+            <h1 style="font-size:1.1rem;margin-bottom:.25rem">Intellidev</h1>
+            <p style="color:#888;margin-top:0">Sign in to continue.</p>
+            <form id="signin" style="display:grid;gap:.6rem;margin-top:1.25rem">
+              <input id="email" type="email" placeholder="email" autocomplete="username"
+                     required style="padding:.55rem;border:1px solid #ccc;border-radius:6px" />
+              <input id="password" type="password" placeholder="password"
+                     autocomplete="current-password" required
+                     style="padding:.55rem;border:1px solid #ccc;border-radius:6px" />
+              <button type="submit"
+                      style="padding:.55rem;border:0;border-radius:6px;background:#2f7d4f;color:#fff;cursor:pointer">
+                Sign in
+              </button>
+              <p id="err" style="color:#c33;min-height:1.2em;margin:0"></p>
+            </form>
+          </div>`
+
+        await new Promise((resolve) => {
+          $('signin').onsubmit = async (event) => {
+            event.preventDefault()
+            $('err').textContent = ''
+            try {
+              await signIn($('email').value, $('password').value)
+              resolve()
+            } catch (error) {
+              $('err').textContent = String(error.message ?? error)
+            }
+          }
+        })
+        // Reload rather than re-render: the rest of this script has already run against a page
+        // that no longer exists, and re-entering it by hand is how half-initialised state bugs
+        // start.
+        location.reload()
+      }
+
+      await requireSignIn()
       const state = {
-        tasks: [], selected: null, run: null, stream: null, lastSeq: -1,
-        servers: [], presets: [], accounts: [], recipes: [], config: null,
+        tasks: [],
+        selected: null,
+        run: null,
+        stream: null,
+        lastSeq: -1,
+        servers: [],
+        presets: [],
+        accounts: [],
+        recipes: [],
+        config: null,
       }
 
       // --- theme ---------------------------------------------------------------
@@ -285,7 +681,9 @@
       async function loadSeats() {
         const [accounts, recipes, config] = await Promise.all([
           fetch('/api/harness/accounts').then((r) => r.json()),
-          state.recipes.length ? { recipes: state.recipes } : fetch('/api/harness/recipes').then((r) => r.json()),
+          state.recipes.length
+            ? { recipes: state.recipes }
+            : fetch('/api/harness/recipes').then((r) => r.json()),
           fetch('/api/config').then((r) => r.json()),
         ])
         state.accounts = accounts.accounts
@@ -303,7 +701,9 @@
             const viaEnv = !account && state.config?.harnessAuth?.[r.harness]
             const ok = Boolean(account) || viaEnv
             const detail = account
-              ? (account.envVars.length ? account.envVars.join(', ') : account.files.join(', '))
+              ? account.envVars.length
+                ? account.envVars.join(', ')
+                : account.files.join(', ')
               : viaEnv
                 ? 'from the control plane environment'
                 : `run: ${r.command}`
@@ -324,26 +724,32 @@
           })
           .join('')
 
-        $('seats').querySelectorAll('[data-import]').forEach((b) => {
-          b.onclick = async () => {
-            const harness = b.dataset.import
-            const recipe = state.recipes.find((r) => r.harness === harness)
-            const path = prompt(`Import ${harness} credentials from:`, recipe.hostPath)
-            if (!path) return
-            b.disabled = true
-            await connectHarness({ harness, path })
-            b.disabled = false
-          }
-        })
-        $('seats').querySelectorAll('[data-signin]').forEach((b) => {
-          b.onclick = () => void signIn(b.dataset.signin, b)
-        })
-        $('seats').querySelectorAll('[data-forget]').forEach((b) => {
-          b.onclick = async () => {
-            await fetch(`/api/harness/accounts/${b.dataset.forget}`, { method: 'DELETE' })
-            await loadSeats()
-          }
-        })
+        $('seats')
+          .querySelectorAll('[data-import]')
+          .forEach((b) => {
+            b.onclick = async () => {
+              const harness = b.dataset.import
+              const recipe = state.recipes.find((r) => r.harness === harness)
+              const path = prompt(`Import ${harness} credentials from:`, recipe.hostPath)
+              if (!path) return
+              b.disabled = true
+              await connectHarness({ harness, path })
+              b.disabled = false
+            }
+          })
+        $('seats')
+          .querySelectorAll('[data-signin]')
+          .forEach((b) => {
+            b.onclick = () => void signIn(b.dataset.signin, b)
+          })
+        $('seats')
+          .querySelectorAll('[data-forget]')
+          .forEach((b) => {
+            b.onclick = async () => {
+              await fetch(`/api/harness/accounts/${b.dataset.forget}`, { method: 'DELETE' })
+              await loadSeats()
+            }
+          })
       }
 
       /**
@@ -442,7 +848,9 @@
       async function loadServers() {
         const [servers, presets] = await Promise.all([
           fetch('/api/mcp/servers').then((r) => r.json()),
-          state.presets.length ? { presets: state.presets } : fetch('/api/mcp/presets').then((r) => r.json()),
+          state.presets.length
+            ? { presets: state.presets }
+            : fetch('/api/mcp/presets').then((r) => r.json()),
         ])
         state.servers = servers.servers
         state.presets = presets.presets
@@ -462,11 +870,14 @@
             // tool list has been proven, so the button says Verify rather than Connect.
             const needsAuth = !s.authorized
             const label = needsAuth ? (s.auth === 'oauth2' ? 'Connect' : 'Add token') : 'Verify'
-            const detail = s.health === 'ok'
-              ? `${s.toolCount ?? 0} tools`
-              : s.lastError
-                ? s.lastError.slice(0, 90)
-                : s.authorized ? 'not verified yet' : 'not connected'
+            const detail =
+              s.health === 'ok'
+                ? `${s.toolCount ?? 0} tools`
+                : s.lastError
+                  ? s.lastError.slice(0, 90)
+                  : s.authorized
+                    ? 'not verified yet'
+                    : 'not connected'
             return `
               <div class="srv">
                 <span class="dot ${s.health}" title="${escape(s.health)}"></span>
@@ -526,7 +937,9 @@
         $('addServer').hidden = true
         $('sPreset').innerHTML =
           '<option value="">Custom…</option>' +
-          state.presets.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
+          state.presets
+            .map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`)
+            .join('')
         $('sId').value = server?.id ?? ''
         $('sName').value = server?.name ?? ''
         $('sUrl').value = server?.url ?? ''
@@ -572,7 +985,9 @@
           name: $('sName').value.trim() || $('sId').value.trim(),
           url: $('sUrl').value.trim(),
           auth: $('sAuth').value,
-          ...($('sAuth').value === 'bearer' && $('sToken').value ? { token: $('sToken').value } : {}),
+          ...($('sAuth').value === 'bearer' && $('sToken').value
+            ? { token: $('sToken').value }
+            : {}),
           ...($('sAuth').value === 'oauth2' && $('sScope').value.trim()
             ? { scope: $('sScope').value.trim() }
             : {}),
@@ -587,7 +1002,8 @@
           const error = await res.json()
           $('serverHint').textContent =
             (error.issues ?? []).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ||
-            error.error || 'could not save'
+            error.error ||
+            'could not save'
           return
         }
         $('serverForm').hidden = true
@@ -633,7 +1049,9 @@
           harness: $('harness').value,
           baseBranch: $('baseBranch').value.trim() || 'main',
         }
-        body.mcpServerIds = [...document.querySelectorAll('.taskServer:checked')].map((c) => c.value)
+        body.mcpServerIds = [...document.querySelectorAll('.taskServer:checked')].map(
+          (c) => c.value,
+        )
         const res = await fetch('/api/tasks', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -642,9 +1060,9 @@
         $('create').disabled = false
         if (!res.ok) {
           const error = await res.json()
-          $('formHint').textContent = (error.issues ?? [])
-            .map((i) => `${i.path.join('.')}: ${i.message}`)
-            .join('; ') || 'could not create task'
+          $('formHint').textContent =
+            (error.issues ?? []).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ||
+            'could not create task'
           return
         }
         const { task } = await res.json()
@@ -732,7 +1150,11 @@
         if (event.type === 'stage.entered') markStage(event.stage, 'active')
         if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
         const line = describe(event)
-        if (line) append(line.cls, `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`)
+        if (line)
+          append(
+            line.cls,
+            `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`,
+          )
       }
 
       function markStage(stage, cls) {
@@ -751,35 +1173,81 @@
       function describe(e) {
         const d = e.data ?? {}
         switch (e.type) {
-          case 'assistant.delta': return null
-          case 'command.output': return null
-          case 'run.provisioning': return { cls: '', text: 'provisioning' }
-          case 'cache.restored': return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
-          case 'worktree.ready': return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
-          case 'run.started': return { cls: 'ok', text: `started with ${d.harness}` }
-          case 'stage.entered': return { cls: 'st', text: `── attempt ${d.attempt}` }
-          case 'stage.exited': return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
-          case 'assistant.message': return { cls: '', text: `say: ${firstLine(d.text)}` }
-          case 'thinking.started': return { cls: '', text: 'thinking' }
-          case 'tool.call': return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
-          case 'tool.result': return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
-          case 'tool.denied': return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
-          case 'seat.authenticated': return { cls: 'ok', text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}` }
-          case 'tool.server_connected': return { cls: 'ok', text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}` }
-          case 'file.changed': return { cls: '', text: `${d.change} ${d.path}` }
-          case 'diff.produced': return { cls: '', text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}` }
-          case 'gate.evaluated': return { cls: d.passed ? 'ok' : 'bad', text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}` }
-          case 'gate.blocked': return { cls: 'warn', text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}` }
-          case 'git.branch_created': return { cls: '', text: `branch ${d.branch}` }
-          case 'git.committed': return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
-          case 'git.pushed': return { cls: 'ok', text: `pushed ${d.branch}` }
-          case 'pr.opened': return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
+          case 'assistant.delta':
+            return null
+          case 'command.output':
+            return null
+          case 'run.provisioning':
+            return { cls: '', text: 'provisioning' }
+          case 'cache.restored':
+            return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
+          case 'worktree.ready':
+            return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
+          case 'run.started':
+            return { cls: 'ok', text: `started with ${d.harness}` }
+          case 'stage.entered':
+            return { cls: 'st', text: `── attempt ${d.attempt}` }
+          case 'stage.exited':
+            return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
+          case 'assistant.message':
+            return { cls: '', text: `say: ${firstLine(d.text)}` }
+          case 'thinking.started':
+            return { cls: '', text: 'thinking' }
+          case 'tool.call':
+            return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
+          case 'tool.result':
+            return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
+          case 'tool.denied':
+            return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'seat.authenticated':
+            return {
+              cls: 'ok',
+              text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}`,
+            }
+          case 'tool.server_connected':
+            return {
+              cls: 'ok',
+              text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}`,
+            }
+          case 'file.changed':
+            return { cls: '', text: `${d.change} ${d.path}` }
+          case 'diff.produced':
+            return {
+              cls: '',
+              text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}`,
+            }
+          case 'gate.evaluated':
+            return {
+              cls: d.passed ? 'ok' : 'bad',
+              text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}`,
+            }
+          case 'gate.blocked':
+            return {
+              cls: 'warn',
+              text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}`,
+            }
+          case 'git.branch_created':
+            return { cls: '', text: `branch ${d.branch}` }
+          case 'git.committed':
+            return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
+          case 'git.pushed':
+            return { cls: 'ok', text: `pushed ${d.branch}` }
+          case 'pr.opened':
+            return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
           // Labelled as an estimate, because for seat auth it is derived rather than billed.
-          case 'usage.updated': return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
-          case 'error': return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
-          case 'harness.crashed': return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
-          case 'run.finished': return { cls: d.outcome === 'succeeded' ? 'ok' : 'bad', text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}` }
-          default: return { cls: '', text: e.type }
+          case 'usage.updated':
+            return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
+          case 'error':
+            return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
+          case 'harness.crashed':
+            return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
+          case 'run.finished':
+            return {
+              cls: d.outcome === 'succeeded' ? 'ok' : 'bad',
+              text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}`,
+            }
+          default:
+            return { cls: '', text: e.type }
         }
       }
 

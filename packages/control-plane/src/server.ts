@@ -214,6 +214,24 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { status: 'ok' }
   })
 
+  /**
+   * What a browser needs *before* it can authenticate.
+   *
+   * Ungated by necessity: the page cannot fetch its sign-in configuration from a route that
+   * requires sign-in. Deliberately outside `/api/*` so that is structural rather than an
+   * exception someone has to remember.
+   *
+   * The anon key is publishable — it identifies the project and grants nothing on its own,
+   * which is why Supabase ships it to browsers. Every meaningful permission still comes from a
+   * user's own token and the RLS policies behind it. Nothing else is exposed here.
+   */
+  app.get('/auth-config', async () => ({
+    supabaseUrl: process.env['SUPABASE_URL'] ?? null,
+    supabaseAnonKey: process.env['SUPABASE_ANON_KEY'] ?? null,
+    // So the page can skip the login entirely on a local loop that has no auth configured.
+    required: Boolean(opts.auth),
+  }))
+
   app.get('/api/config', async () => ({
     mode: opts.dispatch.mode,
     image: opts.dispatch.image,
