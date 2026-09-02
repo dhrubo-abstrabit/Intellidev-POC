@@ -201,6 +201,7 @@ additional_redirect_urls = [
   "https://snaking-skintight-lumping.ngrok-free.dev/**",
   "https://intellidev-hblc6h3cc-dhrubobs-abstrabit.vercel.app/**",
   "https://intellidev-hcknelcae-dhrubobs-abstrabit.vercel.app/**",
+  "https://main.d2xcwkg6d064g.amplifyapp.com/**"
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
