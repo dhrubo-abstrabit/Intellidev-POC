@@ -186,7 +186,24 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   app.get('/', async (_request, reply) => {
     const html = await readFile(join(publicDir, 'index.html'), 'utf8')
-    return reply.type('text/html; charset=utf-8').send(html)
+    return (
+      reply
+        .type('text/html; charset=utf-8')
+        /**
+         * Never cached.
+         *
+         * The page is read from disk on every request precisely so a change is live without a
+         * restart — but with no cache headers a browser is free to keep an old copy for as long
+         * as it likes, and it does. Adding the sign-in screen produced exactly that: the code
+         * was served, the browser showed the version from before it existed, and the symptom
+         * looked like the feature not working.
+         *
+         * There is nothing to gain from caching here. It is a single small document served to a
+         * handful of people, and staleness costs far more than the bytes.
+         */
+        .header('cache-control', 'no-store, must-revalidate')
+        .send(html)
+    )
   })
 
   /**
