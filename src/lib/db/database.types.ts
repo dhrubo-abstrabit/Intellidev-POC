@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
+  }
   public: {
     Tables: {
       audit_logs: {
@@ -1200,7 +1205,7 @@ export type Database = {
           embed_error: string | null
           embed_status: Database["public"]["Enums"]["embed_status"]
           embedded_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           fts: unknown
           id: string
@@ -1223,7 +1228,7 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
@@ -1246,7 +1251,7 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
@@ -1659,7 +1664,7 @@ export type Database = {
           dedupe_hash: string
           description: string | null
           due_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           embedding_src_hash: string | null
           for_date: string
@@ -1682,15 +1687,15 @@ export type Database = {
           assignee_id?: string | null
           assignee_team_member_id?: string | null
           client_space_id: string
-          confidence: number
+          confidence?: number
           created_at?: string
-          dedupe_hash: string
+          dedupe_hash?: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
-          for_date: string
+          for_date?: string
           generated_at?: string
           id?: string
           kind?: Database["public"]["Enums"]["task_kind"]
@@ -1715,7 +1720,7 @@ export type Database = {
           dedupe_hash?: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date?: string
@@ -2171,6 +2176,10 @@ export type Database = {
           workspace_id: string
         }[]
       }
+      current_client_space_ids: { Args: never; Returns: string[] }
+      current_project_ids: { Args: never; Returns: string[] }
+      current_tenant_ids: { Args: never; Returns: string[] }
+      current_workspace_ids: { Args: never; Returns: string[] }
       dispatch_daily_tick: { Args: never; Returns: undefined }
       dispatch_jobs: { Args: never; Returns: undefined }
       enqueue_job: {
@@ -2181,10 +2190,45 @@ export type Database = {
         Args: { p_attempt: number; p_error: string; p_msg_id: number }
         Returns: boolean
       }
+      find_similar_open_tasks: {
+        Args: {
+          p_client_space_id: string
+          p_embedding: string
+          p_limit?: number
+        }
+        Returns: {
+          distance: number
+          task_id: string
+          title: string
+        }[]
+      }
       has_platform_permission: {
         Args: { p_permission: string }
         Returns: boolean
       }
+      has_space_role: {
+        Args: {
+          p_client_space_id: string
+          p_roles: Database["public"]["Enums"]["space_role"][]
+        }
+        Returns: boolean
+      }
+      has_tenant_role: {
+        Args: {
+          p_roles: Database["public"]["Enums"]["tenant_role"][]
+          p_tenant_id: string
+        }
+        Returns: boolean
+      }
+      has_workspace_role: {
+        Args: {
+          p_roles: Database["public"]["Enums"]["workspace_role"][]
+          p_workspace_id: string
+        }
+        Returns: boolean
+      }
+      manageable_client_space_ids: { Args: never; Returns: string[] }
+      manageable_project_ids: { Args: never; Returns: string[] }
       my_permissions: {
         Args: {
           p_scope_id: string
@@ -2432,4 +2476,3 @@ export const Constants = {
     },
   },
 } as const
-
