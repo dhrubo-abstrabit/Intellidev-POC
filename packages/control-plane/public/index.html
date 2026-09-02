@@ -555,7 +555,10 @@
         return res
       }
 
-      async function signIn(email, password) {
+      // Named for what it signs into. The page already has a `signIn(harness, button)` that
+      // starts a harness login, and the collision made the whole module fail to parse — so
+      // nothing ran, and the symptom was every panel rendering empty.
+      async function signInToSupabase(email, password) {
         const res = await nativeFetch(`${auth.supabaseUrl}/auth/v1/token?grant_type=password`, {
           method: 'POST',
           headers: { apikey: auth.supabaseAnonKey, 'content-type': 'application/json' },
@@ -608,7 +611,7 @@
             event.preventDefault()
             $('err').textContent = ''
             try {
-              await signIn($('email').value, $('password').value)
+              await signInToSupabase($('email').value, $('password').value)
               resolve()
             } catch (error) {
               $('err').textContent = String(error.message ?? error)
