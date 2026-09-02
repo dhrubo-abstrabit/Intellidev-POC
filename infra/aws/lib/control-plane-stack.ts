@@ -214,6 +214,18 @@ export class ControlPlaneStack extends Stack {
           this,
           ssmPath(env.name, 'control-plane', 'supabase-url'),
         ),
+        /**
+         * The App id, which is not a secret — it is printed on the App's own settings page.
+         *
+         * FOUND BY DEPLOYING IT. Only the private key was injected, and `gitHubAppFromEnv`
+         * needs both: with one missing it returns undefined, the App is silently not
+         * configured, and the broker refuses git with "no github app and no token configured"
+         * — after a run has done all its work and reached the push.
+         */
+        GITHUB_APP_ID: ssm.StringParameter.valueForStringParameter(
+          this,
+          ssmPath(env.name, 'control-plane', 'github-app-id'),
+        ),
       },
       secrets: {
         // Injected by ECS from Secrets Manager, so no value passes through a template, a

@@ -122,6 +122,8 @@ describe('the control plane service', () => {
     const container = defs[0]?.Properties?.ContainerDefinitions?.[0]
     const names = (container?.Secrets ?? []).map((s: { Name: string }) => s.Name)
     expect(names).toContain('GITHUB_APP_PRIVATE_KEY')
+    // The key is a secret; the id is not, so it comes from SSM as plain environment. Both are
+    // required — `gitHubAppFromEnv` returns undefined if either is missing.
     expect(names).toContain('SUPABASE_CONNECTION_STRING_SESSION')
 
     // And no value leaked into plain environment. A template is readable to anyone with
@@ -153,6 +155,9 @@ describe('the control plane service', () => {
       'INTELLIDEV_BIND_HOST',
       'SUPABASE_URL',
       'AWS_REGION',
+      // Both halves of the App, or it is silently not configured and every push fails at the
+      // very end of a run that did all its work first.
+      'GITHUB_APP_ID',
     ]) {
       expect(names).toContain(required)
     }
