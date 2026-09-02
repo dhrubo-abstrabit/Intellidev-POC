@@ -15,6 +15,14 @@ export const ActionItemDraftSchema = z.object({
   /** Must be a subset of the ids we handed the model in this run's NEW
    * EVENTS block — validated (not just trusted) before insert. */
   sourceEventIds: z.array(z.string()).default([]),
+  /** Ephemeral per-run labels (e.g. "R2") from the RELATED CONTEXT section
+   * the model is citing as having materially informed this item — never a
+   * real database id. Validated against this run's own label map (built
+   * from the chunks actually retrieved and rendered), never trusted
+   * directly — see fetchRelatedContext/renderRelatedContext and the persist
+   * loop in services/action-items/generate.ts. Same trust posture as
+   * sourceEventIds, different id space. */
+  relatedContextRefs: z.array(z.string()).default([]),
 });
 export type ActionItemDraft = z.infer<typeof ActionItemDraftSchema>;
 
