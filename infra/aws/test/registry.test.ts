@@ -15,24 +15,36 @@ describe('the golden image registry', () => {
   it('is one repository per environment, not per project', () => {
     // A project is a manifest fetched at boot, not a baked layer. Per-project repositories
     // would quietly undo that and make onboarding an image build again.
-    const t = registry()
-    t.resourceCountIs('AWS::ECR::Repository', 1)
-    t.hasResourceProperties('AWS::ECR::Repository', {
-      RepositoryName: resourceName('dev', 'runner'),
-    })
+    //
+    // Asserted on the *names* rather than the count, which is what the rule actually means.
+    // Counting broke the moment the control plane got its own repository — a second image, not
+    // a second project — and a count cannot tell those apart.
+    const names = Object.values(registry().findResources('AWS::ECR::Repository')).map(
+      (r) => r['Properties']?.['RepositoryName'] as string,
+    )
+    expect(new Set(names)).toEqual(
+      new Set([resourceName('dev', 'runner'), resourceName('dev', 'control-plane')]),
+    )
+    // Nothing project-scoped: a name carrying a project id is the shape this forbids.
+    for (const name of names) expect(name).toBe(name.toLowerCase())
+    expect(names.some((n) => /[0-9a-f]{8}-[0-9a-f]{4}/.test(n))).toBe(false)
   })
 
   it('expires untagged images and caps tagged ones', () => {
     const repos = registry().findResources('AWS::ECR::Repository')
-    const policy = JSON.parse(
-      String(Object.values(repos)[0]?.['Properties']?.['LifecyclePolicy']?.['LifecyclePolicyText']),
-    )
-    const rules = policy.rules as Array<Record<string, never>>
-    expect(rules).toHaveLength(2)
-    // Untagged images are rebuild garbage and would otherwise accumulate storage cost.
-    expect(JSON.stringify(rules)).toContain('untagged')
-    // Rollback needs somewhere to go, so tagged images are capped rather than expired.
-    expect(JSON.stringify(rules)).toContain('imageCountMoreThan')
+    // Every repository, not just the first: they are separate precisely so one image's pushes
+    // cannot expire another's, and a rule that only holds for one of them is the bug.
+    for (const repo of Object.values(repos)) {
+      const policy = JSON.parse(
+        String(repo['Properties']?.['LifecyclePolicy']?.['LifecyclePolicyText']),
+      )
+      const rules = policy.rules as Array<Record<string, never>>
+      expect(rules).toHaveLength(2)
+      // Untagged images are rebuild garbage and would otherwise accumulate storage cost.
+      expect(JSON.stringify(rules)).toContain('untagged')
+      // Rollback needs somewhere to go, so tagged images are capped rather than expired.
+      expect(JSON.stringify(rules)).toContain('imageCountMoreThan')
+    }
   })
 
   it('scans on push, since the image vendors three harnesses', () => {

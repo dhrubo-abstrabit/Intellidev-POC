@@ -35,7 +35,8 @@
     "db:verify": "bash db/verify/run.sh",
     "db:contract": "pnpm --filter @intellidev/control-plane run db:contract",
     "dev:seed": "pnpm --filter @intellidev/control-plane run dev:seed",
-    "task": "pnpm --filter @intellidev/control-plane run task"
+    "task": "pnpm --filter @intellidev/control-plane run task",
+    "control-plane:push": "pnpm --filter @intellidev/infra-aws run push-control-plane"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

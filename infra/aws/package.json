@@ -16,7 +16,8 @@
     "smoke": "./scripts/smoke-egress.sh",
     "push": "./scripts/push-image.sh",
     "measure-pull": "./scripts/measure-pull.sh",
-    "push-bundle": "./scripts/push-bundle.sh"
+    "push-bundle": "./scripts/push-bundle.sh",
+    "push-control-plane": "./scripts/push-control-plane.sh"
   },
   "devDependencies": {
     "aws-cdk": "2.1137.0",

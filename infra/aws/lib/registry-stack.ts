@@ -25,6 +25,7 @@ export interface RegistryStackProps extends StackProps {
  */
 export class RegistryStack extends Stack {
   readonly repository: ecr.Repository
+  readonly controlPlaneRepository: ecr.Repository
 
   constructor(scope: Construct, id: string, props: RegistryStackProps) {
     super(scope, id, props)
@@ -58,6 +59,44 @@ export class RegistryStack extends Stack {
           rulePriority: 2,
         },
       ],
+    })
+
+    /**
+     * A second repository, for the control plane's own image.
+     *
+     * Separate from the runner's because the two images have nothing in common: that one
+     * carries three AI harnesses and weighs 1.5 GB because a *run* needs them, this one serves
+     * HTTP and talks to Postgres at 726 MB. Sharing a repository would also mean the lifecycle
+     * rule counting to ten counted both, so pushing the control plane could expire a runner
+     * image something still references.
+     */
+    this.controlPlaneRepository = new ecr.Repository(this, 'ControlPlane', {
+      repositoryName: resourceName(env.name, 'control-plane'),
+      imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.MUTABLE,
+      encryption: ecr.RepositoryEncryption.AES_256,
+      removalPolicy: RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+      lifecycleRules: [
+        {
+          description: 'Expire untagged images quickly; they are rebuild garbage.',
+          tagStatus: ecr.TagStatus.UNTAGGED,
+          maxImageAge: Duration.days(7),
+          rulePriority: 1,
+        },
+        {
+          description: 'Keep the last 10 tagged images, so rollback has somewhere to go.',
+          tagStatus: ecr.TagStatus.ANY,
+          maxImageCount: 10,
+          rulePriority: 2,
+        },
+      ],
+    })
+
+    new ssm.StringParameter(this, 'ControlPlaneRepositoryUriParam', {
+      parameterName: ssmPath(env.name, 'control-plane', 'repository-uri'),
+      stringValue: this.controlPlaneRepository.repositoryUri,
+      description: 'ECR repository for the control plane image. Reference images by digest.',
     })
 
     new ssm.StringParameter(this, 'RepositoryUriParam', {

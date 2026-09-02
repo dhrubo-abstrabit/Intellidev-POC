@@ -109,7 +109,7 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
   const controlPlane = new ControlPlaneStack(app, stackName(config.name, 'ControlPlane'), {
     environment: config,
     vpc: network.vpc,
-    repository: registry.repository,
+    repository: registry.controlPlaneRepository,
     artifacts: artifacts.bucket,
     credentialKey: secrets.key,
     taskEvents: runtime.taskEvents,
