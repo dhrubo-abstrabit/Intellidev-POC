@@ -5,6 +5,7 @@ import { loadAwsConfig } from './aws/config.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
 import { LocalSecretCipher } from './secrets/cipher.js'
+import { KmsSecretCipher } from './secrets/kms-cipher.js'
 import { JwtVerifier } from './auth/jwt.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { FileSeatStore } from './harness/accounts.js'
@@ -18,6 +19,9 @@ import type { DispatchMode } from './dispatch.js'
  * validates the container path. `inline` runs the adapter in this process, which is faster
  * to iterate on. The UI cannot tell them apart, and that is the test.
  */
+/** Where AWS calls go. One definition, shared by the runtime config and the KMS client. */
+const region = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'ap-south-1'
+
 const port = Number(process.env['PORT'] ?? 4000)
 const mode = (process.env['INTELLIDEV_MODE'] ?? 'inline') as DispatchMode
 // Resolved against the repo root, not the cwd: `pnpm --filter` runs this from the package
@@ -87,7 +91,7 @@ const aws =
   mode === 'fargate'
     ? await loadAwsConfig({
         env: process.env['INTELLIDEV_ENV'] ?? 'dev',
-        region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'ap-south-1',
+        region,
       })
     : undefined
 
@@ -208,10 +212,26 @@ const scope = await resolveScope()
  * invisible to a second instance. The cipher is local here: KMS is for the hosted control plane,
  * whose task role holds the key grant — this process deliberately does not.
  */
-const accounts =
-  store instanceof PostgresStore
-    ? store.seats(new LocalSecretCipher(secretPassphrase()))
-    : fileSeats
+/**
+ * How credential material is encrypted.
+ *
+ * KMS wherever a key is configured, which is every deployment; the local cipher only where
+ * there is none. That distinction matters: the local one derives its master key from a
+ * passphrase in the source, so it protects against a database dump and against nothing else. It
+ * is a development convenience, and running a deployment on it would mean the key that guards
+ * every stored credential is a string anyone with the repository can read.
+ *
+ * Both write the same envelope format, so a secret sealed in development can be read in
+ * development and one sealed under KMS can be read under KMS — but not across, by design. A
+ * ciphertext records which key sealed it, and opening it with the wrong one fails loudly rather
+ * than returning something plausible.
+ */
+const credentialKeyArn = process.env['INTELLIDEV_CREDENTIAL_KEY_ARN']
+const cipher = credentialKeyArn
+  ? new KmsSecretCipher(credentialKeyArn, { clientConfig: { region } })
+  : new LocalSecretCipher(secretPassphrase())
+
+const accounts = store instanceof PostgresStore ? store.seats(cipher) : fileSeats
 
 /**
  * Connected MCP servers, project-scoped.
@@ -219,10 +239,7 @@ const accounts =
  * Postgres wherever there is a database, for the same reasons as seats: a file is lost on every
  * deploy, invisible to a second instance, and its refresh guard protects only one process.
  */
-const mcp =
-  store instanceof PostgresStore
-    ? store.mcp(new LocalSecretCipher(secretPassphrase())).for(scope)
-    : fileMcp
+const mcp = store instanceof PostgresStore ? store.mcp(cipher).for(scope) : fileMcp
 
 /**
  * The passphrase the local cipher derives its master key from.
@@ -413,6 +430,7 @@ process.stderr.write(
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
     `  seats   ${connectedSeats.join(', ') || 'no harness connected'}`,
     `  auth    ${auth ? `supabase (${new URL(supabaseUrl!).hostname})` : 'OPEN — no SUPABASE_URL, anyone reaching this port can dispatch'}`,
+    `  crypto  ${credentialKeyArn ? `kms (${credentialKeyArn.split('/').pop()})` : 'local passphrase — development only'}`,
     ``,
   ].join('\n'),
 )

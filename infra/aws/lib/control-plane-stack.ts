@@ -226,6 +226,15 @@ export class ControlPlaneStack extends Stack {
           this,
           ssmPath(env.name, 'control-plane', 'github-app-id'),
         ),
+        /**
+         * The key credential material is sealed under.
+         *
+         * Without it the process falls back to a passphrase compiled into the source, which
+         * protects against a database dump and nothing else — the master key would be a string
+         * anyone with the repository can read. The task role already holds GenerateDataKey and
+         * Decrypt on this key; this is what makes it use them.
+         */
+        INTELLIDEV_CREDENTIAL_KEY_ARN: props.credentialKey.keyArn,
       },
       secrets: {
         // Injected by ECS from Secrets Manager, so no value passes through a template, a

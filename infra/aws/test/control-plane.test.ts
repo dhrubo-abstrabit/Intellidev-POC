@@ -158,6 +158,9 @@ describe('the control plane service', () => {
       // Both halves of the App, or it is silently not configured and every push fails at the
       // very end of a run that did all its work first.
       'GITHUB_APP_ID',
+      // Without this the process seals credentials with a passphrase from the source rather
+      // than with KMS — it would still work, which is exactly why nothing else catches it.
+      'INTELLIDEV_CREDENTIAL_KEY_ARN',
     ]) {
       expect(names).toContain(required)
     }
