@@ -116,7 +116,18 @@ export class ControlPlaneStack extends Stack {
     taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: 'StartAndObserveRuns',
-        actions: ['ecs:RunTask', 'ecs:StopTask', 'ecs:DescribeTasks', 'ecs:ListTasks'],
+        actions: [
+          'ecs:RunTask',
+          'ecs:StopTask',
+          'ecs:DescribeTasks',
+          'ecs:ListTasks',
+          // FOUND BY DEPLOYING IT. The runner tags every task it starts with its run id, so a
+          // stray container can be attributed without reading logs and cost can be split per
+          // project. Without this, `RunTask` fails with an authorization error naming
+          // `ecs:TagResource` — and the run fails before a container ever exists, so there is
+          // nothing to inspect.
+          'ecs:TagResource',
+        ],
         resources: ['*'],
         conditions: { ArnEquals: { 'ecs:cluster': props.runCluster.clusterArn } },
       }),

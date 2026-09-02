@@ -110,6 +110,10 @@ describe('the control plane service', () => {
     // The resource has to be `*` — ECS does not support resource-level permissions for RunTask
     // in the way one would hope — so the cluster condition is what bounds it.
     expect(runTask?.Condition?.ArnEquals?.['ecs:cluster']).toBeDefined()
+    // Tagging is part of starting a task here: the runner labels each one with its run id, and
+    // without this permission RunTask fails before a container exists, so there is nothing to
+    // inspect and the error names only the missing action.
+    expect(runTask?.Action).toContain('ecs:TagResource')
   })
 
   it('takes its secrets from Secrets Manager, never from the template', () => {
