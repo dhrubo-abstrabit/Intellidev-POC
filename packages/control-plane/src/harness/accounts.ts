@@ -37,6 +37,19 @@ export interface HarnessAccountPublic {
   files: string[]
   connectedAt: string
   importedFrom?: string
+  /**
+   * Whether the stored material can actually be read.
+   *
+   * A row existing is not the same as a usable credential, and the UI showed "connected" for a
+   * seat sealed under a key that is no longer in use — so the only way to discover it was a
+   * failed run. `unreadable` means the ciphertext cannot be opened at all, which is a different
+   * problem from an expired token and needs a different fix.
+   *
+   * Deliberately not "valid": nothing here can tell whether a token the harness would accept is
+   * still live without asking the vendor, and that is D3's job. This answers the narrower
+   * question it can answer honestly.
+   */
+  readable?: boolean
 }
 
 export function toPublic(account: HarnessAccount): HarnessAccountPublic {
@@ -154,9 +167,13 @@ export class FileSeatStore implements SeatStore {
   }
 
   async list(): Promise<HarnessAccountPublic[]> {
-    return [...this.accounts.values()]
-      .sort((a, b) => a.harness.localeCompare(b.harness))
-      .map(toPublic)
+    return (
+      [...this.accounts.values()]
+        .sort((a, b) => a.harness.localeCompare(b.harness))
+        // Always readable: this store holds plaintext, so there is no ciphertext to fail on. The
+        // field is still reported, so the UI does not have to know which store is behind it.
+        .map((account) => ({ ...toPublic(account), readable: true }))
+    )
   }
 
   async has(_scope: SpaceScope, harness: HarnessId): Promise<boolean> {

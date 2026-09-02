@@ -126,15 +126,18 @@ if (!dsn || !testProjectId) {
       })
     })
 
-    it('keeps the names and paths readable, so a listing needs no decryption', async () => {
+    it('lists names and paths without ever returning a credential', async () => {
       await withStore(async ({ seats, scope }) => {
         await seats.connect(scope, SEAT)
         const [listed] = await seats.list(scope)
-        // Names only and paths only — the same shape the UI already renders. A listing happens
-        // on every page load and has no business holding credentials.
+        // Names only and paths only. A listing does now decrypt — that is how it can say whether
+        // a seat is readable rather than merely present — but the plaintext is discarded and
+        // never reaches a caller, which is what matters for a response the browser receives.
         expect(listed?.envVars).toEqual(['CLAUDE_CODE_OAUTH_TOKEN'])
         expect(listed?.files).toEqual(['.claude/.credentials.json'])
         expect(listed?.importedFrom).toBe('a test')
+        // The token itself is nowhere in what a listing returns.
+        expect(JSON.stringify(listed)).not.toContain('sk-live-should-never-be-readable')
       })
     })
 
@@ -151,6 +154,29 @@ if (!dsn || !testProjectId) {
         } finally {
           await other.close()
         }
+      })
+    })
+
+    it('reports a seat as unreadable when it cannot be decrypted', async () => {
+      /**
+       * FOUND BY LOOKING AT THE UI. The seat panel showed a green "connected" dot for a
+       * credential sealed under a key no longer in use — a row existing was taken for a working
+       * credential, so the only way to discover it was a run failing at the first model call.
+       *
+       * A rotated key and a wrong passphrase both produce this state, and neither is an expired
+       * token: the fix is to sign in again, and the UI can only say so if `list` tells it.
+       */
+      await withStore(async ({ seats, scope, store }) => {
+        await seats.connect(scope, SEAT)
+        expect((await seats.list(scope))[0]?.readable).toBe(true)
+
+        const wrongKey = store.seats(new LocalSecretCipher('a-different-master-key'))
+        const listed = await wrongKey.list(scope)
+        // Still listed — a person needs to see it in order to replace it — but not connected.
+        expect(listed).toHaveLength(1)
+        expect(listed[0]?.readable).toBe(false)
+        // And the metadata still renders, because it was never encrypted.
+        expect(listed[0]?.files).toEqual(['.claude/.credentials.json'])
       })
     })
 

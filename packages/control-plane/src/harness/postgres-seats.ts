@@ -45,9 +45,30 @@ export class PostgresSeatStore implements SeatStore {
           isNull(integrations.projectId),
         ),
       )
-    return rows
-      .map((row) => toPublic(row.ref as HarnessId, row.settings as unknown as SeatSettings))
-      .sort((a, b) => a.harness.localeCompare(b.harness))
+    /**
+     * Each seat is checked for readability, not just listed.
+     *
+     * A row existing is not a working credential: a seat sealed under a key no longer in use
+     * cannot be opened at all, and the UI showed it as connected until a run failed. One KMS
+     * decrypt per connected harness on a page load is a real cost, but there are at most three
+     * of them and the alternative is a green dot that lies.
+     *
+     * Only the ability to open it is checked — the plaintext is discarded immediately, and no
+     * caller of `list` ever sees material.
+     */
+    const seats = await Promise.all(
+      rows.map(async (row) => {
+        const harness = row.ref as HarnessId
+        const listed = toPublic(harness, row.settings as unknown as SeatSettings)
+        try {
+          await this.material(scope, harness)
+          return { ...listed, readable: true }
+        } catch {
+          return { ...listed, readable: false }
+        }
+      }),
+    )
+    return seats.sort((a, b) => a.harness.localeCompare(b.harness))
   }
 
   async has(scope: SpaceScope, harness: HarnessId): Promise<boolean> {

@@ -702,14 +702,19 @@
           .map((r) => {
             const account = state.accounts.find((a) => a.harness === r.harness)
             const viaEnv = !account && state.config?.harnessAuth?.[r.harness]
-            const ok = Boolean(account) || viaEnv
-            const detail = account
-              ? account.envVars.length
-                ? account.envVars.join(', ')
-                : account.files.join(', ')
-              : viaEnv
-                ? 'from the control plane environment'
-                : `run: ${r.command}`
+            // A stored seat whose material cannot be decrypted is not connected, whatever the
+            // row says. It showed green until a run failed, which is the worst place to learn it.
+            const broken = Boolean(account) && account.readable === false
+            const ok = (Boolean(account) && !broken) || viaEnv
+            const detail = broken
+              ? 'stored credential cannot be read — sign in again'
+              : account
+                ? account.envVars.length
+                  ? account.envVars.join(', ')
+                  : account.files.join(', ')
+                : viaEnv
+                  ? 'from the control plane environment'
+                  : `run: ${r.command}`
             return `
               <div class="srv">
                 <span class="dot ${ok ? 'ok' : 'unknown'}"></span>
