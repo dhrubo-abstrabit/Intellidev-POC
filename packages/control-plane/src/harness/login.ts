@@ -87,8 +87,12 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
     needsCode: true,
   },
   /**
-   * The normal browser flow. The pinned CLI has no `--device-auth` any more, so there is no
-   * callback-free variant to fall back to.
+   * The normal browser flow rather than `--device-auth`.
+   *
+   * The device flow does exist in the pinned CLI (0.147.0), and it is callback-free — but it is
+   * beta and off until someone enables device code login in their ChatGPT security settings, so
+   * it cannot be the path a first sign-in takes by default. Worth revisiting if that changes:
+   * it would remove the callback dance entirely.
    *
    * `host` because the callback on localhost:1455 has to be the same localhost the browser
    * visits — true when the control plane runs on someone's machine, false when it is hosted.
