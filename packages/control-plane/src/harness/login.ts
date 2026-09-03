@@ -69,9 +69,15 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
     capture: ['.claude/.credentials.json'],
     needsCode: true,
   },
-  // The normal browser flow rather than `--device-auth`, because device authorization is off by
-  // default on a ChatGPT account and enabling it is a setting in someone's security page. Run on
-  // the host so the callback on localhost:1455 is the same localhost the browser will visit.
+  /**
+   * The normal browser flow. The pinned CLI has no `--device-auth` any more, so there is no
+   * callback-free variant to fall back to.
+   *
+   * `host` because the callback on localhost:1455 has to be the same localhost the browser
+   * visits — true when the control plane runs on someone's machine, false when it is hosted.
+   * `start` refuses there rather than spawning something that cannot succeed, and points at
+   * signing in from a local UI, which writes to the same shared seat store.
+   */
   codex: {
     where: 'host',
     argv: ['codex', 'login'],
@@ -143,10 +149,11 @@ export class HarnessLogin {
       const missing = spawnSync(recipe.argv[0]!, ['--version'], { stdio: 'ignore' }).error
       if (missing) {
         throw new Error(
-          `${harness} signs in through a callback on localhost, so it has to run on the machine ` +
-            `whose browser you are using — not on a hosted control plane. Run ` +
-            `\`${recipe.argv.join(' ')}\` yourself, then use "Import" here to upload the file ` +
-            `it writes (~/${recipe.capture[0]}).`,
+          `${harness} signs in through a callback on localhost:1455, so it has to run on the ` +
+            `machine whose browser you are using — which a hosted control plane is not. Run the ` +
+            `UI locally (\`pnpm ui\`) and sign in there: seats are shared across the client ` +
+            `space, so this control plane picks it up with no redeploy. Failing that, run ` +
+            `\`${recipe.argv.join(' ')}\` and use "Import" to upload ~/${recipe.capture[0]}.`,
         )
       }
     }

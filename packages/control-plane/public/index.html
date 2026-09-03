@@ -1149,27 +1149,81 @@
       }
 
       // --- live stream ---------------------------------------------------------
+      /**
+       * Server-sent events read over `fetch`, not through `EventSource`.
+       *
+       * `EventSource` cannot set request headers, so it cannot present a bearer token — every
+       * connection came back 401 the moment the API was gated, and the only symptom was
+       * "stream interrupted — reconnecting…" forever while the run itself was fine.
+       *
+       * The token deliberately does not go in the query string instead. A URL is not a private
+       * place: it lands in load balancer access logs, in browser history, and in any referrer
+       * the page emits. A header is the only place a credential belongs.
+       *
+       * Reconnection is ours to do now, which `EventSource` handled — and it is the reason
+       * `since` exists, so a resumed stream continues from the last sequence seen rather than
+       * replaying or skipping.
+       */
       function follow(runId) {
         closeStream()
         state.run = runId
         state.lastSeq = -1
-        // `since` is what makes a reconnect gapless rather than a guess.
-        const stream = new EventSource(`/api/runs/${runId}/stream?since=${state.lastSeq}`)
-        state.stream = stream
-        stream.onmessage = (message) => {
-          const event = JSON.parse(message.data)
-          state.lastSeq = event.seq
-          render(event)
-          if (event.type === 'run.finished') {
-            closeStream()
-            loadTasks()
+
+        const controller = new AbortController()
+        state.stream = controller
+
+        void (async () => {
+          // Backoff, so a control plane that is down is not hammered by a page left open.
+          let delay = 500
+          while (!controller.signal.aborted) {
+            try {
+              const res = await fetch(`/api/runs/${runId}/stream?since=${state.lastSeq}`, {
+                headers: { accept: 'text/event-stream' },
+                signal: controller.signal,
+              })
+              if (!res.ok) throw new Error(`stream returned ${res.status}`)
+              delay = 500
+
+              const reader = res.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              for (;;) {
+                const { value, done } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                // Frames are separated by a blank line; a partial one stays in the buffer.
+                const frames = buffer.split('\n\n')
+                buffer = frames.pop() ?? ''
+                for (const frame of frames) {
+                  const data = frame
+                    .split('\n')
+                    .filter((l) => l.startsWith('data:'))
+                    .map((l) => l.slice(5).trim())
+                    .join('\n')
+                  if (!data) continue
+                  const event = JSON.parse(data)
+                  state.lastSeq = event.seq
+                  render(event)
+                  if (event.type === 'run.finished') {
+                    closeStream()
+                    await loadTasks()
+                    return
+                  }
+                }
+              }
+            } catch (error) {
+              if (controller.signal.aborted) return
+              append('warn', `stream interrupted — reconnecting… (${error.message})`)
+            }
+            if (controller.signal.aborted) return
+            await new Promise((r) => setTimeout(r, delay))
+            delay = Math.min(delay * 2, 10_000)
           }
-        }
-        stream.onerror = () => append('warn', 'stream interrupted — reconnecting…')
+        })()
       }
 
       function closeStream() {
-        state.stream?.close()
+        state.stream?.abort()
         state.stream = null
       }
 
