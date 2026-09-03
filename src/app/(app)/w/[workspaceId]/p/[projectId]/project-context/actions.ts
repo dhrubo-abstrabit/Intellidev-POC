@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
-import { loadPdfParse } from "@/lib/pdf/load";
+import { createDocxLoader, createPdfLoader } from "@/lib/pdf/load";
 import { createClient } from "@/lib/supabase/server";
 
 export async function updateProjectContext(
@@ -49,26 +49,24 @@ export async function extractFileText(formData: FormData): Promise<{ text: strin
   }
 
   const name = file.name.toLowerCase();
-  const buffer = Buffer.from(await file.arrayBuffer());
 
   if (name.endsWith(".pdf") || file.type === "application/pdf") {
-    const { PDFParse } = await loadPdfParse();
-    const parser = new PDFParse({ data: buffer });
-    try {
-      const result = await parser.getText();
-      return { text: result.text };
-    } finally {
-      await parser.destroy();
-    }
+    // file is already a Blob (File extends Blob) — pass it straight through
+    // rather than round-tripping via Buffer, since the loader accepts one
+    // directly. splitPages defaults true; joined here because this path has
+    // no page-number concept, unlike attachments/parse.ts's PDF branch.
+    const loader = await createPdfLoader(file);
+    const docs = await loader.load();
+    return { text: docs.map((doc) => doc.pageContent).join("\n\n") };
   }
 
   if (
     name.endsWith(".docx") ||
     file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
-    const mammoth = await import("mammoth");
-    const result = await mammoth.extractRawText({ buffer });
-    return { text: result.value };
+    const loader = await createDocxLoader(file);
+    const docs = await loader.load();
+    return { text: docs[0]?.pageContent ?? "" };
   }
 
   throw new Error(`${file.name}: unsupported file type.`);
