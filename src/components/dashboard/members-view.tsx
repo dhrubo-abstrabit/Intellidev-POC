@@ -7,14 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ConfirmActionButton } from "@/components/dashboard/confirm-action-button";
 import { toast } from "@/components/ui/toast";
-import { changeWorkspaceMemberRole, removeWorkspaceMember } from "./actions";
 
 export interface MemberRow {
   userId: string;
   email: string;
   fullName: string | null;
   role: string;
-  joinedAt: string;
 }
 
 export interface AssignableRole {
@@ -24,7 +22,8 @@ export interface AssignableRole {
 }
 
 interface MembersViewProps {
-  workspaceId: string;
+  title: string;
+  description: string;
   members: MemberRow[];
   /** Empty when the viewer may not manage membership — the source of truth is
    * `assignable_roles`, which returns nothing unless the caller holds
@@ -32,25 +31,55 @@ interface MembersViewProps {
   assignableRoles: AssignableRole[];
   currentUserId: string;
   roleLabels: Record<string, string>;
+  /**
+   * Both must be the Server Action itself or a `.bind(null, …)` of it —
+   * NEVER a fresh arrow wrapper. An inline wrapper is not recognised as a
+   * serialisable action reference and throws "Functions cannot be passed
+   * directly to Client Components" at runtime rather than at build time
+   * (see CLAUDE.md). Pages bind their scope id and pass the result.
+   */
+  changeRoleAction: (userId: string, role: string) => Promise<{ message: string }>;
+  removeAction: (userId: string) => Promise<{ message: string }>;
+  /**
+   * Copy for the remove confirmation, as a TEMPLATE STRING with an `{email}`
+   * placeholder — not a function.
+   *
+   * A function here looks natural and fails at runtime: only Server Actions
+   * may cross into a Client Component, and a plain arrow is neither
+   * serialisable nor an action reference, so React throws "Functions cannot be
+   * passed directly to Client Components" when it tries to stringify the
+   * props. The two action props above are fine precisely because they are
+   * `.bind(null, …)` of real Server Actions.
+   */
+  removeDescriptionTemplate: string;
 }
 
+/**
+ * One roster table, used by both the workspace and client-space screens.
+ *
+ * Note there is no role check anywhere in here. Whether the viewer may manage
+ * membership is answered entirely by `assignableRoles` arriving non-empty —
+ * that RPC applies the member.manage check, the `assignable` flag and the rank
+ * ceiling server-side, in one place.
+ */
 export function MembersView({
-  workspaceId,
+  title,
+  description,
   members,
   assignableRoles,
   currentUserId,
   roleLabels,
+  changeRoleAction,
+  removeAction,
+  removeDescriptionTemplate,
 }: MembersViewProps) {
   const [pending, startTransition] = useTransition();
   const canManage = assignableRoles.length > 0;
 
-  // Same fire-and-toast shape as AsyncButton/ConfirmActionButton: the action
-  // is called directly rather than through a <form action>, which is fine
-  // because it does not redirect (see CLAUDE.md on redirecting actions).
   function onRoleChange(userId: string, role: string) {
     startTransition(async () => {
       await toast
-        .promise(changeWorkspaceMemberRole(workspaceId, userId, role), {
+        .promise(changeRoleAction(userId, role), {
           loading: "Updating role…",
           success: (result) => result.message,
           error: (err) => (err instanceof Error ? err.message : "Could not change this member's role."),
@@ -62,12 +91,8 @@ export function MembersView({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Workspace members</CardTitle>
-        <CardDescription>
-          {canManage
-            ? "People with access to this workspace. Admins manage client spaces, projects and people — they do not read client activity."
-            : "People with access to this workspace. Only workspace admins can change roles."}
-        </CardDescription>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
@@ -118,12 +143,12 @@ export function MembersView({
                   {canManage ? (
                     <TableCell className="text-right">
                       <ConfirmActionButton
-                        action={removeWorkspaceMember.bind(null, workspaceId, member.userId)}
+                        action={removeAction.bind(null, member.userId)}
                         triggerLabel="Remove"
                         confirmLabel="Remove"
                         loadingMessage="Removing…"
-                        title="Remove from this workspace?"
-                        description={`${member.email} loses access to this workspace. They stay on the organisation roster and keep any client-space access granted separately.`}
+                        title="Remove this person?"
+                        description={removeDescriptionTemplate.replace("{email}", member.email)}
                       />
                     </TableCell>
                   ) : null}

@@ -14,6 +14,22 @@ export interface AuthActionResult {
   error?: string;
 }
 
+/**
+ * Where to send someone after authenticating.
+ *
+ * Only same-site absolute PATHS are honoured. `next` reaches this from a query
+ * string a user controls, so anything else — "https://evil.example",
+ * "//evil.example", or a scheme-relative form — must not be followed, or the
+ * login page becomes an open redirect that phishing can point anywhere.
+ * Rejecting "//" specifically matters: the browser reads it as protocol-
+ * relative and leaves the site, even though it starts with "/".
+ */
+function safeNext(raw: FormDataEntryValue | null): string {
+  const value = typeof raw === "string" ? raw : "";
+  if (!value.startsWith("/") || value.startsWith("//")) return "/";
+  return value;
+}
+
 export async function signUpWithPassword(_prev: AuthActionResult, formData: FormData): Promise<AuthActionResult> {
   const parsed = credentialsSchema.safeParse({
     email: formData.get("email"),
@@ -23,11 +39,18 @@ export async function signUpWithPassword(_prev: AuthActionResult, formData: Form
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
+  // Carried through the confirmation email so an invited user lands back on
+  // their invitation rather than a bare dashboard. /api/auth/callback already
+  // honours `next` — the password-reset flow uses the same plumbing.
+  const next = safeNext(formData.get("next"));
+
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signUp({
     email: parsed.data.email,
     password: parsed.data.password,
-    options: { emailRedirectTo: `${appUrl()}/api/auth/callback` },
+    options: {
+      emailRedirectTo: `${appUrl()}/api/auth/callback?next=${encodeURIComponent(next)}`,
+    },
   });
 
   if (error) {
@@ -40,7 +63,7 @@ export async function signUpWithPassword(_prev: AuthActionResult, formData: Form
     return { error: "Check your email to confirm your account, then log in." };
   }
 
-  redirect("/");
+  redirect(next);
 }
 
 export async function signInWithPassword(_prev: AuthActionResult, formData: FormData): Promise<AuthActionResult> {
@@ -52,13 +75,15 @@ export async function signInWithPassword(_prev: AuthActionResult, formData: Form
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
+  const next = safeNext(formData.get("next"));
+
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword(parsed.data);
   if (error) {
     return { error: "Incorrect email or password" };
   }
 
-  redirect("/");
+  redirect(next);
 }
 
 /**

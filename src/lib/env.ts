@@ -34,6 +34,28 @@ const nangoSchema = z.object({
   NANGO_SECRET_KEY: z.string().min(1),
 });
 
+/**
+ * AWS SES, for invitation email.
+ *
+ * Deliberately NOT part of `serverSchema` below, so a deployment without SES
+ * configured still boots and every other feature keeps working — invitations
+ * simply fall back to showing a copy-able link instead of mailing it (see
+ * lib/invitations/email.ts). Email is the one concern here where "not
+ * configured yet" is an expected state rather than a misconfiguration: SES
+ * starts sandboxed and needs an AWS support request before it can mail
+ * anyone, and the invite flow was built to be useful during that wait.
+ *
+ * AWS_SECRET_ACCESS_KEY is shown by AWS exactly once, and Vercel env vars are
+ * write-only after they are set, so this is a value with two chances to be
+ * lost. Record it when it is generated.
+ */
+const sesSchema = z.object({
+  AWS_REGION: z.string().min(1),
+  AWS_ACCESS_KEY_ID: z.string().min(1),
+  AWS_SECRET_ACCESS_KEY: z.string().min(1),
+  SES_FROM_ADDRESS: z.string().email(),
+});
+
 const serverSchema = supabaseServerSchema
   .extend(cronSchema.shape)
   .extend(llmSchema.shape)
@@ -102,6 +124,18 @@ export function llmEnv() {
  * Client Component — NANGO_SECRET_KEY is a server-only credential. */
 export function nangoEnv() {
   return parseWith(nangoSchema, "Nango");
+}
+
+/**
+ * SES config, or null when it is not configured.
+ *
+ * Returns null rather than throwing because an unconfigured mailer is a
+ * supported state: the caller degrades to a copy-able invite link. Every other
+ * *Env() helper throws, because for those a missing value really is broken.
+ */
+export function sesEnv() {
+  const result = sesSchema.safeParse(process.env);
+  return result.success ? result.data : null;
 }
 
 let cachedPublicEnv: PublicEnv | undefined;

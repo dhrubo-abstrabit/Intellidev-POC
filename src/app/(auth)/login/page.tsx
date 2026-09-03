@@ -4,7 +4,15 @@ import { CredentialsForm } from "@/components/auth/credentials-form";
 import { GoogleSignInButton } from "@/components/auth/google-signin-button";
 import { signInWithPassword } from "@/app/(auth)/actions";
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  // proxy.ts sets ?next= when it bounces an unauthenticated request, and the
+  // invite page sets it when sending a signed-out recipient here. Passing it
+  // through keeps someone on the path they were actually trying to follow.
+  const { next } = await searchParams;
   return (
     <div className="w-full space-y-4">
       <div className="rounded-2xl border border-brand-n-200 bg-brand-n-0 p-8 shadow-sm">
@@ -12,7 +20,7 @@ export default function LoginPage() {
           Log in
         </h1>
         <div className="space-y-4">
-          <CredentialsForm action={signInWithPassword} submitLabel="Log in" pendingLabel="Logging in..." />
+          <CredentialsForm action={signInWithPassword} next={next} submitLabel="Log in" pendingLabel="Logging in..." />
           <div className="flex items-center gap-3">
             <Separator className="flex-1" />
             <span className="text-xs font-medium text-brand-n-400">OR</span>

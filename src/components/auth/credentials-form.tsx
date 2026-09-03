@@ -8,16 +8,21 @@ import type { AuthActionResult } from "@/app/(auth)/actions";
 
 interface CredentialsFormProps {
   action: (prev: AuthActionResult, formData: FormData) => Promise<AuthActionResult>;
+  /** Same-site path to land on after auth. Submitted as a hidden field so the
+   * Server Action reads it from FormData rather than from a header it cannot
+   * see. Validated server-side regardless — see safeNext(). */
+  next?: string;
   submitLabel: string;
   pendingLabel: string;
 }
 
-export function CredentialsForm({ action, submitLabel, pendingLabel }: CredentialsFormProps) {
+export function CredentialsForm({ action, submitLabel, pendingLabel, next }: CredentialsFormProps) {
   const [state, formAction, isPending] = useActionState<AuthActionResult, FormData>(action, {});
   const [showPassword, setShowPassword] = useState(false);
 
   return (
     <form action={formAction} className="space-y-4">
+      {next ? <input type="hidden" name="next" value={next} /> : null}
       <div className="space-y-2">
         <Label htmlFor="email" className="text-brand-n-700">
           Email address

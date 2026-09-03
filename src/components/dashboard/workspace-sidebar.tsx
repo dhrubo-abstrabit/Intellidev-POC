@@ -43,7 +43,7 @@ function railIconClass(active: boolean) {
   );
 }
 
-/** A project's 5 sub-pages — rendered as a desktop disclosure and a mobile
+/** A project's 6 sub-pages — rendered as a desktop disclosure and a mobile
  * submenu (both below), the only two places this app lists them now that
  * the old per-project top tab row is gone. */
 function projectTabs(workspaceId: string, projectId: string) {
@@ -54,6 +54,7 @@ function projectTabs(workspaceId: string, projectId: string) {
     { href: `${base}/project-context`, label: "Project Context" },
     { href: `${base}/task-management`, label: "Task Tracking" },
     { href: `${base}/integrations`, label: "Integrations" },
+    { href: `${base}/access`, label: "Access" },
   ];
 }
 
@@ -61,8 +62,8 @@ function projectTabs(workspaceId: string, projectId: string) {
  * Replaces the old header-based workspace-switcher + Overview/Team-Members
  * nav, and the old per-project top tab row, with a persistent left sidebar
  * (see w/[workspaceId]/layout.tsx and p/[projectId]/layout.tsx). Each
- * project row is a disclosure — clicking it expands/collapses its 5
- * sub-pages inline; the mobile menu below gives each project the same 5
+ * project row is a disclosure — clicking it expands/collapses its 6
+ * sub-pages inline; the mobile menu below gives each project the same 6
  * pages via a submenu instead, since there's no room to expand inline there.
  *
  * Renders two trees, both always in the DOM, gated by Tailwind's `md:`
@@ -329,7 +330,7 @@ export function WorkspaceSidebar({
 
           {/* Each project is a dropdown (not the expanded sidebar's inline
            * disclosure — there's no room to indent sub-items in a 56px
-           * rail) listing the same 5 sub-pages the mobile menu already
+           * rail) listing the same 6 sub-pages the mobile menu already
            * exposes via a submenu, opening to the right of the rail. */}
           <div className="flex w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
             {projects.map((project) => {
