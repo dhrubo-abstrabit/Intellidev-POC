@@ -31,6 +31,36 @@ export interface CliIo {
 export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise<number> {
   const args = parseArgs(argv)
 
+  /**
+   * `login` drives a harness's own sign-in from inside this container.
+   *
+   * Configured entirely through the environment rather than flags: the control plane sets it
+   * when it starts the task, and a bearer token on a command line is visible in
+   * `ecs describe-tasks` output and in the console.
+   */
+  if (args.command === 'login' && !args.help) {
+    const missing = [
+      'INTELLIDEV_CONTROL_URL',
+      'INTELLIDEV_LOGIN_ID',
+      'INTELLIDEV_LOGIN_TOKEN',
+    ].filter((key) => !io.env[key])
+    if (missing.length > 0) {
+      io.stderr(`error: login needs ${missing.join(', ')} in the environment\n`)
+      return 2
+    }
+    const { runLoginAgent } = await import('../login/agent.js')
+    return runLoginAgent({
+      baseUrl: io.env['INTELLIDEV_CONTROL_URL']!,
+      loginId: io.env['INTELLIDEV_LOGIN_ID']!,
+      token: io.env['INTELLIDEV_LOGIN_TOKEN']!,
+      argv: JSON.parse(io.env['INTELLIDEV_LOGIN_ARGV'] ?? '[]') as string[],
+      capture: JSON.parse(io.env['INTELLIDEV_LOGIN_CAPTURE'] ?? '[]') as string[],
+      ...(io.env['INTELLIDEV_LOGIN_CALLBACK_PORT']
+        ? { callbackPort: Number(io.env['INTELLIDEV_LOGIN_CALLBACK_PORT']) }
+        : {}),
+    })
+  }
+
   if (args.command !== 'run' || args.help) {
     io.stdout(USAGE)
     return args.command === 'run' ? 0 : 2
@@ -210,6 +240,7 @@ export function parseArgs(argv: readonly string[]): Args {
 }
 
 export const USAGE = `intellidev-adapter run --spec <file|url> [options]
+       intellidev-adapter login   (configured through the environment)
 
 Run one task end to end from a run spec.
 

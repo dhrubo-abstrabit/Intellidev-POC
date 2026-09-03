@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
@@ -30,6 +31,13 @@ export interface LoginState {
   userCode?: string
   /** True when the CLI expects the code pasted back on stdin. */
   needsCode: boolean
+  /**
+   * What the person should paste, when "the code" would be misleading.
+   *
+   * Codex is the case: run as a task, its callback lands on a page the browser cannot load, and
+   * the address of that failed page is what completes the flow.
+   */
+  inputHint?: string
   error?: string
   /** Tail of the CLI's own output, so a stuck flow can be diagnosed. */
   output?: string
@@ -59,6 +67,15 @@ interface Recipe {
   capture: string[]
   /** Whether the CLI reads the authorization code from stdin. */
   needsCode: boolean
+  /** What to tell the person to paste back, when it is not simply "the code". */
+  inputHint?: string
+  /**
+   * Where this CLI's own callback server listens, when it has one.
+   *
+   * Only meaningful for a login running as a task: the browser's redirect to that port lands on
+   * the person's machine and fails, and the container replays the URL against this port instead.
+   */
+  callbackPort?: number
 }
 
 const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
@@ -82,7 +99,13 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
     where: 'host',
     argv: ['codex', 'login'],
     capture: ['.codex/auth.json'],
-    needsCode: false,
+    // The person pastes the URL their browser could not load; the container replays it here.
+    needsCode: true,
+    inputHint:
+      'Sign in. Your browser will then fail to open a localhost page — that is expected, ' +
+      'because the sign-in server is running here rather than on your machine. Copy that ' +
+      "failed page's whole address and paste it below.",
+    callbackPort: 1455,
   },
   // opencode's login is an interactive provider picker with no scriptable form, so it is
   // deliberately absent: importing the file it writes is the honest path there.
@@ -92,6 +115,29 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
 const URL_PATTERN = /https?:\/\/[^\s'"]+/g
 /** A device code, e.g. `ZF8D-ZDTZF`. */
 const CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/
+
+/**
+ * How a login task is started, when the control plane cannot spawn one itself.
+ *
+ * Injected rather than imported so this file stays free of ECS: the same driving logic runs
+ * against a local child process in development and against a Fargate task when hosted.
+ */
+export interface LoginTaskLauncher {
+  start(spec: {
+    loginId: string
+    token: string
+    argv: readonly string[]
+    capture: readonly string[]
+    callbackPort?: number
+  }): Promise<void>
+  stop(loginId: string): Promise<void>
+}
+
+/** What the container asks for and what it is told. */
+export interface LoginInput {
+  kind: 'code' | 'callback' | 'cancel'
+  value?: string
+}
 
 export function loginSupported(harness: HarnessId): boolean {
   return harness in LOGIN_RECIPES
@@ -116,7 +162,26 @@ export class HarnessLogin {
      * exist" even though the path is right there. The same trap as the run exchange directory.
      */
     private readonly workRoot: string,
+    /**
+     * Present when this control plane cannot spawn a login itself.
+     *
+     * Hosted, it has neither docker nor the harness CLIs, and Fargate cannot nest containers —
+     * so the login runs as a task from the runner image, which has all three. Absent in
+     * development, where spawning locally is both possible and faster.
+     */
+    private readonly launcher?: LoginTaskLauncher,
   ) {}
+
+  /** Set while a task-driven login is in flight, so its reports can be attributed. */
+  private task?: {
+    loginId: string
+    token: string
+    state: LoginState
+    recipe: Recipe
+    seen: string
+    pending?: LoginInput
+    settle?: () => void
+  }
 
   current(): LoginState | undefined {
     return this.state
@@ -145,24 +210,28 @@ export class HarnessLogin {
      * output at all. A person reading "login exited -2: (no output)" learns nothing about what
      * is actually wrong or what to do instead.
      */
-    if (recipe.where === 'host') {
+    if (recipe.where === 'host' && !this.launcher) {
       const missing = spawnSync(recipe.argv[0]!, ['--version'], { stdio: 'ignore' }).error
       if (missing) {
         throw new Error(
-          `${harness} signs in through a callback on localhost:1455, so it has to run on the ` +
-            `machine whose browser you are using — which a hosted control plane is not. Run the ` +
-            `UI locally (\`pnpm ui\`) and sign in there: seats are shared across the client ` +
-            `space, so this control plane picks it up with no redeploy. Failing that, run ` +
-            `\`${recipe.argv.join(' ')}\` and use "Import" to upload ~/${recipe.capture[0]}.`,
+          `${harness} signs in through a callback on localhost, and its CLI is not installed ` +
+            `here. Install it, or run \`${recipe.argv.join(' ')}\` and use "Import" to upload ` +
+            `~/${recipe.capture[0]}.`,
         )
       }
     }
 
     this.cancel()
     this.recipe = recipe
+    if (this.launcher) return this.startTask(harness, recipe)
     await mkdir(join(this.workRoot, 'logins'), { recursive: true })
     this.home = await mkdtemp(join(this.workRoot, 'logins', `${harness}-`))
-    const state: LoginState = { harness, status: 'starting', needsCode: recipe.needsCode }
+    const state: LoginState = {
+      harness,
+      status: 'starting',
+      needsCode: recipe.needsCode,
+      ...(recipe.inputHint ? { inputHint: recipe.inputHint } : {}),
+    }
     this.state = state
 
     // HOME is redirected either way: in a container so the credential outlives it, and on the
@@ -195,20 +264,7 @@ export class HarnessLogin {
     const settleUrl = new Promise<void>((resolve) => {
       const inspect = (chunk: string) => {
         seen += chunk
-        state.output = stripAnsi(seen).slice(-1500)
-
-        if (!state.authorizationUrl) {
-          const url = pickSignInUrl(stripAnsi(seen))
-          if (url) {
-            state.authorizationUrl = url
-            state.status = recipe.needsCode ? 'awaiting_code' : 'awaiting_authorization'
-            resolve()
-          }
-        }
-        if (!state.userCode) {
-          const code = CODE_PATTERN.exec(stripAnsi(seen))
-          if (code) state.userCode = code[1]
-        }
+        if (applyOutput(state, seen, recipe)) resolve()
       }
       child.stdout.on('data', (buffer: Buffer) => inspect(buffer.toString('utf8')))
       child.stderr.on('data', (buffer: Buffer) => inspect(buffer.toString('utf8')))
@@ -246,15 +302,163 @@ export class HarnessLogin {
     return state
   }
 
+  /**
+   * Drive a login that runs as a task somewhere else.
+   *
+   * Resolves once the container has forwarded enough output to contain the sign-in link, so the
+   * UI behaves exactly as it does locally: click, a window opens, paste what comes back.
+   *
+   * The state lives in this process, which is correct only while there is one of them. With a
+   * second instance a login started on one would be invisible to the other, and this would need
+   * to move into the database like run tokens did — noted here because the failure would look
+   * like a login that forgets itself at random rather than like a missing table.
+   */
+  private async startTask(harness: HarnessId, recipe: Recipe): Promise<LoginState> {
+    const loginId = randomUUID()
+    // 32 bytes, so guessing it is not a route to someone's harness credential.
+    const token = randomBytes(32).toString('base64url')
+    const state: LoginState = {
+      harness,
+      status: 'starting',
+      needsCode: recipe.needsCode,
+      ...(recipe.inputHint ? { inputHint: recipe.inputHint } : {}),
+    }
+    this.state = state
+    this.task = { loginId, token, state, recipe, seen: '' }
+
+    const settleUrl = new Promise<void>((resolve) => {
+      this.task!.settle = resolve
+      // A task that never prints a link must not hang the request; it can still be polled.
+      setTimeout(resolve, 40_000)
+    })
+
+    try {
+      await this.launcher!.start({
+        loginId,
+        token,
+        argv: recipe.argv,
+        capture: recipe.capture,
+        ...(recipe.callbackPort ? { callbackPort: recipe.callbackPort } : {}),
+      })
+    } catch (error) {
+      state.status = 'failed'
+      state.error = `could not start the login task: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+      return state
+    }
+
+    await settleUrl
+    if (state.status === 'starting') {
+      // Not failed: the task may simply be slow to pull the image, and the UI keeps polling.
+      state.error = state.output
+        ? undefined
+        : 'the login task has not reported yet — it may still be starting'
+    }
+    return state
+  }
+
+  /** Whether a bearer belongs to the login in flight. */
+  verifyTaskToken(loginId: string, authorization: string | undefined): boolean {
+    const task = this.task
+    if (!task || task.loginId !== loginId) return false
+    const offered = authorization?.replace(/^Bearer /i, '') ?? ''
+    // Length-independent comparison is not needed for a value this short-lived, but a plain
+    // equality on a secret is worth being explicit about.
+    return (
+      offered.length === task.token.length &&
+      timingSafeEqual(Buffer.from(offered), Buffer.from(task.token))
+    )
+  }
+
+  /** Output forwarded by the container, folded in as if it were local stdout. */
+  ingestTaskOutput(loginId: string, chunk: string): void {
+    const task = this.task
+    if (!task || task.loginId !== loginId) return
+    task.seen += chunk
+    if (applyOutput(task.state, task.seen, task.recipe)) task.settle?.()
+  }
+
+  /** Hand the container whatever the person supplied, once. */
+  takeTaskInput(loginId: string): LoginInput | undefined {
+    const task = this.task
+    if (!task || task.loginId !== loginId) return undefined
+    const pending = task.pending
+    task.pending = undefined
+    return pending
+  }
+
+  /** The task finished; store what it captured. */
+  async completeTask(
+    loginId: string,
+    report: {
+      exitCode: number
+      files: HarnessAccount['files']
+      missing?: string[]
+      output?: string
+    },
+  ): Promise<void> {
+    const task = this.task
+    if (!task || task.loginId !== loginId) return
+    const { state, recipe } = task
+    this.task = undefined
+
+    if (!report.files || report.files.length === 0) {
+      state.status = 'failed'
+      state.error =
+        report.exitCode === 0
+          ? `the login reported success but wrote no credential file${
+              report.missing?.length ? ` (looked for ${report.missing.join(', ')})` : ''
+            }`
+          : `login exited ${report.exitCode}: ${report.output?.slice(-300) || '(no output)'}`
+      return
+    }
+
+    await this.accounts.connect(this.scope, {
+      harness: state.harness,
+      label: state.harness,
+      files: report.files,
+      connectedAt: new Date().toISOString(),
+      importedFrom: `${recipe.argv.join(' ')} (in a login task)`,
+    })
+    state.status = 'connected'
+  }
+
   /** Pass the code the human copied from the sign-in page to the waiting CLI. */
   submitCode(code: string): void {
+    const trimmed = code.trim()
+    if (this.task) {
+      /**
+       * A URL rather than a code, for a CLI whose callback the browser could not reach.
+       *
+       * Codex redirects to `localhost:1455`, which is the person's machine and not the task's —
+       * so the redirect fails with the authorization code in the address bar. Pasting that URL
+       * lets the container replay it against its own callback server, which is the one holding
+       * the PKCE verifier. Distinguished by shape, so the person pastes whatever they were
+       * given without being asked which kind it is.
+       */
+      const kind = /^https?:\/\//.test(trimmed) ? 'callback' : 'code'
+      this.task.pending = { kind, value: trimmed }
+      this.task.state.status = 'awaiting_authorization'
+      return
+    }
     if (!this.child || !this.state) throw new Error('no login in progress')
     if (!this.state.needsCode) throw new Error('this login does not take a code')
-    this.child.stdin.write(`${code.trim()}\n`)
+    this.child.stdin.write(`${trimmed}\n`)
     this.state.status = 'awaiting_authorization'
   }
 
   cancel(): void {
+    const task = this.task
+    if (task) {
+      this.task = undefined
+      task.state.status = 'failed'
+      task.state.error = 'cancelled'
+      // Told to stop, then stopped: the container may be mid-poll, and a task left running
+      // holds a sign-in window open for as long as its timeout.
+      task.pending = { kind: 'cancel' }
+      void this.launcher?.stop(task.loginId).catch(() => {})
+    }
     const child = this.child
     this.child = undefined
     if (this.state && this.state.status !== 'connected') {
@@ -327,4 +531,28 @@ export function pickSignInUrl(output: string): string | undefined {
   return candidates
     .map((url) => url.replace(/[.,)]+$/, ''))
     .find((url) => !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) && url.includes('?'))
+}
+
+/**
+ * Fold new CLI output into the login's state.
+ *
+ * Shared by both transports: a local child's stdout and a container's forwarded chunks are the
+ * same bytes, and the URL has to be found in either. Returns true once the sign-in link is
+ * known, which is what a caller waits on before answering the request.
+ */
+function applyOutput(state: LoginState, seen: string, recipe: Recipe): boolean {
+  const plain = stripAnsi(seen)
+  state.output = plain.slice(-1500)
+
+  if (!state.userCode) {
+    const code = CODE_PATTERN.exec(plain)
+    if (code) state.userCode = code[1]
+  }
+  if (state.authorizationUrl) return false
+
+  const url = pickSignInUrl(plain)
+  if (!url) return false
+  state.authorizationUrl = url
+  state.status = recipe.needsCode ? 'awaiting_code' : 'awaiting_authorization'
+  return true
 }

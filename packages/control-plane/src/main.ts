@@ -6,6 +6,8 @@ import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
 import { LocalSecretCipher } from './secrets/cipher.js'
 import { KmsSecretCipher } from './secrets/kms-cipher.js'
+import { FargateRunner } from './runner/fargate.js'
+import { FargateLoginLauncher } from './harness/fargate-login.js'
 import { JwtVerifier } from './auth/jwt.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { FileSeatStore } from './harness/accounts.js'
@@ -325,6 +327,22 @@ const app = await buildServer({
   },
   mcp,
   accounts,
+  /**
+   * Harness logins run as their own task when this process cannot spawn one.
+   *
+   * Only in fargate mode, and only with AWS configured — locally, docker and the CLIs are right
+   * here and spawning is both simpler and faster. One task per login, torn down afterwards:
+   * reusing a container between connections would carry one harness's session into the next.
+   */
+  ...(mode === 'fargate' && aws
+    ? {
+        loginLauncher: new FargateLoginLauncher(
+          new FargateRunner({ config: aws }),
+          publicUrl,
+          process.env['INTELLIDEV_IMAGE'] ?? 'intellidev/runner:dev',
+        ),
+      }
+    : {}),
   publicDir: resolve(import.meta.dirname, '..', 'public'),
 })
 

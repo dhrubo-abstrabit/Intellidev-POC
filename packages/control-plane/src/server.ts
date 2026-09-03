@@ -10,7 +10,7 @@ import {
   recipeFor,
   toPublic as accountToPublic,
 } from './harness/accounts.js'
-import { HarnessLogin, loginSupported } from './harness/login.js'
+import { HarnessLogin, type LoginTaskLauncher, loginSupported } from './harness/login.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
 import type { ProjectAccessChecker } from './auth/access.js'
@@ -73,6 +73,13 @@ export interface ServerOptions {
   mcp: McpStore
   /** Harness subscription logins. Also persisted, for the same reason. */
   accounts: SeatStore
+  /**
+   * How to run a harness login when this process cannot spawn one.
+   *
+   * Absent in development. Present when hosted, where the control plane's own image has no
+   * harness CLI and no docker, and Fargate cannot nest containers.
+   */
+  loginLauncher?: LoginTaskLauncher
   /** Absolute path to the directory holding `index.html`. */
   publicDir?: string
 }
@@ -189,6 +196,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     seatScope,
     opts.dispatch.image,
     opts.dispatch.workRoot,
+    /**
+     * A launcher only where one is needed.
+     *
+     * With docker and the CLIs to hand — a developer's machine — spawning locally is simpler and
+     * faster. Hosted there is neither, so the login runs as a task from the runner image and the
+     * container reports back over `/internal/logins/*`.
+     */
+    opts.loginLauncher,
   )
   const publicDir =
     opts.publicDir ?? join(dirname(new URL(import.meta.url).pathname), '..', 'public')
@@ -819,6 +834,61 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     '/internal/creds/secrets',
     brokered((runId, body) => broker.secrets(runId, body['stage'] as never)),
   )
+
+  /**
+   * A login task reporting in.
+   *
+   * Authenticated by a bearer minted for that one login, not by a user's token: the container
+   * has no user. The three routes are deliberately narrow — forward output, ask for input,
+   * report the result — and each is refused unless the bearer matches the login in flight, so a
+   * finished or superseded login cannot be written to.
+   */
+  const loginBearer = (request: {
+    headers: Record<string, unknown>
+    params: unknown
+  }): string | undefined => {
+    const id = (request.params as { id?: string }).id
+    if (!id) return undefined
+    const authorization = request.headers['authorization']
+    return login.verifyTaskToken(id, typeof authorization === 'string' ? authorization : undefined)
+      ? id
+      : undefined
+  }
+
+  app.post<{ Params: { id: string } }>('/internal/logins/:id/output', async (request, reply) => {
+    const id = loginBearer(request as never)
+    if (!id) return reply.code(401).send({ error: 'not this login' })
+    const chunk = (request.body as { chunk?: unknown })?.chunk
+    if (typeof chunk === 'string') login.ingestTaskOutput(id, chunk)
+    return reply.code(204).send()
+  })
+
+  app.get<{ Params: { id: string } }>('/internal/logins/:id/input', async (request, reply) => {
+    const id = loginBearer(request as never)
+    if (!id) return reply.code(401).send({ error: 'not this login' })
+    const pending = login.takeTaskInput(id)
+    // 204 is the common answer by far: the container asks once a second while a person reads a
+    // consent screen, and an empty body is cheaper than a JSON null.
+    return pending ? reply.send(pending) : reply.code(204).send()
+  })
+
+  app.post<{ Params: { id: string } }>('/internal/logins/:id/complete', async (request, reply) => {
+    const id = loginBearer(request as never)
+    if (!id) return reply.code(401).send({ error: 'not this login' })
+    const body = (request.body ?? {}) as {
+      exitCode?: number
+      files?: Array<{ path: string; contents: string }>
+      missing?: string[]
+      output?: string
+    }
+    await login.completeTask(id, {
+      exitCode: Number(body.exitCode ?? 1),
+      files: body.files ?? [],
+      ...(body.missing ? { missing: body.missing } : {}),
+      ...(body.output ? { output: body.output } : {}),
+    })
+    return reply.code(204).send()
+  })
 
   /**
    * Where a run's events arrive.

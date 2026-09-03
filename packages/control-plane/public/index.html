@@ -781,14 +781,22 @@
       }
 
       /**
-       * Drive the harness's own login: show the vendor's link, relay the code back.
+       * Drive the harness's own login: open the vendor's page, relay what comes back.
        *
-       * Rendered in the page rather than in a popup. A popup has to be opened before the URL is
-       * known and then navigated, which browsers treat with suspicion, and a modal `prompt` on
-       * top of it is worse; an anchor the human clicks is never blocked and never vanishes.
+       * A window is opened *synchronously on the click*, while the gesture that permits it is
+       * still in scope, and navigated once the control plane has scraped the URL. Opening it
+       * later — after the await — is what browsers block, which is why this was an anchor
+       * before.
+       *
+       * The anchor is still rendered, and is what happens when a blocker refuses the window
+       * anyway: `window.open` returns null, and the flow continues with a link the person can
+       * click. Nothing depends on the popup existing.
        */
       async function signIn(harness, button) {
         button.disabled = true
+        // Opened blank and navigated later. `noopener` so the vendor's page cannot reach back
+        // into this one through `window.opener`.
+        const authWindow = window.open('', '_blank', 'noopener,width=520,height=720')
         const panel = $('loginPanel')
         panel.hidden = false
         $('loginTitle').textContent = `Sign in to ${harness}`
@@ -805,16 +813,31 @@
           const login = body.login
           if (!res.ok || !login?.authorizationUrl) {
             $('loginHint').textContent = body.error ?? login?.error ?? 'could not start the login'
+            // Otherwise a blank tab is left sitting there with no explanation.
+            try {
+              authWindow?.close()
+            } catch {
+              /* already gone */
+            }
             return
           }
 
           $('loginLink').href = login.authorizationUrl
           $('loginLink').textContent = 'Open the sign-in page ↗'
-          $('loginHint').textContent = login.needsCode
-            ? 'Sign in, then paste the code that page shows you.'
-            : login.userCode
-              ? `Sign in, and enter this code when asked: ${login.userCode}`
-              : 'Sign in; this page will notice when it completes.'
+          // Navigated now that the URL exists. A blocked or closed window is not an error:
+          // the link above does the same job.
+          try {
+            if (authWindow && !authWindow.closed) authWindow.location.href = login.authorizationUrl
+          } catch {
+            /* a blocker took it; the link stands */
+          }
+          $('loginHint').textContent = login.inputHint
+            ? login.inputHint
+            : login.needsCode
+              ? 'Sign in, then paste the code that page shows you.'
+              : login.userCode
+                ? `Sign in, and enter this code when asked: ${login.userCode}`
+                : 'Sign in; this page will notice when it completes.'
           $('loginCodeRow').hidden = !login.needsCode
           $('loginSubmit').hidden = !login.needsCode
 
