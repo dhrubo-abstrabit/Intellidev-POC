@@ -1,5 +1,5 @@
 import "server-only";
-import { chunkText, contentHash } from "./chunk";
+import { chunkPages, chunkText, contentHash } from "./chunk";
 import type { createServiceClient } from "@/lib/supabase/service";
 import type { Database } from "@/lib/db/database.types";
 
@@ -24,15 +24,26 @@ export interface ChunkSourceInput {
    * search_chunks.source_url, otherwise unused. */
   sourceUrl?: string | null;
   text: string;
+  /** Present only for a paginated source (a parsed PDF attachment) — see
+   * parseAttachmentText's own `pages` field. When set, chunking goes through
+   * chunkPages instead of chunkText so a chunk never straddles a page and
+   * page_number is exact. `text` should still be the pages' joined content
+   * (kept for source_kind/callers that don't care about pagination), but
+   * chunking itself is driven entirely by `pages` when present. */
+  pages?: { pageNumber: number; text: string }[];
 }
 
-/** Pure — no I/O, no client. Splits one source's text into chunk rows,
- * ready for upsert. Exported separately from insertChunksForSource(s) so
- * chunk_index density, content_hash uniqueness, and field pass-through can
- * be unit-tested without a database. */
-export function buildChunkRows(input: ChunkSourceInput): SearchChunkInsert[] {
-  const pieces = chunkText(input.text);
-  return pieces.map((content, index) => ({
+/** Splits one source's text into chunk rows, ready for upsert. Exported
+ * separately from insertChunksForSource(s) so chunk_index density,
+ * content_hash uniqueness, and field pass-through can be unit-tested
+ * without a database. Async because chunking now goes through LangChain's
+ * RecursiveCharacterTextSplitter. */
+export async function buildChunkRows(input: ChunkSourceInput): Promise<SearchChunkInsert[]> {
+  const pieces = input.pages
+    ? await chunkPages(input.pages)
+    : (await chunkText(input.text)).map((content) => ({ content, pageNumber: null as number | null }));
+
+  return pieces.map(({ content, pageNumber }, index) => ({
     client_space_id: input.clientSpaceId,
     project_id: input.projectId,
     source_kind: input.sourceKind,
@@ -44,6 +55,7 @@ export function buildChunkRows(input: ChunkSourceInput): SearchChunkInsert[] {
     source_url: input.sourceUrl ?? null,
     content,
     content_hash: contentHash(content),
+    page_number: pageNumber,
   }));
 }
 
@@ -73,7 +85,8 @@ function chunkArray<T>(items: T[], size: number): T[][] {
  * source whose text is empty/whitespace-only).
  */
 export async function insertChunksForSources(service: ServiceClient, inputs: ChunkSourceInput[]): Promise<number> {
-  const rows = inputs.flatMap(buildChunkRows);
+  const rowsPerInput = await Promise.all(inputs.map(buildChunkRows));
+  const rows = rowsPerInput.flat();
   if (rows.length === 0) return 0;
 
   let inserted = 0;
