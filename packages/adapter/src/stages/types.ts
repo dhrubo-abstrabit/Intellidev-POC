@@ -16,7 +16,17 @@ export interface BuiltinActions {
   createBranch(ctx: StageContext): Promise<{ branch: string; from: string }>
   /** Commits whatever the agent stages left in the worktree. Null when nothing changed. */
   commit(ctx: StageContext): Promise<{ sha: string; filesChanged: number } | null>
-  openPullRequest(ctx: StageContext): Promise<{ number: number; url: string }>
+  /**
+   * Returns the branches it actually used, not only the pull request.
+   *
+   * FOUND BY READING THE EVENT STREAM. `pr.opened` reported `head: "pr"` — the stage id — and a
+   * hard-coded `base: "main"`, because the engine had no way to learn either and guessed. The
+   * pull request itself was correct the whole time, so the only casualty was anyone trying to
+   * find the branch from the log.
+   */
+  openPullRequest(
+    ctx: StageContext,
+  ): Promise<{ number: number; url: string; head?: string; base?: string }>
 }
 
 /**

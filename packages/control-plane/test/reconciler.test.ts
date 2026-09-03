@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LifecycleReconciler, stoppedReason } from '../src/lifecycle/reconciler.js'
 import { InMemoryStore } from '../src/store.js'
+import { settle } from '../src/dispatch.js'
 import { allowTestRepo, TEST_SCOPE, TEST_REPO_URL } from './fixtures.js'
 
 const ARN = 'arn:aws:ecs:ap-south-1:1:task/intellidev-dev-runners/abc'
@@ -304,5 +305,43 @@ describe('surviving a broken database', () => {
     failing = false
     // Nothing to settle, but it must complete rather than stay poisoned.
     expect(await r.instance.sweep()).toEqual([])
+  })
+})
+
+describe('settling a run', () => {
+  it('does not record a failure reason on a run that succeeded', async () => {
+    /**
+     * FOUND BY READING A SUCCEEDED RUN. It carried "Essential container in task exited ·
+     * adapter exited 0" as its failure reason: the reconciler describes how the task stopped
+     * whether or not that was a failure, and `settle` stored it either way.
+     *
+     * Harmless to the run and expensive to a person — a successful run with a failure reason
+     * makes whoever is triaging look twice at the one run that was fine.
+     */
+    const { store, runId, taskId } = await storeWithRun()
+    await settle(
+      store,
+      runId,
+      taskId,
+      'succeeded',
+      [],
+      'https://example.test/pr/1',
+      'Essential container in task exited · adapter exited 0',
+    )
+
+    const settled = await store.getRun(runId)
+    expect(settled?.status).toBe('succeeded')
+    expect(settled?.failureReason).toBeUndefined()
+    // The pull request is still recorded; only the misleading reason is dropped.
+    expect(settled?.prUrl).toBe('https://example.test/pr/1')
+  })
+
+  it('still records why a failed run failed', async () => {
+    const { store, runId, taskId } = await storeWithRun()
+    await settle(store, runId, taskId, 'failed', [], undefined, 'the harness exited 1')
+
+    const settled = await store.getRun(runId)
+    expect(settled?.status).toBe('failed')
+    expect(settled?.failureReason).toBe('the harness exited 1')
   })
 })

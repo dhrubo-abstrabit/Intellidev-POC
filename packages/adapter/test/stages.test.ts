@@ -75,7 +75,12 @@ class ScriptedCommands implements CommandRunner {
 const noBuiltins: BuiltinActions = {
   createBranch: async () => ({ branch: 'feat/x', from: 'main' }),
   commit: async () => ({ sha: 'abc1234', filesChanged: 1 }),
-  openPullRequest: async () => ({ number: 1, url: 'https://example.test/pr/1' }),
+  openPullRequest: async () => ({
+    number: 1,
+    url: 'https://example.test/pr/1',
+    head: 'feat/x',
+    base: 'main',
+  }),
 }
 
 function outputs(map: Partial<Record<StageId, unknown>> = {}): StageOutputSink {
@@ -851,5 +856,25 @@ describe('a stage that may not write files', () => {
       },
     })
     expect((await engine.run()).outcome).toBe('succeeded')
+  })
+})
+
+describe('what pr.opened says', () => {
+  it('names the branch that was actually pushed', async () => {
+    /**
+     * FOUND BY READING THE EVENT STREAM. It reported `head: "pr"` — the stage id — and a
+     * hard-coded `base: "main"`, because the engine had no way to learn either and guessed. The
+     * pull request was correct throughout, so the only casualty was anyone trying to find the
+     * branch from the log.
+     */
+    const { engine, events } = harness({
+      template: { name: 't', stages: [{ id: 'pr', kind: 'builtin', action: 'github.open_pr' }] },
+    })
+    await engine.run()
+
+    const opened = events.find((e) => e.type === 'pr.opened')
+    expect(opened?.data).toMatchObject({ number: 1, head: 'feat/x', base: 'main' })
+    // Emphatically not the stage id.
+    expect((opened?.data as { head: string }).head).not.toBe('pr')
   })
 })

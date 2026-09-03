@@ -281,7 +281,14 @@ export class StageEngine {
         const pr = await this.deps.builtins.openPullRequest(ctx)
         this.deps.bus.emit({
           type: 'pr.opened',
-          data: { number: pr.number, url: pr.url, base: 'main', head: ctx.stage },
+          data: {
+            number: pr.number,
+            url: pr.url,
+            // What the builtin actually pushed and targeted. This used to be the stage id and a
+            // hard-coded "main", which meant the log named a branch that never existed.
+            base: pr.base ?? 'main',
+            head: pr.head ?? ctx.stage,
+          },
         })
         return
       }

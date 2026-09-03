@@ -686,7 +686,18 @@ export async function settle(
     // the stream-derived list with an empty array is how the stage list went blank.
     ...(records.length ? { records: records as never } : {}),
     ...(prUrl ? { prUrl } : {}),
-    ...(failureReason ? { failureReason } : {}),
+    /**
+     * Never on a run that succeeded.
+     *
+     * FOUND BY READING A SUCCEEDED RUN. It carried "Essential container in task exited ·
+     * adapter exited 0" — the reconciler describes how the task stopped whether or not that
+     * was a failure, and this stored it regardless. A successful run with a failure reason
+     * makes anyone triaging look twice at the one run that was fine.
+     *
+     * Guarded here rather than at each caller: there are three, and this is the only place
+     * that knows the outcome and the reason together.
+     */
+    ...(failureReason && !succeeded ? { failureReason } : {}),
   })
   // A finished run puts the task in review, not done: a human decides whether the PR is
   // acceptable, which is the whole reason the PR is the boundary.

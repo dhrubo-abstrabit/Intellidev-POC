@@ -66,7 +66,9 @@ export class GitBuiltins implements BuiltinActions {
     return commit
   }
 
-  async openPullRequest(ctx: StageContext): Promise<{ number: number; url: string }> {
+  async openPullRequest(
+    ctx: StageContext,
+  ): Promise<{ number: number; url: string; head: string; base: string }> {
     const { repo, task } = this.opts
 
     const commit = await this.commit(ctx)
@@ -102,7 +104,8 @@ export class GitBuiltins implements BuiltinActions {
         ...(this.opts.runUrl ? { runUrl: this.opts.runUrl } : {}),
       }),
     })
-    return pr
+    // The branches too, so the event can say what actually happened rather than guess.
+    return { ...pr, head: this.opts.branch, base: this.opts.baseBranch }
   }
 
   /**
