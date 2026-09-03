@@ -492,6 +492,13 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             task_id: existingId,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
+            // The task already existed before this event linked to it —
+            // 'created_from' is reserved for the task's originating
+            // event(s) below. Set explicitly: PostgREST's bulk-insert path
+            // (json_populate_recordset) writes a literal NULL for a key
+            // missing from the JSON row rather than applying the column's
+            // default, which the not-null role column then rejects.
+            role: "mentioned" as const,
           })),
           ...citationSourceLinks(existingId, clientSpaceId, citedChunks),
         );
@@ -552,6 +559,9 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             task_id: conflictRow.id,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
+            // See the existingId merge branch above for why this is
+            // explicit rather than left for the column default.
+            role: "mentioned" as const,
           })),
           ...citationSourceLinks(conflictRow.id, clientSpaceId, citedChunks),
         );
@@ -565,6 +575,10 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
           task_id: newId,
           normalized_event_id: eventId,
           client_space_id: clientSpaceId,
+          // These are the event(s) that generated the task itself, as
+          // opposed to a later merge onto an already-open task (see the
+          // merge branches above, which use 'mentioned' instead).
+          role: "created_from" as const,
         })),
         ...citationSourceLinks(newId, clientSpaceId, citedChunks),
       );
@@ -574,10 +588,17 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       // (task_id, normalized_event_id) is the primary key — a
       // redelivered/rerun job citing the same event again is a harmless
       // no-op, not a duplicate-key error, as long as we ignore conflicts.
-      await service.from("task_sources").upsert(sourceLinks, {
+      const { error: sourceLinksError } = await service.from("task_sources").upsert(sourceLinks, {
         onConflict: "task_id,normalized_event_id",
         ignoreDuplicates: true,
       });
+      // Never thrown: losing provenance links must not fail extraction
+      // itself (the tasks above are already committed) — but a silently
+      // ignored error here is exactly how this went undetected before:
+      // tasks existed with zero task_sources rows and nothing surfaced it.
+      if (sourceLinksError) {
+        console.error(`[llm] task_sources upsert failed for client space ${clientSpaceId}, date ${date}:`, sourceLinksError);
+      }
     }
 
     // Mark every event this run looked at as processed, whether or not it
