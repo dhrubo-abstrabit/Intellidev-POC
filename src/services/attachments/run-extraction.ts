@@ -329,5 +329,6 @@ async function processOne(
     title: attachment.filename,
     sourceUrl: attachment.normalized_events?.resource_url,
     text: parsed.text,
+    pages: parsed.pages,
   });
 }
