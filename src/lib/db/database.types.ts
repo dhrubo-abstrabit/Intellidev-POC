@@ -970,6 +970,7 @@ export type Database = {
           fts: unknown
           id: string
           occurred_at: string
+          page_number: number | null
           project_id: string | null
           provider: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -993,6 +994,7 @@ export type Database = {
           fts?: unknown
           id?: string
           occurred_at: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -1016,6 +1018,7 @@ export type Database = {
           fts?: unknown
           id?: string
           occurred_at?: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id?: string
@@ -1933,6 +1936,7 @@ export type Database = {
           content: string
           distance: number
           occurred_at: string
+          page_number: number
           provider: Database["public"]["Enums"]["connector_provider"]
           source_id: string
           source_kind: Database["public"]["Enums"]["chunk_source"]

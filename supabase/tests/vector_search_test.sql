@@ -3,7 +3,7 @@
 -- (requires the local stack: `supabase start`).
 
 begin;
-select plan(15);
+select plan(16);
 
 -- =========================================================================
 -- Structural checks
@@ -134,13 +134,16 @@ insert into public.event_attachments (id, normalized_event_id, client_space_id, 
 -- c4: pure e2, orthogonal to query (distance 1.0, filtered by p_max_distance) — context_document chunk, space A.
 -- c5: identical to query (distance 0) — space B, must never be returned for space A queries.
 insert into public.search_chunks
-  (id, client_space_id, project_id, source_kind, source_id, chunk_index, provider, occurred_at, title, content, embedding, embedding_model, embed_status, content_hash)
+  (id, client_space_id, project_id, source_kind, source_id, chunk_index, provider, occurred_at, title, content, embedding, embedding_model, embed_status, content_hash, page_number)
 values
-  ('70000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'normalized_event', '50000000-0000-0000-0000-00000000009a', 0, 'mock', now(), 'c1', 'closest match', pg_temp.test_vec(1, 1), 'text-embedding-3-small@1024', 'embedded', '\x00'),
-  ('70000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'event_attachment', '60000000-0000-0000-0000-00000000009a', 0, 'mock', now(), 'c2', 'second closest', pg_temp.test_vec(1, 0.8, 2, 0.6), 'text-embedding-3-small@1024', 'embedded', '\x00'),
-  ('70000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-00000000009a', null, 'normalized_event', '50000000-0000-0000-0000-00000000009a', 1, 'mock', now(), 'c3-wrong-model', 'third, wrong model', pg_temp.test_vec(1, 0.6, 2, 0.8), 'some-other-model', 'embedded', '\x00'),
-  ('70000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'context_document', '80000000-0000-0000-0000-00000000009a', 0, null, now(), 'c4-orthogonal', 'unrelated topic', pg_temp.test_vec(2, 1), 'text-embedding-3-small@1024', 'embedded', '\x00'),
-  ('70000000-0000-0000-0000-000000000005', '10000000-0000-0000-0000-00000000009b', null, 'normalized_event', '90000000-0000-0000-0000-000000000099', 0, 'mock', now(), 'c5-other-space', 'must never leak', pg_temp.test_vec(1, 1), 'text-embedding-3-small@1024', 'embedded', '\x00');
+  -- c2 (event_attachment) carries page_number 3, exercising the one
+  -- source_kind page_number is ever populated for; every other row is null,
+  -- matching every non-paginated source in production.
+  ('70000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'normalized_event', '50000000-0000-0000-0000-00000000009a', 0, 'mock', now(), 'c1', 'closest match', pg_temp.test_vec(1, 1), 'text-embedding-3-small@1024', 'embedded', '\x00', null),
+  ('70000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'event_attachment', '60000000-0000-0000-0000-00000000009a', 0, 'mock', now(), 'c2', 'second closest', pg_temp.test_vec(1, 0.8, 2, 0.6), 'text-embedding-3-small@1024', 'embedded', '\x00', 3),
+  ('70000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-00000000009a', null, 'normalized_event', '50000000-0000-0000-0000-00000000009a', 1, 'mock', now(), 'c3-wrong-model', 'third, wrong model', pg_temp.test_vec(1, 0.6, 2, 0.8), 'some-other-model', 'embedded', '\x00', null),
+  ('70000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-00000000009a', 'e0000000-0000-0000-0000-00000000009a', 'context_document', '80000000-0000-0000-0000-00000000009a', 0, null, now(), 'c4-orthogonal', 'unrelated topic', pg_temp.test_vec(2, 1), 'text-embedding-3-small@1024', 'embedded', '\x00', null),
+  ('70000000-0000-0000-0000-000000000005', '10000000-0000-0000-0000-00000000009b', null, 'normalized_event', '90000000-0000-0000-0000-000000000099', 0, 'mock', now(), 'c5-other-space', 'must never leak', pg_temp.test_vec(1, 1), 'text-embedding-3-small@1024', 'embedded', '\x00', null);
 
 -- 9. Cross-tenant isolation: space B's identical-to-query chunk never
 --    returns for a space-A query, even unfiltered by distance.
@@ -260,6 +263,24 @@ select is(
     'c4-orthogonal', null
   ),
   'citable_event_id resolves correctly for normalized_event, event_attachment, and context_document chunks'
+);
+
+-- 16. page_number survives the RPC's drop/recreate (20260902000100): the
+--     one paginated source (c2, an event_attachment) returns its page,
+--     every other source_kind returns null.
+select is(
+  (
+    select jsonb_object_agg(title, page_number)
+    from public.match_search_chunks(
+      p_client_space_id := '10000000-0000-0000-0000-00000000009a',
+      p_embedding := pg_temp.test_vec(1, 1),
+      p_max_distance := 2,
+      p_one_per_source := false
+    )
+    where title in ('c1', 'c2', 'c4-orthogonal')
+  ),
+  jsonb_build_object('c1', null, 'c2', 3, 'c4-orthogonal', null),
+  'page_number is returned per row: set for the paginated attachment chunk, null for every other source_kind'
 );
 
 select * from finish();
