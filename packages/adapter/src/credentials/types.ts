@@ -47,6 +47,14 @@ export interface ResolvedSecrets {
 export interface CredentialProvider {
   gitCredential(host: string): Promise<GitCredential>
   seatCredential(harness: string): Promise<SeatCredential>
+  /**
+   * Hand back a credential the harness rotated for itself.
+   *
+   * Optional because a local provider has nowhere to send it — the file on the developer's disk
+   * is already the source of truth. It matters where the seat lives in a database and the
+   * container is thrown away, which is every deployed run.
+   */
+  reportSeat?(harness: string, files: Array<{ path: string; contents: string }>): Promise<void>
   /** Upstream MCP server token, for the gateway rather than the harness. */
   mcpToken(serverId: string): Promise<{ token: string; expiresAt: string }>
   secrets(stage: StageId): Promise<ResolvedSecrets>

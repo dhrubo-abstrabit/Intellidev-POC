@@ -44,7 +44,7 @@ export interface CredentialBrokerOptions {
    * Optional: a store with no refresher configured behaves exactly as before, which is what the
    * in-memory development loop and most tests want.
    */
-  readonly seatRefresher?: Pick<SeatRefresher, 'ensureFresh'>
+  readonly seatRefresher?: Pick<SeatRefresher, 'ensureFresh' | 'accept' | 'inspect'>
   /** Resolves an upstream MCP server's current token, refreshing if needed. */
   readonly mcpToken: (serverId: string) => Promise<string | undefined>
   /**
@@ -206,7 +206,65 @@ export class ControlPlaneCredentialBroker {
     // Empty material is a valid answer, not an error: opencode's free tier needs no login,
     // and a harness that does need one complains far more clearly than a boot failure.
     this.record(runId, 'seat', harness, true, material ? undefined : 'no account connected')
-    return { harness, material: material ?? {}, expiresAt: this.expiry() }
+    /**
+     * The token's own expiry, not this answer's TTL.
+     *
+     * A run longer than the token's remaining life is not a hypothetical: the refresh margin is
+     * ninety minutes and a hard task can take longer than that, at which point the token expires
+     * mid-run. Claude Code will not refresh it — it cannot, headless — so the run would simply
+     * fail somewhere in the middle.
+     *
+     * Telling the container when the credential dies lets it ask for another one before then,
+     * which is the mechanism the broker was built for: "a run re-asks cheaply". The refresh
+     * happens centrally on that second ask, so a run of any length is a series of fresh tokens
+     * rather than one that has to last.
+     */
+    const expiry = await this.opts.seatRefresher
+      ?.inspect?.({ clientSpaceId: task.clientSpaceId }, task.harness as HarnessId)
+      .catch(() => undefined)
+    return {
+      harness,
+      material: material ?? {},
+      expiresAt: expiry?.accessExpiresAt?.toISOString() ?? this.expiry(),
+    }
+  }
+
+  /**
+   * A credential the run's harness rotated, handed back so it is not lost with the container.
+   *
+   * Refreshing centrally removes the reason a harness would rotate, not its ability: codex
+   * refreshes reactively on a 401, and Claude Code would too but for the headless bug that
+   * stops it. When one does, the container holds a working token and the database holds a dead
+   * one — which is the state the claude-code seat was actually found in.
+   *
+   * Two guards make accepting this safe:
+   *
+   *  - **It must be for this run's own harness.** The run id comes from the token, never the
+   *    body, so a run cannot write over a seat it was not dispatched for.
+   *  - **It must be newer than what is stored.** Two containers can rotate in either order, and
+   *    the older bundle arriving second would otherwise overwrite the newer one — replacing a
+   *    working credential with an invalidated one, which is worse than doing nothing.
+   */
+  async reportSeat(
+    runId: string,
+    harness: string,
+    files: Array<{ path: string; contents: string }>,
+  ): Promise<{ stored: boolean; reason?: string }> {
+    const task = await this.taskFor(runId)
+    if (harness !== task.harness) {
+      this.record(runId, 'seat', harness, false, `run is dispatched for ${task.harness}`)
+      throw new CredentialRefused(403, `this run may only report its own harness`)
+    }
+    if (!this.opts.seatRefresher?.accept) {
+      return { stored: false, reason: 'this control plane does not store rotations' }
+    }
+    const outcome = await this.opts.seatRefresher.accept(
+      { clientSpaceId: task.clientSpaceId },
+      task.harness as HarnessId,
+      files,
+    )
+    this.record(runId, 'seat', `${harness} rotation`, outcome.stored, outcome.reason)
+    return outcome
   }
 
   /**

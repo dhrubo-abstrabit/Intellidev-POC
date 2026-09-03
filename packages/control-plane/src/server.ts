@@ -87,7 +87,7 @@ export interface ServerOptions {
    * Passed through to the credential broker. Absent in tests and in the in-memory loop, where
    * there is nothing to refresh and no provider to call.
    */
-  seatRefresher?: Pick<SeatRefresher, 'ensureFresh'>
+  seatRefresher?: Pick<SeatRefresher, 'ensureFresh' | 'accept' | 'inspect'>
   /** Absolute path to the directory holding `index.html`. */
   publicDir?: string
 }
@@ -836,6 +836,23 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.post(
     '/internal/creds/seat',
     brokered((runId, body) => broker.seat(runId, String(body['harness'] ?? ''))),
+  )
+  /**
+   * A credential a run's harness rotated for itself, handed back.
+   *
+   * Refreshing centrally removes the *reason* a harness would rotate, not its ability — codex
+   * refreshes reactively on a 401. Without this the container would finish holding a working
+   * token while the stored one is dead, which is the state the claude-code seat was found in.
+   */
+  app.post(
+    '/internal/creds/seat-rotation',
+    brokered((runId, body) =>
+      broker.reportSeat(
+        runId,
+        String(body['harness'] ?? ''),
+        (body['files'] ?? []) as Array<{ path: string; contents: string }>,
+      ),
+    ),
   )
   app.post(
     '/internal/creds/mcp',

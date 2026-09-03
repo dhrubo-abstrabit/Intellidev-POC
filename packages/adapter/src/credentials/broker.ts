@@ -111,6 +111,8 @@ export class CredentialBroker {
         return this.gitCredential(body, res)
       case '/seat':
         return this.seat(url, res)
+      case '/seat-rotation':
+        return this.seatRotation(body, res)
       case '/mcp-token':
         return this.mcpToken(url, res)
       case '/secrets':
@@ -182,6 +184,36 @@ export class CredentialBroker {
     this.record({ kind: 'seat', detail: harness, stage: this.stage(), granted: true })
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(cred))
+  }
+
+  /**
+   * A credential the harness rotated for itself, passed upstream.
+   *
+   * Deliberately forgiving: a provider that cannot store rotations answers 200 and does
+   * nothing, because a local run keeps its credential on disk where it already belongs. Failing
+   * here would turn a housekeeping detail into a run-ending error.
+   */
+  private async seatRotation(body: string, res: ServerResponse): Promise<void> {
+    try {
+      const parsed = JSON.parse(body || '{}') as {
+        harness?: string
+        files?: Array<{ path: string; contents: string }>
+      }
+      await this.opts.provider.reportSeat?.(parsed.harness ?? '', parsed.files ?? [])
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('ok')
+    } catch (error) {
+      // Recorded, not raised. The run is unaffected either way: the container still holds a
+      // working credential; only the stored copy misses an update.
+      this.record({
+        kind: 'seat',
+        detail: `rotation not stored: ${error instanceof Error ? error.message : String(error)}`,
+        stage: this.stage(),
+        granted: false,
+      })
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('ok')
+    }
   }
 
   private async mcpToken(url: URL, res: ServerResponse): Promise<void> {

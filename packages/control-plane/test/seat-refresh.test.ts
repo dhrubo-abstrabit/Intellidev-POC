@@ -417,3 +417,69 @@ describe('a refresh token the provider will never accept again', () => {
     expect(stored).toHaveLength(1)
   })
 })
+
+describe('a credential the harness rotated for itself', () => {
+  /**
+   * Refreshing centrally removes the *reason* a harness would rotate, not its ability: codex
+   * refreshes reactively on a 401, and Claude Code would too but for the headless bug that stops
+   * it. Designing on that bug staying unfixed would be designing on sand.
+   *
+   * When one does rotate, the container holds a working credential and the database holds a dead
+   * one — which is the state the claude-code seat was actually found in. So the container reports
+   * it back, and these are the guards that make accepting a report safe.
+   */
+  it('stores a rotation that is newer than what we hold', async () => {
+    const { store, current } = seatStore(claudeFile({ expiresInMs: 30 * 60 * 1000 }))
+    const rotated = claudeFile({ expiresInMs: 8 * HOUR, refresh: 'rotated-by-the-run' })
+
+    const outcome = await new SeatRefresher({ accounts: store }).accept(SCOPE, 'claude-code', [
+      { path: '.claude/.credentials.json', contents: rotated },
+    ])
+
+    expect(outcome.stored).toBe(true)
+    expect(JSON.parse(current()).claudeAiOauth.refreshToken).toBe('rotated-by-the-run')
+  })
+
+  it('refuses one that is older, whichever order the reports arrive in', async () => {
+    /**
+     * Two containers can rotate in either order and report in the other. Accepting blindly
+     * would let the older bundle land last and overwrite the newer one — replacing a working
+     * credential with one the provider has already invalidated, which is worse than never
+     * having accepted a write-back at all.
+     */
+    const { store, current, stored } = seatStore(claudeFile({ expiresInMs: 8 * HOUR }))
+    const older = claudeFile({ expiresInMs: 30 * 60 * 1000, refresh: 'stale-token' })
+
+    const outcome = await new SeatRefresher({ accounts: store }).accept(SCOPE, 'claude-code', [
+      { path: '.claude/.credentials.json', contents: older },
+    ])
+
+    expect(outcome.stored).toBe(false)
+    expect(outcome.reason).toMatch(/newer credential is already stored/)
+    expect(stored).toHaveLength(1)
+    expect(JSON.parse(current()).claudeAiOauth.refreshToken).toBe('refresh-1')
+  })
+
+  it('refuses a report it cannot parse', async () => {
+    // Storing it would break every future run to honour a report that told us nothing.
+    const { store, stored } = seatStore(claudeFile({ expiresInMs: 30 * 60 * 1000 }))
+    const outcome = await new SeatRefresher({ accounts: store }).accept(SCOPE, 'claude-code', [
+      { path: '.claude/.credentials.json', contents: '{"claudeAiOauth": {"acce' },
+    ])
+    expect(outcome.stored).toBe(false)
+    expect(stored).toHaveLength(1)
+  })
+
+  it('takes the lock, so a rotation and a refresh cannot interleave', async () => {
+    const { store } = seatStore(claudeFile({ expiresInMs: 30 * 60 * 1000 }))
+    let locked = 0
+    const lock = async <T>(_s: SpaceScope, _h: string, body: () => Promise<T>): Promise<T> => {
+      locked++
+      return body()
+    }
+    await new SeatRefresher({ accounts: store, lock }).accept(SCOPE, 'claude-code', [
+      { path: '.claude/.credentials.json', contents: claudeFile({ expiresInMs: 8 * HOUR }) },
+    ])
+    expect(locked).toBe(1)
+  })
+})

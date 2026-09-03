@@ -16,6 +16,8 @@ import type { ProjectionSpec } from '../config/spec.js'
 import { CredentialBroker } from '../credentials/broker.js'
 import { BrokerClient } from '../credentials/client.js'
 import { materialiseSeat } from '../credentials/seat.js'
+import { SeatLifecycle } from '../credentials/seat-lifecycle.js'
+import { SeatWriteBack } from '../credentials/seat-writeback.js'
 import { materialiseStageEnv, writeDotenv } from '../credentials/stage-env.js'
 import type { CredentialProvider } from '../credentials/types.js'
 import { ClaudeCodeDriver } from '../driver/claude-code/driver.js'
@@ -109,6 +111,17 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
   const brokerSocket = opts.paths?.brokerSocket ?? spec.brokerSocket
   const home = opts.paths?.home ?? resolvePath(spec.git.worktreePath, '..', '.home')
   await mkdir(home, { recursive: true })
+
+  /**
+   * Things to stop when the run ends, however it ends.
+   *
+   * The seat watchers are timers: one renewing the credential before it expires, one reporting a
+   * rotation back. A run that threw would otherwise leave them running until the container died,
+   * and the write-back's final check would never happen — losing exactly the rotation it exists
+   * to capture.
+   */
+  const cleanups: Array<() => void | Promise<void>> = []
+  const onCleanup = (task: () => void | Promise<void>) => cleanups.push(task)
 
   const events: AgentEvent[] = []
   const questions: string[] = []
@@ -277,6 +290,44 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
           data: { harness: spec.harness, envVars: Object.keys(seatEnv), files: written },
         })
       }
+
+      /**
+       * Two things watch the credential for the rest of the run.
+       *
+       * **Renewal**, because a run can outlast its token. The control plane hands out one that
+       * is fresh at dispatch, which covers a run finishing inside the refresh margin and not a
+       * longer one — and Claude Code cannot refresh headless, so the run would simply fail
+       * partway through. Asking again is cheap and refreshes centrally.
+       *
+       * **Write-back**, because a harness can still rotate the token itself: codex does so
+       * reactively on a 401. The container would then hold a working credential while the stored
+       * one is dead, which is the state the claude-code seat was actually found in. Reporting the
+       * change means whoever rotates, the store learns.
+       */
+      const lifecycle = new SeatLifecycle({
+        fetchSeat: () => brokerClient.seatCredential(spec.harness),
+        materialise: (credential) => materialiseSeat({ credential, home }),
+        onRenew: (expiresAt) =>
+          bus.emit({
+            type: 'seat.authenticated',
+            data: { harness: spec.harness, envVars: Object.keys(seatEnv), files: written },
+          }) ?? void expiresAt,
+      })
+      lifecycle.observe(seat)
+      lifecycle.start()
+      onCleanup(() => lifecycle.stop())
+
+      if (written.length > 0 && brokerClient.reportSeat) {
+        const contents = await Promise.all(
+          written.map(async (path) => ({ path, contents: await readFile(path, 'utf8') })),
+        )
+        const writeBack = new SeatWriteBack({
+          files: contents,
+          report: (changed) => brokerClient.reportSeat!(spec.harness, changed),
+        })
+        writeBack.start()
+        onCleanup(() => writeBack.stop())
+      }
     } catch (error) {
       // Not fatal: a local run often has no seat, and the harness saying "Not logged in" is a
       // clearer signal than a bootstrap failure. Dispatch is where a missing account is caught.
@@ -421,7 +472,10 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       ...(pr?.type === 'pr.opened' ? { prUrl: pr.data.url } : {}),
     }
   } finally {
-    // Ordered so nothing is left listening if an earlier close throws.
+    // Ordered so nothing is left listening if an earlier close throws. The seat watchers go
+    // first: the write-back takes one last look at the credential file, and that has to happen
+    // while the filesystem is still there.
+    for (const task of cleanups) await Promise.resolve(task()).catch(() => undefined)
     await gatewayHttp.stop().catch(() => undefined)
     await upstream.close().catch(() => undefined)
     await broker.stop().catch(() => undefined)

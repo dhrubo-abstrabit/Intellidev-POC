@@ -25,6 +25,14 @@ export class BrokerClient {
     ) as SeatCredential
   }
 
+  /** Reports a credential the harness rewrote, so the stored copy does not go stale. */
+  async reportSeat(
+    harness: string,
+    files: Array<{ path: string; contents: string }>,
+  ): Promise<void> {
+    await this.call('POST', '/seat-rotation', JSON.stringify({ harness, files }))
+  }
+
   async mcpToken(serverId: string): Promise<{ token: string; expiresAt: string }> {
     return JSON.parse(
       await this.call('GET', `/mcp-token?server=${encodeURIComponent(serverId)}`),

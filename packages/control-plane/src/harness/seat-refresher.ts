@@ -72,6 +72,80 @@ export class SeatRefresher {
     return attempt
   }
 
+  /**
+   * Store a credential a run's harness rotated, if it is newer than what we hold.
+   *
+   * The newness check is the whole safety of this path. Two containers can rotate in either
+   * order and report in the other; accepting blindly would let the older bundle land last and
+   * overwrite a working credential with one the provider has already invalidated — strictly
+   * worse than never having accepted a write-back at all.
+   *
+   * Compared by the harness's own expiry rather than by arrival time, because arrival order says
+   * nothing about which token the provider considers current.
+   */
+  async accept(
+    scope: SpaceScope,
+    harness: HarnessId,
+    files: Array<{ path: string; contents: string }>,
+  ): Promise<{ stored: boolean; reason?: string }> {
+    const refresher = refresherFor(harness)
+    if (!refresher) return { stored: false, reason: 'no refresher for this harness' }
+
+    const name = refresher.path.split('/').pop()!
+    const incoming = files.find((file) => file.path.endsWith(name))
+    if (!incoming) return { stored: false, reason: `no ${name} in the report` }
+
+    let incomingExpiry
+    try {
+      incomingExpiry = refresher.expiryOf(incoming.contents).accessExpiresAt
+    } catch {
+      // Unparseable is not a credential. Storing it would break every future run to honour a
+      // report that told us nothing.
+      return { stored: false, reason: 'the reported credential could not be parsed' }
+    }
+    if (!incomingExpiry) return { stored: false, reason: 'the reported credential has no expiry' }
+
+    const run = async () => {
+      // Read inside the lock, so the comparison is against what is stored *now* rather than
+      // what was stored when this request arrived.
+      const currentContents = await this.contentsOf(scope, harness, refresher)
+      const current = currentContents
+        ? (() => {
+            try {
+              return refresher.expiryOf(currentContents).accessExpiresAt
+            } catch {
+              return undefined
+            }
+          })()
+        : undefined
+
+      if (current && current.getTime() >= incomingExpiry.getTime()) {
+        this.emit({
+          harness,
+          outcome: 'still-fresh',
+          detail: 'a newer credential is already stored',
+        })
+        return { stored: false, reason: 'a newer credential is already stored' }
+      }
+
+      await this.opts.accounts.connect(scope, {
+        harness,
+        label: harness,
+        files: [{ path: refresher.path, contents: incoming.contents }],
+        connectedAt: new Date().toISOString(),
+        importedFrom: 'rotated by a run and reported back',
+      })
+      this.emit({
+        harness,
+        outcome: 'refreshed',
+        detail: `rotated by a run; valid until ${incomingExpiry.toISOString()}`,
+      })
+      return { stored: true }
+    }
+
+    return this.opts.lock ? this.opts.lock(scope, harness, run) : run()
+  }
+
   /** What the seat's own file says about its freshness, without refreshing anything. */
   async inspect(scope: SpaceScope, harness: HarnessId): Promise<SeatExpiry | undefined> {
     const refresher = refresherFor(harness)

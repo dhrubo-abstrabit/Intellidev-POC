@@ -35,6 +35,13 @@ export class ControlPlaneProvider implements CredentialProvider {
     return this.post<SeatCredential>('/internal/creds/seat', { harness })
   }
 
+  async reportSeat(
+    harness: string,
+    files: Array<{ path: string; contents: string }>,
+  ): Promise<void> {
+    await this.post('/internal/creds/seat-rotation', { harness, files })
+  }
+
   async mcpToken(serverId: string): Promise<{ token: string; expiresAt: string }> {
     return this.post<{ token: string; expiresAt: string }>('/internal/creds/mcp', { serverId })
   }
