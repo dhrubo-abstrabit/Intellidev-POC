@@ -368,6 +368,14 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       defaultHarness: spec.harness,
       drivers: opts.drivers ?? defaultDrivers(),
       commands,
+      /**
+       * So the engine can check that a read-only stage stayed read-only.
+       *
+       * The repository already answers this for the commit stage; the same answer is what tells
+       * the engine whether a stage broke its own contract. It matters more now that codex is run
+       * without its sandbox inside the container, since nothing else was enforcing it.
+       */
+      worktreeStatus: () => repo.status(),
       builtins,
       outputs: { take: (s) => outputs.get(s) },
       store: opts.store ?? new FileStateStore(statePath(opts, spec)),
@@ -435,9 +443,19 @@ function modelFor(spec: RunSpec): { model?: string } {
 
 /** Drivers for a real run. The gateway token reaches them via the engine's stage env. */
 function defaultDrivers(): Partial<Record<HarnessId, HarnessDriver>> {
+  /**
+   * Set by the runner image, and only by it.
+   *
+   * Codex refuses to run shell commands when its own sandbox cannot start, which is the case on
+   * Fargate — so inside the run container it is told the container is the sandbox. Not inferred
+   * from "am I on Linux" or "is there a /.dockerenv": inline mode runs this same code on a
+   * developer's own machine, where the sandbox both works and is the only thing standing between
+   * a model and their home directory.
+   */
+  const externallySandboxed = process.env['INTELLIDEV_CONTAINER'] === '1'
   return {
     'claude-code': new ClaudeCodeDriver(),
-    codex: new CodexDriver(),
+    codex: new CodexDriver({ externallySandboxed }),
     opencode: new OpencodeDriver(),
   }
 }

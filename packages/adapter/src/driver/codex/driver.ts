@@ -45,6 +45,23 @@ export function sandboxForToolMode(mode: 'none' | 'read_only' | 'full'): CodexSa
 
 export interface CodexDriverOptions {
   binary?: string
+  /**
+   * True when this process is already inside a disposable container.
+   *
+   * FOUND BY RUNNING IT ON FARGATE. Codex sandboxes model-generated shell commands using Linux
+   * namespaces, and Fargate's kernel has unprivileged user namespaces disabled — so every shell
+   * command failed with "the shell sandbox can't start", the model gave up after two attempts,
+   * and the run reached the pr stage having changed nothing.
+   *
+   * Codex's own help says what the bypass flag is for: "environments that are externally
+   * sandboxed". A run container is exactly that — ephemeral, no host mounts, its own network
+   * rules, destroyed when the run ends. The container is the boundary; nesting a second one that
+   * cannot start only breaks the run.
+   *
+   * The cost is that codex no longer enforces a read-only stage, so the engine checks that
+   * itself afterwards rather than trusting the harness to have been constrained.
+   */
+  externallySandboxed?: boolean
   sandbox?: CodexSandbox
   /** Needed when the worktree is not itself a git repository. */
   skipGitRepoCheck?: boolean
@@ -59,6 +76,14 @@ export function codexSandboxFor(mode: StageRequest['toolsMode']): string {
   return mode === 'full' ? 'workspace-write' : 'read-only'
 }
 
+/**
+ * Told not to sandbox, because something else already did.
+ *
+ * Named rather than inlined so the one place it is passed reads as a decision with a reason
+ * above it, and so searching for it finds that reason rather than a bare string in an argv.
+ */
+const BYPASS_SANDBOX_FLAG = '--dangerously-bypass-approvals-and-sandbox'
+
 export function buildCodexArgs(req: StageRequest, opts: CodexDriverOptions = {}): string[] {
   const args = ['exec', '--json']
 
@@ -67,9 +92,18 @@ export function buildCodexArgs(req: StageRequest, opts: CodexDriverOptions = {})
   if (req.resume) args.splice(1, 0, 'resume', req.resume)
 
   args.push('-C', req.cwd)
-  // Per stage, not per driver: a read-only stage that can write is not read-only. An explicit
-  // driver option still wins, since a caller setting it means to.
-  args.push('-s', opts.sandbox ?? codexSandboxFor(req.toolsMode))
+  /**
+   * Per stage, not per driver: a read-only stage that can write is not read-only. An explicit
+   * driver option still wins, since a caller setting it means to.
+   *
+   * Unless the container around us is already the sandbox — there codex's own cannot start, and
+   * asking for one makes every shell command it runs fail instead.
+   */
+  if (opts.externallySandboxed && !opts.sandbox) {
+    args.push(BYPASS_SANDBOX_FLAG)
+  } else {
+    args.push('-s', opts.sandbox ?? codexSandboxFor(req.toolsMode))
+  }
   if (opts.skipGitRepoCheck !== false) args.push('--skip-git-repo-check')
   if (opts.ephemeral) args.push('--ephemeral')
   if (req.model) args.push('-m', req.model)

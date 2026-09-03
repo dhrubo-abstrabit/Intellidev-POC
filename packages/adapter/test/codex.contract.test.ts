@@ -198,6 +198,37 @@ describe('codex invocation', () => {
     expect(args.at(-1)).toBe('do the thing')
   })
 
+  it('sandboxes by stage when it is the only sandbox there is', () => {
+    // On a developer's own machine this is what stands between a model and their home
+    // directory, so it stays exactly as it was.
+    expect(buildCodexArgs({ ...base, toolsMode: 'full' })).toContain('workspace-write')
+    expect(buildCodexArgs({ ...base, toolsMode: 'read_only' })).toContain('read-only')
+  })
+
+  it('asks for no sandbox when the container is already one', () => {
+    /**
+     * FOUND BY RUNNING IT ON FARGATE. Codex sandboxes shell commands with Linux namespaces, and
+     * Fargate's kernel has unprivileged user namespaces disabled — so every command failed with
+     * "the shell sandbox can't start", the model gave up, and the run reached the pr stage
+     * having changed nothing at all.
+     *
+     * The container is the boundary: ephemeral, no host mounts, its own network rules. Codex's
+     * own help says the bypass flag is for "environments that are externally sandboxed".
+     */
+    const args = buildCodexArgs({ ...base, toolsMode: 'full' }, { externallySandboxed: true })
+    expect(args).toContain('--dangerously-bypass-approvals-and-sandbox')
+    // And not both: passing a sandbox mode alongside it is contradictory.
+    expect(args).not.toContain('-s')
+
+    // An explicit sandbox still wins, because a caller setting one means it.
+    const explicit = buildCodexArgs(base, {
+      externallySandboxed: true,
+      sandbox: 'read-only',
+    })
+    expect(explicit).toContain('read-only')
+    expect(explicit).not.toContain('--dangerously-bypass-approvals-and-sandbox')
+  })
+
   it('puts resume as a subcommand, not a flag', () => {
     const args = buildCodexArgs({ ...base, resume: 'thread_9' })
     expect(args.slice(0, 4)).toEqual(['exec', 'resume', 'thread_9', '--json'])

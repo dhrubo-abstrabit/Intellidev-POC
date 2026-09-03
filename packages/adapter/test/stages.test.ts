@@ -98,6 +98,7 @@ function harness(opts: {
   prompts?: Partial<Record<StageId, string>>
   maxTotalStageRuns?: number
   defaultHarness?: HarnessId
+  worktreeStatus?: (cwd: string) => Promise<string[]>
 }) {
   const template = StageTemplate.parse(opts.template)
   const events: EventBodyInput[] = []
@@ -127,6 +128,7 @@ function harness(opts: {
     bus,
     prompts,
     now,
+    ...(opts.worktreeStatus ? { worktreeStatus: opts.worktreeStatus } : {}),
     ...(opts.maxTotalStageRuns ? { maxTotalStageRuns: opts.maxTotalStageRuns } : {}),
   })
   return { engine, events, store, template }
@@ -792,5 +794,62 @@ describe('file changes outside the worktree', () => {
 
     const paths = events.flatMap((e) => (e.type === 'file.changed' ? [e.data.path] : []))
     expect(paths).toEqual(['/work/run_1/src/a.ts', 'README.md'])
+  })
+})
+
+describe('a stage that may not write files', () => {
+  /**
+   * The harnesses used to enforce this themselves. Inside a run container codex's sandbox cannot
+   * start — Fargate's kernel has unprivileged user namespaces disabled — so it is run without
+   * one, and this check is what replaces it. For every harness, not only the one that happened
+   * to enforce it.
+   */
+  const readOnly = {
+    name: 't',
+    stages: [{ id: 'design', kind: 'agent', promptFile: 'p.md', tools: { mode: 'read_only' } }],
+  } as const
+
+  it('fails when the worktree changed', async () => {
+    const { engine, events } = harness({
+      template: readOnly,
+      worktreeStatus: async () => ['src/index.ts', 'README.md'],
+    })
+    const { outcome } = await engine.run()
+
+    expect(outcome).toBe('failed')
+    const error = events.find(
+      (e) => e.type === 'error' && (e.data as { code?: string }).code === 'stage_wrote_files',
+    )
+    expect(error).toBeDefined()
+    // The message names the files, or the next question is always "which ones".
+    expect(String((error!.data as { message: string }).message)).toContain('src/index.ts')
+  })
+
+  it('passes when it changed nothing', async () => {
+    const { engine } = harness({ template: readOnly, worktreeStatus: async () => [] })
+    expect((await engine.run()).outcome).toBe('succeeded')
+  })
+
+  it('does not fail a stage that is allowed to write', async () => {
+    const { engine } = harness({
+      template: {
+        name: 't',
+        stages: [{ id: 'code', kind: 'agent', promptFile: 'p.md', tools: { mode: 'full' } }],
+      },
+      worktreeStatus: async () => ['src/index.ts'],
+    })
+    expect((await engine.run()).outcome).toBe('succeeded')
+  })
+
+  it('does not invent a violation when the worktree cannot be read', async () => {
+    // A repository that cannot be inspected is not evidence of anything, and the git stages
+    // fail on their own with a better message than this check could give.
+    const { engine } = harness({
+      template: readOnly,
+      worktreeStatus: async () => {
+        throw new Error('not a git repository')
+      },
+    })
+    expect((await engine.run()).outcome).toBe('succeeded')
   })
 })

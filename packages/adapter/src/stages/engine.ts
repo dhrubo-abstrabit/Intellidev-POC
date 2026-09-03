@@ -26,6 +26,14 @@ export interface StageEngineDeps {
   defaultHarness: HarnessId
   drivers: Partial<Record<HarnessId, HarnessDriver>>
   commands: CommandRunner
+  /**
+   * What the worktree looks like now, as changed paths.
+   *
+   * Used to check that a stage which may not write did not write. Optional because the engine
+   * is also driven in tests and by callers with no repository, and a question that cannot be
+   * answered is better left unasked than answered wrongly.
+   */
+  worktreeStatus?: (cwd: string) => Promise<string[]>
   builtins: BuiltinActions
   outputs: StageOutputSink
   store: RunStateStore
@@ -166,6 +174,16 @@ export class StageEngine {
       })
     }
 
+    if (!failure && stage.kind !== 'builtin' && stage.tools.mode !== 'full') {
+      failure = await this.readOnlyViolation(stage, ctx.cwd)
+      if (failure) {
+        this.deps.bus.emit({
+          type: 'error',
+          data: { code: 'stage_wrote_files', message: failure, retryable: false },
+        })
+      }
+    }
+
     if (failure) {
       this.record(state, stage, visits, 'failed', startedAt, harness, null, failure)
       this.exitStage(stage, visits, 'failed', startedAt)
@@ -270,6 +288,35 @@ export class StageEngine {
       default:
         throw new Error(`builtin stage "${stage.id}" has no action`)
     }
+  }
+
+  /**
+   * Whether a stage that may not write, wrote.
+   *
+   * The harnesses used to enforce this themselves — codex through its sandbox, and the others
+   * through tool permissions. Inside a run container codex's sandbox cannot start at all, so it
+   * is told not to try, and this is what replaces it: the contract is checked rather than
+   * assumed, for every harness rather than the one that happened to enforce it.
+   *
+   * Worth having regardless. "The design stage quietly wrote code" is the kind of thing that
+   * surfaces as a confusing diff three stages later, and a stage that reports success having
+   * broken its own contract is worse than one that fails.
+   */
+  private async readOnlyViolation(stage: StageDefinition, cwd: string): Promise<string | null> {
+    // Its own seam rather than the stage CommandRunner: that runner executes whatever a
+    // template asks for, and asking it for `git status` assumes it is git-capable and honest.
+    // A caller that cannot answer the question does not get asked it.
+    if (!this.deps.worktreeStatus) return null
+    // A worktree that cannot be read is not evidence of a violation; the git stages fail on
+    // their own, with a better message than this one could give.
+    const changed = await this.deps.worktreeStatus(cwd).catch(() => [])
+    if (changed.length === 0) return null
+
+    const shown = changed.slice(0, 5).join(', ')
+    return (
+      `stage "${stage.id}" may not write files (tools: ${stage.tools.mode}) but changed ` +
+      `${changed.length}: ${shown}${changed.length > 5 ? ', …' : ''}`
+    )
   }
 
   private async runAgent(

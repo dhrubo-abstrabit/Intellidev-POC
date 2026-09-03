@@ -74,7 +74,15 @@ WORKDIR /work
 ENV HOME=/home/adapter \
     NODE_ENV=production \
     NO_COLOR=1 \
-    GIT_TERMINAL_PROMPT=0
+    GIT_TERMINAL_PROMPT=0 \
+    # This image says what it is: a disposable container with no host mounts, its own network
+    # rules and nothing to protect but itself. Harnesses that sandbox shell commands themselves
+    # are told not to bother — codex cannot, on Fargate's kernel, and refusing to run every
+    # command it is asked to is worse than not nesting a second boundary inside this one.
+    #
+    # Set here rather than inferred, because inline mode runs the same adapter code directly on
+    # a developer's machine, where that reasoning does not hold at all.
+    INTELLIDEV_CONTAINER=1
 
 # Fails fast and visibly if a harness did not install correctly, which is otherwise only
 # discovered mid-run as "command not found".
