@@ -3,6 +3,9 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runAdapter } from '../bootstrap/run.js'
+// Static, so the bundler includes it: a dynamic relative import is not guaranteed to survive
+// bundling, and that failure would only ever appear inside the image.
+import { runLoginAgent } from '../login/agent.js'
 import {
   LocalCredentialProvider,
   LocalSpecProvider,
@@ -48,7 +51,6 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
       io.stderr(`error: login needs ${missing.join(', ')} in the environment\n`)
       return 2
     }
-    const { runLoginAgent } = await import('../login/agent.js')
     return runLoginAgent({
       baseUrl: io.env['INTELLIDEV_CONTROL_URL']!,
       loginId: io.env['INTELLIDEV_LOGIN_ID']!,
