@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { oauthFlowFor, pkce, type OAuthFlow } from './oauth-login.js'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
@@ -126,6 +127,15 @@ const CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/
  * Injected rather than imported so this file stays free of ECS: the same driving logic runs
  * against a local child process in development and against a Fargate task when hosted.
  */
+/**
+ * How a sign-in is performed.
+ *
+ * `direct` is the default because it needs nothing but this process. `task` exists so a vendor
+ * changing their flow is a configuration change rather than an outage — the CLI adapts to its own
+ * vendor, which is the one advantage it has.
+ */
+export type LoginMode = 'direct' | 'task'
+
 export interface LoginTaskLauncher {
   start(spec: {
     loginId: string
@@ -174,7 +184,34 @@ export class HarnessLogin {
      * development, where spawning locally is both possible and faster.
      */
     private readonly launcher?: LoginTaskLauncher,
+    /**
+     * Which sign-in path to take.
+     *
+     * `direct` drives the OAuth flow here — two HTTP calls, no container, seconds rather than a
+     * minute. `task` drives the harness's own CLI in a container, which is slower but is the
+     * vendor's own code deciding what a sign-in looks like.
+     *
+     * Both are kept and switchable on purpose. The direct flow's parameters were read off a real
+     * authorize URL rather than documented, so a vendor changing them would break it — and the
+     * remedy should be a setting rather than a deploy of reverted code.
+     */
+    private readonly mode: LoginMode = 'direct',
   ) {}
+
+  /**
+   * Set while a direct OAuth sign-in is in flight.
+   *
+   * The verifier is the secret half of the PKCE pair and never leaves this process; the code the
+   * person pastes is useless without it, which is what lets the whole flow happen here rather
+   * than inside a container running the harness's own CLI.
+   */
+  private direct?: {
+    harness: HarnessId
+    flow: OAuthFlow
+    verifier: string
+    state: LoginState
+    expectedState: string
+  }
 
   /** Set while a task-driven login is in flight, so its reports can be attributed. */
   private task?: {
@@ -227,6 +264,17 @@ export class HarnessLogin {
 
     this.cancel()
     this.recipe = recipe
+
+    /**
+     * The direct flow first, wherever there is one.
+     *
+     * It needs no container and no CLI: two HTTP calls and the code the person pastes. The task
+     * path remains for harnesses without one, and as the thing to fall back to if a vendor
+     * changes a flow we now drive ourselves.
+     */
+    const flow = this.mode === 'direct' ? oauthFlowFor(harness) : undefined
+    if (flow) return this.startDirect(harness, flow)
+
     if (this.launcher) return this.startTask(harness, recipe)
     await mkdir(join(this.workRoot, 'logins'), { recursive: true })
     this.home = await mkdtemp(join(this.workRoot, 'logins', `${harness}-`))
@@ -304,6 +352,69 @@ export class HarnessLogin {
       }`
     }
     return state
+  }
+
+  /**
+   * Sign in with no container and no CLI.
+   *
+   * Resolves immediately with the authorize URL, because there is nothing to wait for: the URL
+   * is built here rather than scraped out of a subprocess's output. That also removes the
+   * forty-second timeout the task path needs, and the class of failure where a CLI starts, says
+   * nothing useful, and leaves a person looking at a spinner.
+   */
+  private async startDirect(harness: HarnessId, flow: OAuthFlow): Promise<LoginState> {
+    const { verifier, challenge } = pkce()
+    // Bound to this attempt, and checked on the way back: a code pasted from a different
+    // sign-in would otherwise connect whichever account that was.
+    const expectedState = randomBytes(32).toString('base64url')
+
+    const state: LoginState = {
+      harness,
+      status: 'awaiting_code',
+      needsCode: true,
+      authorizationUrl: flow.authorizeUrl({ challenge, state: expectedState }),
+      inputHint: flow.inputHint,
+    }
+    this.state = state
+    this.direct = { harness, flow, verifier, state, expectedState }
+    return state
+  }
+
+  /**
+   * Finish a direct sign-in with whatever the person pasted.
+   *
+   * Returns the settled state rather than resolving quietly, so the UI can say what happened
+   * without polling for it.
+   */
+  private async completeDirect(pasted: string): Promise<void> {
+    const direct = this.direct
+    if (!direct) return
+    const { flow, verifier, state, expectedState, harness } = direct
+    state.status = 'awaiting_authorization'
+
+    try {
+      const credential = await flow.exchange({
+        code: pasted,
+        verifier,
+        state: expectedState,
+      })
+      // Cleared before storing, so a second paste of the same code cannot run the exchange twice
+      // — the provider would refuse it as replay, and the message would be confusing.
+      this.direct = undefined
+
+      await this.accounts.connect(this.scope, {
+        harness,
+        label: harness,
+        files: [{ path: credential.path, contents: credential.contents }],
+        connectedAt: new Date().toISOString(),
+        importedFrom: 'signed in through the control plane',
+      })
+      state.status = 'connected'
+    } catch (error) {
+      this.direct = undefined
+      state.status = 'failed'
+      state.error = error instanceof Error ? error.message : String(error)
+    }
   }
 
   /**
@@ -431,6 +542,12 @@ export class HarnessLogin {
   /** Pass the code the human copied from the sign-in page to the waiting CLI. */
   submitCode(code: string): void {
     const trimmed = code.trim()
+    if (this.direct) {
+      // Not awaited: the caller is an HTTP handler that should answer at once, and the outcome
+      // is observed through `current()` exactly as the task path's is.
+      void this.completeDirect(trimmed)
+      return
+    }
     if (this.task) {
       /**
        * A URL rather than a code, for a CLI whose callback the browser could not reach.
@@ -453,6 +570,12 @@ export class HarnessLogin {
   }
 
   cancel(): void {
+    if (this.direct) {
+      this.direct.state.status = 'failed'
+      this.direct.state.error = 'cancelled'
+      // Nothing to stop: no container was started, and the verifier dies with this object.
+      this.direct = undefined
+    }
     const task = this.task
     if (task) {
       this.task = undefined

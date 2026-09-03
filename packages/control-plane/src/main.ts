@@ -362,6 +362,14 @@ const app = await buildServer({
    * here and spawning is both simpler and faster. One task per login, torn down afterwards:
    * reusing a container between connections would carry one harness's session into the next.
    */
+  /**
+   * How a harness sign-in is performed.
+   *
+   * `direct` unless told otherwise: it needs no container and takes seconds. Set
+   * INTELLIDEV_LOGIN_MODE=task to drive the harness's own CLI instead, which is the escape hatch
+   * if a vendor changes a flow we drive ourselves.
+   */
+  loginMode: process.env['INTELLIDEV_LOGIN_MODE'] === 'task' ? 'task' : 'direct',
   ...(mode === 'fargate' && aws
     ? {
         loginLauncher: new FargateLoginLauncher(
@@ -520,6 +528,7 @@ process.stderr.write(
           ? `supabase (${new URL(supabaseUrl!).hostname})`
           : `supabase (${new URL(supabaseUrl!).hostname}) — but NO SUPABASE_ANON_KEY, so nobody can sign in`
     }`,
+    `  login   ${process.env['INTELLIDEV_LOGIN_MODE'] === 'task' ? 'task (harness CLI in a container)' : 'direct (oauth from this process)'}`,
     `  crypto  ${credentialKeyArn ? `kms (${credentialKeyArn.split('/').pop()})` : 'local passphrase — development only'}`,
     ``,
   ].join('\n'),

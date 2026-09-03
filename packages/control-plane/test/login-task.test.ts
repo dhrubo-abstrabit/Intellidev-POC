@@ -36,6 +36,9 @@ function harness() {
     'intellidev/runner:dev',
     '/tmp',
     launcher,
+    // Explicitly the task path: `direct` is the default now, and these tests are about the
+    // container one — which is kept as the escape hatch if a vendor changes a flow.
+    'task',
   )
   return { login, launcher, connected, started, stopped }
 }

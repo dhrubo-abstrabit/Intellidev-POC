@@ -10,7 +10,12 @@ import {
   recipeFor,
   toPublic as accountToPublic,
 } from './harness/accounts.js'
-import { HarnessLogin, type LoginTaskLauncher, loginSupported } from './harness/login.js'
+import {
+  HarnessLogin,
+  type LoginMode,
+  type LoginTaskLauncher,
+  loginSupported,
+} from './harness/login.js'
 import type { SeatRefresher } from './harness/seat-refresher.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
@@ -81,6 +86,14 @@ export interface ServerOptions {
    * harness CLI and no docker, and Fargate cannot nest containers.
    */
   loginLauncher?: LoginTaskLauncher
+  /**
+   * Whether to sign in from this process or by driving the harness CLI in a container.
+   *
+   * Defaults to the direct flow. Switchable because the direct flow's OAuth parameters were read
+   * off the CLI rather than documented by the vendor, and a change on their side should be
+   * answerable with a setting.
+   */
+  loginMode?: LoginMode
   /**
    * Keeps the harness seat fresh, so a run is handed a token that outlives it.
    *
@@ -212,6 +225,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
      * container reports back over `/internal/logins/*`.
      */
     opts.loginLauncher,
+    opts.loginMode,
   )
   const publicDir =
     opts.publicDir ?? join(dirname(new URL(import.meta.url).pathname), '..', 'public')
