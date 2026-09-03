@@ -153,13 +153,28 @@ export default async function TaskManagementPage({
   if (openItem) {
     const { data: sourceRows } = await supabase
       .from("task_sources")
-      .select("normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
+      .select("chunk_id, search_chunks(source_kind, source_id, page_number), normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
       .eq("task_id", openItem.id);
 
     const eventRows = (sourceRows ?? [])
       .map((row) => row.normalized_events)
       .filter((event): event is NonNullable<typeof event> => event !== null);
     const eventIds = eventRows.map((event) => event.id);
+
+    // A task_sources row's chunk_id may resolve to a search_chunks row whose
+    // source_kind is 'event_attachment' — its source_id IS the attachment's
+    // own id (see search_chunks' own schema comment). That's the only case
+    // page_number ever means anything, so this map is keyed by attachment
+    // id, not event id: DOCX/Slack/plain-text chunks carry page_number null,
+    // and a chunk_id resolving to a 'normalized_event' chunk has no
+    // attachment to attach a page to at all.
+    const pageNumberByAttachmentId = new Map<string, number>();
+    for (const row of sourceRows ?? []) {
+      const chunk = row.search_chunks;
+      if (chunk?.source_kind === "event_attachment" && chunk.page_number != null) {
+        pageNumberByAttachmentId.set(chunk.source_id, chunk.page_number);
+      }
+    }
 
     // Same shape as the Project Data tab's per-day attachment fetch — a
     // handful of source events per item, so one unchunked .in() is fine.
@@ -178,6 +193,7 @@ export default async function TaskManagementPage({
           sizeBytes: row.size_bytes,
           status: row.status as AttachmentSummary["status"],
           skipReason: row.skip_reason,
+          pageNumber: pageNumberByAttachmentId.get(row.id) ?? null,
         });
         attachmentsByEvent.set(row.normalized_event_id, list);
       }

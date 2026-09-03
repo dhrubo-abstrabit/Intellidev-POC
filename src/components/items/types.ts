@@ -78,6 +78,12 @@ export type AttachmentSummary = {
   sizeBytes: number | null;
   status: "pending" | "extracted" | "skipped" | "failed";
   skipReason: string | null;
+  /** Which page of this attachment a task's citation actually came from —
+   * resolved via task_sources.chunk_id -> search_chunks.page_number.
+   * Only ever set on the task-management provenance path (see that page's
+   * query); DayLinkage's day-wide attachment fetch has no single task's
+   * citation to resolve this against, so it's always null there. */
+  pageNumber: number | null;
 };
 
 /** One normalized_events row (a Slack message, etc.) linked to an action
