@@ -2257,6 +2257,7 @@ export type Database = {
       }
       reap_job_dispatches: { Args: never; Returns: undefined }
       space_ids_with: { Args: { p_permission: string }; Returns: string[] }
+      sweep_expired_invitations: { Args: never; Returns: number }
       tenant_ids_with: { Args: { p_permission: string }; Returns: string[] }
       workspace_ids_with: { Args: { p_permission: string }; Returns: string[] }
     }

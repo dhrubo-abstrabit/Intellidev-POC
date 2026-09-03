@@ -9,6 +9,13 @@ export type InviteMailResult =
 
 export interface InviteMail {
   to: string;
+  /**
+   * Where a reply should go. The From address is a no-reply on a domain with
+   * no MX record, so without this a puzzled invitee hitting Reply gets a
+   * bounce. Pointing it at the person who sent the invitation means they reach
+   * someone who knows what it is.
+   */
+  replyTo?: string;
   inviteUrl: string;
   invitedBy: string;
   /** What they are being invited to, already resolved to a display name. */
@@ -83,6 +90,7 @@ export async function sendInviteEmail(mail: InviteMail): Promise<InviteMailResul
       new SendEmailCommand({
         FromEmailAddress: env.SES_FROM_ADDRESS,
         Destination: { ToAddresses: [mail.to] },
+        ...(mail.replyTo ? { ReplyToAddresses: [mail.replyTo] } : {}),
         Content: {
           Simple: {
             Subject: { Data: subject, Charset: "UTF-8" },

@@ -130,8 +130,25 @@ export async function GET(request: NextRequest) {
     }),
   );
 
+  // Housekeeping, deliberately AFTER the sync fan-out and deliberately not
+  // allowed to fail the tick. Marks invitations that ran out as revoked, which
+  // clears them from the pending list and frees invitations_pending_uniq so the
+  // same address can be invited to the same scope again. 20260901000700 created
+  // invitations_expiry_idx and called it "the expiry reaper's queue"; this is
+  // the reaper. Sync work is the reason this route exists, so a sweep failure
+  // is logged and swallowed rather than turned into a non-200.
+  let expiredInvitationsSwept = 0;
+  try {
+    const { data, error: sweepError } = await service.rpc("sweep_expired_invitations");
+    if (sweepError) console.error("invitation sweep failed:", sweepError.message);
+    else expiredInvitationsSwept = data ?? 0;
+  } catch (err) {
+    console.error("invitation sweep threw:", err instanceof Error ? err.message : String(err));
+  }
+
   return NextResponse.json({
     due: due.length,
+    expiredInvitationsSwept,
     // Connectors that were due but whose grant is revoked/errored, so were
     // deliberately not dispatched. Surfaced rather than silently dropped —
     // "due: 0, skipped: 5" is a diagnosable state; a bare "due: 0" is not.

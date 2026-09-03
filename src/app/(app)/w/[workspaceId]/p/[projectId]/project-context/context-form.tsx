@@ -28,10 +28,15 @@ export function ContextForm({
   workspaceId,
   projectId,
   initialValue,
+  disabledReason,
 }: {
   workspaceId: string;
   projectId: string;
   initialValue: string;
+  /** Set when the viewer cannot edit this project's context. UI only —
+   * updateProjectContext re-checks project.manage and the projects_update
+   * policy refuses the write regardless. */
+  disabledReason?: string;
 }) {
   const [value, setValue] = useState(initialValue);
   const [savedValue, setSavedValue] = useState(initialValue);
@@ -151,7 +156,12 @@ export function ContextForm({
           </Button>
           <div className="flex items-center gap-2">
             {isDirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
-            <Button onClick={handleSave} disabled={isBusy || !isDirty} data-testid="project-context-save">
+            <Button
+            onClick={handleSave}
+            disabled={isBusy || !isDirty || Boolean(disabledReason)}
+            title={disabledReason}
+            data-testid="project-context-save"
+          >
               {isSaving ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
               Save
             </Button>

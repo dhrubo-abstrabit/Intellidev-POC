@@ -3,6 +3,7 @@ import { getUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { AcceptInviteButton } from "./accept-invite-button";
+import { CreateAccountForm } from "./create-account-form";
 
 /**
  * The invitation landing page. PUBLIC by design.
@@ -83,19 +84,10 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
         </>
       ) : (
         <>
-          <p className="text-sm text-muted-foreground">
-            Sign in or create an account with{" "}
-            <span className="font-medium text-foreground">{invite.email}</span> to accept. You&apos;ll come straight
-            back here.
-          </p>
-          <div className="flex gap-2">
-            {/* next= brings them back to this exact invitation, through the
-                confirmation email if signup needs one. */}
-            <Button render={<Link href={`/signup?next=/invite/${token}`} />}>Create an account</Button>
-            <Button variant="outline" render={<Link href={`/login?next=/invite/${token}`} />}>
-              I already have one
-            </Button>
-          </div>
+          {/* No detour through /signup. Opening this link already proved
+              control of the mailbox, so the account is created confirmed and
+              the invitation accepted in one step — see acceptWithNewAccount. */}
+          <CreateAccountForm token={token} email={invite.email} />
         </>
       )}
 

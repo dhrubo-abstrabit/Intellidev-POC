@@ -4,7 +4,8 @@ import { assertProjectScope } from "@/lib/scope";
 import { createClient } from "@/lib/supabase/server";
 import { MembersView, type MemberRow, type AssignableRole } from "@/components/dashboard/members-view";
 import { InvitationsPanel, type PendingInvite, type InviteRole } from "@/components/dashboard/invitations-panel";
-import { changeSpaceMemberRole, removeSpaceMember } from "./actions";
+import { changeSpaceMemberRole, removeSpaceMember, setProjectRole } from "./actions";
+import { ProjectRoles, type ProjectRoleRow } from "./project-roles";
 
 /**
  * Access for one client space — the data boundary.
@@ -26,7 +27,15 @@ export default async function AccessPage({
 
   const supabase = await createClient();
 
-  const [{ data: memberRows }, { data: assignable }, { data: roleCatalog }, { data: inviteRows }] =
+  const [
+    { data: memberRows },
+    { data: assignable },
+    { data: roleCatalog },
+    { data: inviteRows },
+    { data: projectMemberRows },
+    { data: projectRow },
+    { data: projectAssignable },
+  ] =
     await Promise.all([
       supabase
         .from("space_members")
@@ -40,6 +49,9 @@ export default async function AccessPage({
       // accept_invitation() compares against. SECURITY INVOKER, so the
       // invitations_select policy still gates who sees anything at all.
       supabase.rpc("pending_invitations", { p_scope_level: "space", p_scope_id: spaceId }),
+      supabase.from("project_members").select("user_id, role").eq("project_id", projectId),
+      supabase.from("projects").select("name").eq("id", projectId).maybeSingle(),
+      supabase.rpc("assignable_roles", { p_scope_level: "project", p_scope_id: projectId }),
     ]);
 
   if (!memberRows) notFound();
@@ -70,6 +82,13 @@ export default async function AccessPage({
     expired: row.expired,
   }));
 
+  const overrideByUser = new Map((projectMemberRows ?? []).map((r) => [r.user_id, r.role]));
+  const projectRoleRows: ProjectRoleRow[] = members.map((m) => ({
+    userId: m.userId,
+    email: m.email,
+    projectRole: overrideByUser.get(m.userId) ?? null,
+  }));
+
   return (
     <div className="space-y-6">
       <MembersView
@@ -85,6 +104,13 @@ export default async function AccessPage({
         removeDescriptionTemplate="{email} loses access to this client space and every project inside it. Their workspace and organisation membership are unaffected."
       />
       <InvitationsPanel level="space" scopeId={spaceId} invites={invites} roles={inviteRoles} />
+      <ProjectRoles
+        projectName={projectRow?.name ?? "this project"}
+        rows={projectRoleRows}
+        roles={(projectAssignable ?? []).map((r) => ({ key: r.key, label: r.label }))}
+        setRoleAction={setProjectRole.bind(null, spaceId, projectId)}
+        canManage={assignableRoles.length > 0}
+      />
     </div>
   );
 }

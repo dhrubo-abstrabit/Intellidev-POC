@@ -130,3 +130,65 @@ export async function removeSpaceMember(
   revalidatePath("/", "layout");
   return { message: "Member removed." };
 }
+
+/**
+ * Sets or clears one person's per-project role override.
+ *
+ * `project_members.role` is nullable and NULL means "no override, inherit the
+ * space baseline" — which is why clearing an override is an UPDATE to null
+ * rather than a DELETE. Deleting the row would also remove the person's access
+ * to a `restricted` project entirely, which is a different action with a
+ * different meaning.
+ *
+ * Overrides are ADDITIVE, matching project_ids_with()'s union and the
+ * behaviour that predates the RBAC work: a project role can grant more than
+ * the space baseline, never less. Someone who is a space `member` and a
+ * project `viewer` keeps their space baseline on that project. Making
+ * overrides restrictive would be a different feature and would silently
+ * narrow existing access.
+ */
+export async function setProjectRole(
+  clientSpaceId: string,
+  projectId: string,
+  targetUserId: string,
+  role: string | null,
+): Promise<{ message: string }> {
+  const user = await requireUser();
+  await requirePermission("member.manage", spaceScope(clientSpaceId));
+
+  const supabase = await createClient();
+
+  if (role !== null) {
+    const { data: allowed } = await supabase.rpc("assignable_roles", {
+      p_scope_level: "project",
+      p_scope_id: projectId,
+    });
+    if (!allowed?.some((r) => r.key === role)) {
+      throw new Error("You cannot assign that project role.");
+    }
+  }
+
+  // Upsert: a space member may have no project_members row yet. The FK to
+  // space_members means this can only ever name someone who already has
+  // standing in the space, which is the invariant that makes a project role
+  // safe to grant here.
+  const { data: row, error } = await supabase
+    .from("project_members")
+    .upsert(
+      { project_id: projectId, client_space_id: clientSpaceId, user_id: targetUserId, role, added_by: user.id },
+      { onConflict: "project_id,user_id" },
+    )
+    .select("user_id")
+    .maybeSingle();
+
+  if (error || !row) {
+    throw new Error("Could not update this project role.");
+  }
+
+  await recordAudit(clientSpaceId, user.id, "project_member.role_set", targetUserId, {
+    project_id: projectId,
+    new_role: role,
+  });
+  revalidatePath("/", "layout");
+  return { message: role ? "Project role set." : "Override cleared — inherits the space role." };
+}
