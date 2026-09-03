@@ -181,7 +181,24 @@ export class RuntimeStack extends Stack {
     for (const [key, value] of [
       ['runtime/cluster-name', this.cluster.clusterName],
       ['runtime/task-events-queue-url', this.taskEvents.queueUrl],
-      ['runtime/run-task-definition-arn', this.taskDefinition.taskDefinitionArn],
+      /**
+       * The family, not a revision-pinned ARN.
+       *
+       * FOUND BY DEPLOYING IT. A new image means a new task definition revision, and CDK
+       * deregisters the one it replaces — so every run dispatched by an already-running control
+       * plane failed with `TaskDefinition is inactive`, because it had resolved the ARN at boot
+       * and that revision no longer existed. Restarting it would have fixed each occurrence and
+       * taught nobody anything.
+       *
+       * `RunTask` accepts a family and uses the latest ACTIVE revision, which is also what makes
+       * an image update take effect without restarting the control plane. Reproducibility does
+       * not suffer: the image inside a revision is pinned by digest, and which digest ran is
+       * recorded per run.
+       *
+       * The parameter keeps its historical name so a deploy is not a coordinated rename with a
+       * window where neither key exists.
+       */
+      ['runtime/run-task-definition-arn', this.taskDefinition.family],
       ['runtime/run-container-name', RUN_CONTAINER_NAME],
       ['runtime/task-execution-role-arn', this.executionRole.roleArn],
       ['runtime/task-role-arn', this.taskRole.roleArn],
