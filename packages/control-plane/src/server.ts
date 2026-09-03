@@ -11,6 +11,7 @@ import {
   toPublic as accountToPublic,
 } from './harness/accounts.js'
 import { HarnessLogin, type LoginTaskLauncher, loginSupported } from './harness/login.js'
+import type { SeatRefresher } from './harness/seat-refresher.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
 import type { ProjectAccessChecker } from './auth/access.js'
@@ -80,6 +81,13 @@ export interface ServerOptions {
    * harness CLI and no docker, and Fargate cannot nest containers.
    */
   loginLauncher?: LoginTaskLauncher
+  /**
+   * Keeps the harness seat fresh, so a run is handed a token that outlives it.
+   *
+   * Passed through to the credential broker. Absent in tests and in the in-memory loop, where
+   * there is nothing to refresh and no provider to call.
+   */
+  seatRefresher?: Pick<SeatRefresher, 'ensureFresh'>
   /** Absolute path to the directory holding `index.html`. */
   publicDir?: string
 }
@@ -777,6 +785,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     store,
     tokens,
     accounts: opts.accounts,
+    // So a run is handed a token with more life left than it has budget, and never has cause to
+    // refresh one itself — which is what makes two runs on one seat safe.
+    ...(opts.seatRefresher ? { seatRefresher: opts.seatRefresher } : {}),
     mcpToken: async (serverId) => {
       const server = await opts.mcp.get(serverId)
       if (!server) return undefined

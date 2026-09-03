@@ -1,7 +1,8 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { HarnessId } from '@intellidev/shared'
 import { credentials, integrations } from '../store/schema.js'
+import { refresherFor } from './refresh.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 import type { HarnessAccount, HarnessAccountPublic } from './accounts.js'
 import {
@@ -69,6 +70,30 @@ export class PostgresSeatStore implements SeatStore {
       }),
     )
     return seats.sort((a, b) => a.harness.localeCompare(b.harness))
+  }
+
+  /**
+   * Serialises refreshing one seat across every control-plane instance.
+   *
+   * The same hazard the MCP store guards, and for the same reason: refreshing rotates the
+   * refresh token, so two instances that both notice a stale seat both POST the same token, and
+   * a provider that rotates treats the second as replay and can revoke the whole family. Here
+   * the everyday version is milder and still bad — the loser's token is dead, and whichever
+   * container was handed it fails mid-run looking like an expired subscription.
+   *
+   * `pg_advisory_xact_lock` releases on commit, on rollback and on the connection dying, so an
+   * instance that crashes mid-refresh cannot leave a seat locked for ever. That is what makes it
+   * safe to hold a transaction open across the refresh call.
+   */
+  async withSeatLock<T>(scope: SpaceScope, harness: HarnessId, body: () => Promise<T>): Promise<T> {
+    return await this.db.transaction(async (tx) => {
+      // Two keys rather than a hash of the pair, so a space and a harness cannot collide with a
+      // different pair that happens to hash the same.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${scope.clientSpaceId}), hashtext(${harness}))`,
+      )
+      return await body()
+    })
   }
 
   async has(scope: SpaceScope, harness: HarnessId): Promise<boolean> {
@@ -148,10 +173,18 @@ export class PostgresSeatStore implements SeatStore {
           ciphertext: sealed.ciphertext,
           wrappedKey: sealed.wrappedKey,
           keyArn: sealed.keyArn,
-          // A subscription login has no expiry we are told about. D3 is where rotation lands;
-          // until then a dead seat is discovered by a run failing, which is why the harness's
-          // own message now reaches the failure reason.
-          expiresAt: null,
+          /**
+           * When the access token in this bundle stops working.
+           *
+           * Derived here rather than asked of every caller: a login, an import, the CLI and a
+           * refresh all end up on this line, and one of them forgetting would leave a seat the
+           * sweep never looks at. The harness's own file is the source, so nothing is guessed.
+           *
+           * Stored in plaintext deliberately — it is a timestamp, not a secret, and having it on
+           * the row is what lets the refresh sweep find seats that need attention without
+           * decrypting every credential in the space to ask.
+           */
+          expiresAt: expiryOf(account),
         })
         .onConflictDoUpdate({
           target: credentials.integrationId,
@@ -159,6 +192,10 @@ export class PostgresSeatStore implements SeatStore {
             ciphertext: sealed.ciphertext,
             wrappedKey: sealed.wrappedKey,
             keyArn: sealed.keyArn,
+            // The expiry moves with the credential. This is the path a refresh takes, so
+            // leaving it behind would mean the sweep judged every future seat by the date of
+            // the first token it ever stored.
+            expiresAt: expiryOf(account),
             rotatedAt: new Date(),
           },
         })
@@ -218,5 +255,26 @@ function toPublic(harness: HarnessId, settings: SeatSettings): HarnessAccountPub
     files: settings.files,
     connectedAt: settings.connectedAt,
     ...(settings.importedFrom ? { importedFrom: settings.importedFrom } : {}),
+  }
+}
+
+/**
+ * When a seat's access token expires, read out of the harness's own credential file.
+ *
+ * Null when the harness has no refresher, when it keeps no expiry, or when the file cannot be
+ * parsed. Null means "the sweep cannot judge this one", which is the honest answer and leaves it
+ * to be discovered by use — better than inventing a date that would either refresh constantly or
+ * never.
+ */
+function expiryOf(account: HarnessAccount): Date | null {
+  const refresher = refresherFor(account.harness)
+  if (!refresher) return null
+  const name = refresher.path.split('/').pop()!
+  const file = account.files?.find((candidate) => candidate.path.endsWith(name))
+  if (!file) return null
+  try {
+    return refresher.expiryOf(file.contents).accessExpiresAt ?? null
+  } catch {
+    return null
   }
 }

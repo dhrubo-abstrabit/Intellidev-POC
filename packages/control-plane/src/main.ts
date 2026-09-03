@@ -8,6 +8,9 @@ import { LocalSecretCipher } from './secrets/cipher.js'
 import { KmsSecretCipher } from './secrets/kms-cipher.js'
 import { FargateRunner } from './runner/fargate.js'
 import { FargateLoginLauncher } from './harness/fargate-login.js'
+import { SeatRefresher } from './harness/seat-refresher.js'
+import { RefreshSweep } from './harness/refresh-sweep.js'
+import { PostgresSeatStore } from './harness/postgres-seats.js'
 import { JwtVerifier } from './auth/jwt.js'
 import { RunTokenRegistry } from './runs/tokens.js'
 import { FileSeatStore } from './harness/accounts.js'
@@ -236,6 +239,30 @@ const cipher = credentialKeyArn
 const accounts = store instanceof PostgresStore ? store.seats(cipher) : fileSeats
 
 /**
+ * Keeps the harness seat alive, centrally.
+ *
+ * A run never refreshes its own credential: two runs sharing a seat would both rotate the
+ * refresh token and invalidate each other, and Claude Code does not refresh when run headless
+ * anyway. Refreshing here means a container is handed a token with more life left than the run
+ * has budget, and has no reason to touch it.
+ *
+ * The advisory lock is only available with a database behind it. Without one there is a single
+ * process by definition, and the in-flight promise inside the refresher is the whole guard.
+ */
+const seatRefresher = new SeatRefresher({
+  accounts,
+  ...(accounts instanceof PostgresSeatStore ? { lock: accounts.withSeatLock.bind(accounts) } : {}),
+  onEvent: (event) => {
+    // Quiet about the common case: "still fresh" every three hours across three harnesses is
+    // noise that would bury the one line that matters.
+    if (event.outcome === 'still-fresh') return
+    process.stdout.write(
+      `[seat] ${event.harness} ${event.outcome}${event.detail ? ` — ${event.detail}` : ''}\n`,
+    )
+  },
+})
+
+/**
  * Connected MCP servers, project-scoped.
  *
  * Postgres wherever there is a database, for the same reasons as seats: a file is lost on every
@@ -327,6 +354,7 @@ const app = await buildServer({
   },
   mcp,
   accounts,
+  seatRefresher,
   /**
    * Harness logins run as their own task when this process cannot spawn one.
    *
@@ -358,6 +386,36 @@ function onShutdown(task: () => void | Promise<void>): void {
  * immediately on start because a restart is exactly when orphaned runs exist — the
  * in-process observer that was watching them died with the previous process.
  */
+/**
+ * Keeping seats alive while nothing is running.
+ *
+ * Refreshing before a dispatch is only enough if dispatches keep happening. A quiet weekend is
+ * longer than an access token lives, and long enough to walk a refresh token towards its own
+ * expiry — past which no automation helps and a person has to sign in again. The failure is
+ * silent until the next dispatch, which is the worst moment to find it.
+ *
+ * Started after listen, for the same reason the reconciler is: a slow first pass should not
+ * delay the port opening. Only where seats are actually stored, since the in-memory loop has
+ * nothing to keep alive.
+ */
+if (store instanceof PostgresStore) {
+  const sweep = new RefreshSweep({
+    accounts,
+    refresher: seatRefresher,
+    // One space today: the one this control plane serves. A multi-space deployment would list
+    // them from the database here, and the sweep does not otherwise change.
+    scopes: () => [{ clientSpaceId: scope.clientSpaceId }],
+    onEvent: (event) => {
+      if (event.outcome === 'still-fresh') return
+      process.stdout.write(`[seat] ${event.harness} ${event.outcome} — ${event.detail ?? ''}\n`)
+    },
+  })
+  sweep.start()
+  onShutdown(() => {
+    sweep.stop()
+  })
+}
+
 if (aws) {
   const reconciler = new LifecycleReconciler({
     store,

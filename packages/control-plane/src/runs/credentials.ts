@@ -1,4 +1,5 @@
 import type { HarnessId, StageId } from '@intellidev/shared'
+import type { SeatRefresher } from '../harness/seat-refresher.js'
 import type { SeatStore } from '../harness/seat-store.js'
 import type { Store } from '../store/types.js'
 import type { RunTokenRegistry } from './tokens.js'
@@ -37,6 +38,13 @@ export interface CredentialBrokerOptions {
   readonly store: Store
   readonly tokens: RunTokenRegistry
   readonly accounts: SeatStore
+  /**
+   * Keeps the harness seat alive, so a run is never handed a token that expires while it works.
+   *
+   * Optional: a store with no refresher configured behaves exactly as before, which is what the
+   * in-memory development loop and most tests want.
+   */
+  readonly seatRefresher?: Pick<SeatRefresher, 'ensureFresh'>
   /** Resolves an upstream MCP server's current token, refreshing if needed. */
   readonly mcpToken: (serverId: string) => Promise<string | undefined>
   /**
@@ -167,6 +175,28 @@ export class ControlPlaneCredentialBroker {
         403,
         `this run may only request its own harness (${task.harness})`,
       )
+    }
+
+    /**
+     * Refreshed here, before the container ever sees it — never inside the run.
+     *
+     * Two runs sharing a seat is the normal case, and if each refreshed its own copy they would
+     * both rotate the refresh token and invalidate each other; the loser fails mid-run looking
+     * like an expired subscription. OpenAI says the same of codex outright: "Do not share the
+     * same auth.json across concurrent jobs or multiple machines."
+     *
+     * Doing it here removes the reason a container would ever refresh: the token it is handed
+     * has more life left than the run has budget. Concurrent requests collapse into one refresh
+     * — a promise inside this process, an advisory lock across instances — so the token is
+     * rotated once and everybody gets the same new one.
+     *
+     * A failure is deliberately not fatal: the stored credential may still work, and the
+     * harness's own error is a better message than one invented here.
+     */
+    if (this.opts.seatRefresher) {
+      await this.opts.seatRefresher
+        .ensureFresh({ clientSpaceId: task.clientSpaceId }, task.harness as HarnessId)
+        .catch(() => undefined)
     }
 
     const material = await this.opts.accounts.material(
