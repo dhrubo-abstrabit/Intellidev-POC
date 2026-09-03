@@ -1,6 +1,6 @@
 import "server-only";
-import OpenAI, { AuthenticationError, BadRequestError, PermissionDeniedError, RateLimitError, APIError } from "openai";
-import { embeddingEnv } from "@/lib/env";
+import { AuthenticationError, BadRequestError, PermissionDeniedError, RateLimitError } from "openai";
+import { getEmbeddingsClient, countEmbeddingTokens } from "@/lib/llm/embeddings";
 import { enqueueJob } from "@/lib/queue";
 import { createServiceClient } from "@/lib/supabase/service";
 import type { Database } from "@/lib/db/database.types";
@@ -22,7 +22,10 @@ const CHUNKS_PER_RUN = 100;
 // 8192 tokens per single input — our chunks are ~1000 chars (~250 tokens
 // est.), so the input-COUNT cap binds first at any sane batch size; both
 // are still enforced defensively since a future caller (e.g. larger
-// context_document chunks) might not stay this small.
+// context_document chunks) might not stay this small. Also matches
+// lib/llm/embeddings.ts's OpenAIEmbeddings batchSize, so LangChain's own
+// internal batching never subdivides one of these batches into several
+// HTTP requests we couldn't attribute a failure back to.
 const MAX_INPUTS_PER_REQUEST = 128;
 const MAX_EST_TOKENS_PER_REQUEST = 100_000;
 const MAX_INPUT_BYTES = 24_000; // ~6k tokens; provider's real cap is 8192 tokens
@@ -51,17 +54,6 @@ export class EmbedInputError extends Error {}
  * not permanently mark thousands of unrelated rows 'failed'. */
 export class EmbedAuthError extends Error {}
 
-let client: OpenAI | undefined;
-function getClient(): OpenAI {
-  if (client) return client;
-  // maxRetries: 0 — this module implements its own bounded retry that
-  // distinguishes terminal (input/auth) failures from transient ones (see
-  // classifyAndRetry below); the SDK's built-in retry can't make that
-  // distinction and would otherwise retry a 400 pointlessly.
-  client = new OpenAI({ apiKey: embeddingEnv().OPENAI_API_KEY, maxRetries: 0, timeout: 30_000 });
-  return client;
-}
-
 /** pgvector's own text input/output format — the generated types have every
  * `vector` column as `string` (see database.types.ts), not `number[]`,
  * because that's genuinely what PostgREST expects over the wire. Exported
@@ -72,8 +64,10 @@ export function toVectorLiteral(embedding: number[]): string {
 
 /** Generous character-level estimate, not a real tokenizer — ceil(bytes/4)
  * with a 20% safety margin. Only used to decide request BATCHING against
- * OpenAI's total-tokens-per-request cap; the actual billed token count
- * always comes from the API response's own usage.prompt_tokens. */
+ * OpenAI's total-tokens-per-request cap; deliberately NOT the tiktoken-based
+ * countEmbeddingTokens (lib/llm/embeddings.ts) used for the reported/logged
+ * count below — this stays a cheap synchronous heuristic so the unit suite
+ * doesn't pay tokenizer construction cost just to test batching. */
 function estimateTokens(text: string): number {
   return Math.ceil((Buffer.byteLength(text, "utf8") / 4) * 1.2);
 }
@@ -116,27 +110,70 @@ export function planEmbedRequests(texts: string[]): EmbedBatch[] {
 
 export type EmbedErrorClass = "input" | "auth" | "transient";
 
+/**
+ * Detects an insufficient-quota rate limit both through the real OpenAI SDK
+ * error shape AND structurally (duck-typed), because @langchain/openai's
+ * error wrapping only MUTATES a RateLimitError in place (verified against
+ * its source: coerceError returns the same object when it's already an
+ * Error, then sets .name = "InsufficientQuotaError") — so the instanceof
+ * check below still works on its own in practice, but the structural
+ * fallback protects against a future LangChain version constructing a new
+ * plain object instead, the way it already does for context-overflow (see
+ * classifyEmbedError below).
+ */
 function isQuotaRateLimit(err: unknown): boolean {
-  if (!(err instanceof RateLimitError)) return false;
-  // err.error's shape is provider-defined, not typed precisely by the SDK
-  // (APIError<429, Headers> leaves TError as the generic Object default) —
-  // read defensively rather than asserting a shape OpenAI hasn't committed to.
-  const nestedCode = (err.error as { error?: { code?: string } } | undefined)?.error?.code;
-  return err.code === "insufficient_quota" || nestedCode === "insufficient_quota";
+  if (err instanceof RateLimitError) {
+    // err.error's shape is provider-defined, not typed precisely by the SDK
+    // (APIError<429, Headers> leaves TError as the generic Object default) —
+    // read defensively rather than asserting a shape OpenAI hasn't committed to.
+    const nestedCode = (err.error as { error?: { code?: string } } | undefined)?.error?.code;
+    return err.code === "insufficient_quota" || nestedCode === "insufficient_quota";
+  }
+  if (typeof err === "object" && err !== null) {
+    const e = err as { name?: unknown; status?: unknown; code?: unknown; error?: { code?: unknown; error?: { code?: unknown } } };
+    if (e.name === "InsufficientQuotaError") return true;
+    if (e.status === 429 && (e.code === "insufficient_quota" || e.error?.code === "insufficient_quota" || e.error?.error?.code === "insufficient_quota")) {
+      return true;
+    }
+  }
+  return false;
 }
 
-/** Pure classification — no retry, no I/O. Exported for direct unit
- * testing of the taxonomy without needing to trigger real network errors:
- * "input" -> terminal, per-row, no attempt burn (HTTP 400). "auth" ->
- * terminal, WHOLE-RUN abort, no attempt burn (401/403, or 429 with
- * insufficient_quota — a capacity problem, not a data problem). "transient"
- * -> everything else (plain rate limit, 5xx, network) — eligible for the
- * in-run retry in classifyAndRetry below, then a per-row attempt-count
- * increment if retries are exhausted. */
+/**
+ * Pure classification — no retry, no I/O. Exported for direct unit testing
+ * of the taxonomy without needing to trigger real network errors.
+ *
+ * Structural (duck-typed) checks sit alongside the `instanceof` ones because
+ * @langchain/openai's embedDocuments() runs every call through
+ * wrapOpenAIClientError, which for 400/401/403/404/429 MUTATES the original
+ * SDK error object in place (instanceof survives) but for a context-length-
+ * exceeded 400 constructs a brand-new ContextOverflowError with no SDK
+ * class at all (verified against the installed @langchain/openai source) —
+ * without the structural check, that case would silently fall through to
+ * "transient" (3 retries, then 5 embed_attempts burned) instead of "input"
+ * (terminal, no attempt burn) — plausible in practice since our own
+ * MAX_INPUT_BYTES guard in planEmbedRequests is a byte estimate, not an
+ * exact token count, and can under-catch a genuinely oversize input.
+ *
+ * "input" -> terminal, per-row, no attempt burn (HTTP 400, or the wrapped
+ * ContextOverflowError equivalent). "auth" -> terminal, WHOLE-RUN abort, no
+ * attempt burn (401/403, or 429 with insufficient_quota — a capacity
+ * problem, not a data problem). "transient" -> everything else (plain rate
+ * limit, 5xx, network, LangChain's TimeoutError/AbortError wrappers) —
+ * eligible for the in-run retry in classifyAndRetry below, then a per-row
+ * attempt-count increment if retries are exhausted.
+ */
 export function classifyEmbedError(err: unknown): EmbedErrorClass {
   if (err instanceof BadRequestError) return "input";
   if (err instanceof AuthenticationError || err instanceof PermissionDeniedError) return "auth";
   if (isQuotaRateLimit(err)) return "auth";
+
+  if (typeof err === "object" && err !== null) {
+    const e = err as { name?: unknown; status?: unknown };
+    if (e.name === "ContextOverflowError") return "input";
+    if (e.status === 401 || e.status === 403) return "auth";
+  }
+
   return "transient";
 }
 
@@ -157,7 +194,14 @@ async function classifyAndRetry<T>(fn: () => Promise<T>): Promise<T> {
 
       lastErr = err;
       if (attempt >= MAX_PROVIDER_RETRIES) break;
-      const retryAfterHeader = err instanceof APIError ? err.headers?.get("retry-after") : null;
+      // Duck-typed rather than `err instanceof APIError`: a genuine SDK
+      // error mutated in place by @langchain/openai still has its original
+      // `.headers`, but a wrapped TimeoutError/AbortError/ContextOverflowError
+      // is a plain object with none — this reads whichever shape is present
+      // instead of assuming the SDK class survived.
+      const retryAfterHeader = (err as { headers?: { get?: (name: string) => string | null } } | null | undefined)?.headers?.get?.(
+        "retry-after",
+      );
       const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : null;
       const backoffMs = Number.isFinite(retryAfterMs) && retryAfterMs ? retryAfterMs : Math.min(500 * 2 ** attempt, 4000);
       await new Promise((resolve) => setTimeout(resolve, backoffMs + Math.random() * 200));
@@ -168,46 +212,55 @@ async function classifyAndRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 export interface EmbedResult {
   embeddings: number[][];
-  promptTokens: number;
+  /** A js-tiktoken estimate, NOT the provider's billed usage.prompt_tokens
+   * — @langchain/openai's embedDocuments()/embedQuery() never surface real
+   * usage data (see lib/llm/embeddings.ts's countEmbeddingTokens doc
+   * comment). Named accordingly so this can't be mistaken for a metered
+   * figure at any call site. */
+  estimatedPromptTokens: number;
 }
 
-/** Embeds a batch of texts via OpenAI's /v1/embeddings, at
+/** Embeds a batch of texts via LangChain's OpenAIEmbeddings, at
  * EMBEDDING_DIMENSIONS. Throws EmbedInputError / EmbedAuthError per the
  * taxonomy above, or the last transient error if retries are exhausted. */
 export async function embedTexts(texts: string[]): Promise<EmbedResult> {
-  if (texts.length === 0) return { embeddings: [], promptTokens: 0 };
-  const openai = getClient();
+  if (texts.length === 0) return { embeddings: [], estimatedPromptTokens: 0 };
+  const client = getEmbeddingsClient(OPENAI_EMBEDDING_MODEL_ID, EMBEDDING_DIMENSIONS);
   const batches = planEmbedRequests(texts);
 
   const embeddings: number[][] = new Array(texts.length);
-  let promptTokens = 0;
+  let estimatedPromptTokens = 0;
 
   for (const batch of batches) {
-    const response = await classifyAndRetry(() =>
-      openai.embeddings.create({
-        model: OPENAI_EMBEDDING_MODEL_ID,
-        dimensions: EMBEDDING_DIMENSIONS,
-        input: batch.texts,
-        encoding_format: "float",
-      }),
-    );
-    promptTokens += response.usage.prompt_tokens;
-    // data[i].index is NOT guaranteed to match array position by the API
-    // contract — always re-key explicitly rather than assuming order.
-    for (const item of response.data) {
-      if (item.embedding.length !== EMBEDDING_DIMENSIONS) {
-        throw new Error(`embedding at response index ${item.index} has ${item.embedding.length} dimensions, expected ${EMBEDDING_DIMENSIONS}`);
+    // embedDocuments() reads results BY ARRAY POSITION — unlike the raw
+    // OpenAI SDK's response.data[i].index, LangChain discards any
+    // response-order info the provider might return. This re-keys from
+    // request position to the original embedTexts() input position
+    // (batch.indices), which is the only re-keying still available; if the
+    // provider ever returned embeddings out of request order, they would
+    // now attach to the wrong text silently. Capping every call at
+    // MAX_INPUTS_PER_REQUEST narrows that window; it does not close it.
+    const batchEmbeddings = await classifyAndRetry(() => client.embedDocuments(batch.texts));
+    batchEmbeddings.forEach((embedding, i) => {
+      if (embedding.length !== EMBEDDING_DIMENSIONS) {
+        throw new Error(`embedding at batch position ${i} has ${embedding.length} dimensions, expected ${EMBEDDING_DIMENSIONS}`);
       }
-      embeddings[batch.indices[item.index]] = item.embedding;
+      embeddings[batch.indices[i]] = embedding;
+    });
+    for (const text of batch.texts) {
+      estimatedPromptTokens += await countEmbeddingTokens(text);
     }
   }
-  return { embeddings, promptTokens };
+  return { embeddings, estimatedPromptTokens };
 }
 
-/** Single-text convenience wrapper — retrieve.ts's query embedding. */
-export async function embedOne(text: string): Promise<{ embedding: number[]; promptTokens: number }> {
-  const { embeddings, promptTokens } = await embedTexts([text]);
-  return { embedding: embeddings[0], promptTokens };
+/** Single-text convenience wrapper — retrieve.ts's query embedding. Routed
+ * through embedTexts rather than OpenAIEmbeddings' own embedQuery(), which
+ * would be a second, unvalidated code path with none of the dimension
+ * checking or error taxonomy above. */
+export async function embedOne(text: string): Promise<{ embedding: number[]; estimatedPromptTokens: number }> {
+  const { embeddings, estimatedPromptTokens } = await embedTexts([text]);
+  return { embedding: embeddings[0], estimatedPromptTokens };
 }
 
 function estimateCostUsd(promptTokens: number): number {
@@ -236,9 +289,11 @@ function chunkArray<T>(items: T[], size: number): T[][] {
  * itself (mirroring run-sync.ts/run-extraction.ts) when the backlog
  * doesn't drain in one run.
  *
- * Logs one llm_runs row per invocation (kind='embed') with REAL cost/usage
- * — unlike a free local embedding model, this is a metered OpenAI call, so
- * prompt_tokens and cost_usd are both genuine.
+ * Logs one llm_runs row per invocation (kind='embed') with an ESTIMATED
+ * prompt_tokens/cost_usd — unlike the raw OpenAI SDK this used to call
+ * directly, LangChain's OpenAIEmbeddings never surfaces the provider's own
+ * usage figures, so both are now a js-tiktoken count rather than a metered
+ * one (see EmbedResult.estimatedPromptTokens and prompt_version below).
  */
 export async function runEmbedding(clientSpaceId: string, chainDepth = 0): Promise<RunEmbeddingResult> {
   const service = createServiceClient();
@@ -293,8 +348,8 @@ export async function runEmbedding(clientSpaceId: string, chainDepth = 0): Promi
   for (const batch of chunkArray(embeddable, MAX_INPUTS_PER_REQUEST)) {
     if (aborted) break;
     try {
-      const { embeddings, promptTokens } = await embedTexts(batch.map((row) => row.content));
-      promptTokensTotal += promptTokens;
+      const { embeddings, estimatedPromptTokens } = await embedTexts(batch.map((row) => row.content));
+      promptTokensTotal += estimatedPromptTokens;
       const nowIso = new Date().toISOString();
       for (let i = 0; i < batch.length; i++) {
         // Compare-and-swap on embed_status: at-least-once job delivery means
@@ -360,9 +415,11 @@ export async function runEmbedding(clientSpaceId: string, chainDepth = 0): Promi
     status: runStatus,
     model: EMBEDDING_MODEL,
     provider: "openai",
-    // An embedding call has no prompt template to version — placeholder,
-    // not a real prompt revision like the extract/consolidate constants.
-    prompt_version: "embed-v1",
+    // Bumped from "embed-v1": prompt_tokens/cost_usd below are now a
+    // js-tiktoken ESTIMATE, not the provider's billed usage — this value is
+    // the only signal in the row itself that the figures changed meaning,
+    // since the column names didn't.
+    prompt_version: "embed-v2-tiktoken-est",
     prompt_tokens: promptTokensTotal,
     // completion/cache columns intentionally left null, not 0: an
     // embedding call has none of these, and 0 would misrepresent them as

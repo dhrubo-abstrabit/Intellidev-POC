@@ -17,6 +17,10 @@ export interface RetrievedChunk {
   /** Resolved server-side by match_search_chunks — see that RPC's own doc
    * comment in the migration for the per-source-kind resolution rule. */
   citableEventId: string | null;
+  /** Which page of a paginated source (a PDF) this chunk came from — see
+   * search_chunks.page_number's own column comment. Null for every
+   * non-paginated source. */
+  pageNumber: number | null;
   distance: number;
 }
 
@@ -42,10 +46,11 @@ export interface RetrieveOptions {
 export interface RetrieveResult {
   chunks: RetrievedChunk[];
   /** Tokens spent embedding the QUERY (not the corpus) — typically tiny
-   * (a few dozen to a few hundred tokens, well under $0.00001). Callers
-   * that want exact metering can fold this into their own llm_runs usage;
-   * it is not logged anywhere on its own. */
-  promptTokens: number;
+   * (a few dozen to a few hundred tokens). A js-tiktoken ESTIMATE, not the
+   * provider's billed usage (see embed.ts's EmbedResult.estimatedPromptTokens
+   * for why). Callers that want exact metering can fold this into their own
+   * llm_runs usage; it is not logged anywhere on its own. */
+  estimatedPromptTokens: number;
 }
 
 /**
@@ -58,7 +63,7 @@ export interface RetrieveResult {
  */
 export async function retrieveContextChunks(service: ServiceClient, opts: RetrieveOptions): Promise<RetrieveResult> {
   try {
-    const { embedding, promptTokens } = await embedOne(opts.queryText);
+    const { embedding, estimatedPromptTokens } = await embedOne(opts.queryText);
 
     const { data, error } = await service.rpc("match_search_chunks", {
       p_client_space_id: opts.clientSpaceId,
@@ -72,7 +77,7 @@ export async function retrieveContextChunks(service: ServiceClient, opts: Retrie
     });
     if (error) {
       console.error(`[search] match_search_chunks failed for client space ${opts.clientSpaceId}:`, error);
-      return { chunks: [], promptTokens };
+      return { chunks: [], estimatedPromptTokens };
     }
 
     const chunks: RetrievedChunk[] = (data ?? []).map((row) => ({
@@ -85,11 +90,12 @@ export async function retrieveContextChunks(service: ServiceClient, opts: Retrie
       occurredAt: row.occurred_at,
       sourceUrl: row.source_url ?? null,
       citableEventId: row.citable_event_id ?? null,
+      pageNumber: row.page_number ?? null,
       distance: row.distance,
     }));
-    return { chunks, promptTokens };
+    return { chunks, estimatedPromptTokens };
   } catch (err) {
     console.error(`[search] retrieveContextChunks failed for client space ${opts.clientSpaceId}:`, err);
-    return { chunks: [], promptTokens: 0 };
+    return { chunks: [], estimatedPromptTokens: 0 };
   }
 }

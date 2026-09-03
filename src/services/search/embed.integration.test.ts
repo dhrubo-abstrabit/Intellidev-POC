@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import OpenAI from "openai";
+import { embeddingEnv } from "@/lib/env";
 import { createServiceClient } from "@/lib/supabase/service";
 import { runEmbedding } from "./embed";
 import { retrieveContextChunks } from "./retrieve";
 
 /**
  * Exercises the real embedding pipeline: real OpenAI text-embedding-3-small
- * calls, against the real local Supabase instance. Cost is negligible — a
- * handful of short chunks plus two query embeddings is a few thousand
- * tokens at $0.02/MTok, well under $0.001 total for this whole file.
+ * calls (via LangChain's OpenAIEmbeddings), against the real local Supabase
+ * instance. Cost is negligible — a handful of short chunks plus two query
+ * embeddings is a few thousand tokens at $0.02/MTok, well under $0.001
+ * total for this whole file.
  */
 describe("runEmbedding / retrieveContextChunks (real OpenAI, real local DB)", () => {
   const service = createServiceClient();
@@ -64,7 +67,7 @@ describe("runEmbedding / retrieveContextChunks (real OpenAI, real local DB)", ()
     await service.auth.admin.deleteUser(userId);
   });
 
-  it("embeds pending chunks with real 1024-dim vectors and logs real cost/usage", async () => {
+  it("embeds pending chunks with real 1024-dim vectors and logs estimated cost/usage", async () => {
     const rows = [
       { title: "c1", content: "The checkout flow's payment step is failing intermittently for international cards." },
       { title: "c2", content: "QA confirmed the checkout payment failure only happens with non-US billing addresses." },
@@ -125,12 +128,30 @@ describe("runEmbedding / retrieveContextChunks (real OpenAI, real local DB)", ()
     expect(run?.status).toBe("succeeded");
     expect(run?.provider).toBe("openai");
     expect(run?.model).toBe("text-embedding-3-small@1024");
+    expect(run?.prompt_version).toBe("embed-v2-tiktoken-est");
     expect(run?.prompt_tokens).toBeGreaterThan(0);
     expect(run?.cost_usd).toBeGreaterThan(0);
     expect(run?.latency_ms).toBeGreaterThan(0);
     expect(run?.completion_tokens).toBeNull();
     expect(run?.prompt).toBeNull();
     expect(run?.response).toBeNull();
+
+    // Drift check: LangChain's OpenAIEmbeddings never surfaces the
+    // provider's own billed usage, so runEmbedding logs a js-tiktoken
+    // ESTIMATE (see embed.ts's EmbedResult.estimatedPromptTokens). This is
+    // the only compensation available for losing that authoritative count —
+    // one direct raw-SDK call on the identical inputs, asserting the
+    // estimate tracks the real billed figure closely. Embeddings have no
+    // per-request framing overhead the way chat messages do, so this should
+    // land within a token or two, not just "in the right ballpark".
+    const rawClient = new OpenAI({ apiKey: embeddingEnv().OPENAI_API_KEY });
+    const rawResponse = await rawClient.embeddings.create({
+      model: "text-embedding-3-small",
+      dimensions: 1024,
+      input: rows.map((r) => r.content),
+      encoding_format: "float",
+    });
+    expect(Math.abs((run?.prompt_tokens ?? 0) - rawResponse.usage.prompt_tokens)).toBeLessThanOrEqual(1);
   }, 60000);
 
   it("is idempotent: a second run finds nothing pending and writes no new llm_runs row", async () => {

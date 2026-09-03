@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AuthenticationError, BadRequestError, PermissionDeniedError, RateLimitError, InternalServerError } from "openai";
 import { classifyEmbedError, EmbedInputError, planEmbedRequests, toVectorLiteral } from "./embed";
+import { countEmbeddingTokens } from "@/lib/llm/embeddings";
 
 function makeHeaders(): Headers {
   return new Headers();
@@ -88,5 +89,58 @@ describe("classifyEmbedError", () => {
 
   it("classifies a plain network error as 'transient'", () => {
     expect(classifyEmbedError(new Error("ECONNRESET"))).toBe("transient");
+  });
+
+  // The cases below are shaped like what @langchain/openai's
+  // wrapOpenAIClientError actually produces (verified against its installed
+  // source), not the raw OpenAI SDK error classes above — embedTexts calls
+  // through LangChain's OpenAIEmbeddings now, and these are the wrapper
+  // shapes classifyEmbedError must still classify correctly.
+
+  it("classifies a wrapped context-overflow error (no SDK class, name-only) as 'input'", () => {
+    // wrapOpenAIClientError's context-overflow branch constructs a brand-new
+    // ContextOverflowError — not `instanceof BadRequestError` even though
+    // the underlying failure was a 400. This is the one case the structural
+    // check exists for.
+    const err = { name: "ContextOverflowError", message: "maximum context length exceeded" };
+    expect(classifyEmbedError(err)).toBe("input");
+  });
+
+  it("classifies a plain Error named InsufficientQuotaError (no status) as 'auth'", () => {
+    const err = Object.assign(new Error("quota exceeded"), { name: "InsufficientQuotaError" });
+    expect(classifyEmbedError(err)).toBe("auth");
+  });
+
+  it("classifies a non-instanceof object shaped like a nested quota error as 'auth'", () => {
+    const err = { status: 429, error: { code: "insufficient_quota" } };
+    expect(classifyEmbedError(err)).toBe("auth");
+  });
+
+  it("classifies a wrapped timeout (plain Error, name-only) as 'transient'", () => {
+    // wrapOpenAIClientError's timeout branch also constructs a plain Error
+    // with no SDK class — falls through to the default, same as any other
+    // unrecognized shape.
+    const err = Object.assign(new Error("Request timed out"), { name: "TimeoutError" });
+    expect(classifyEmbedError(err)).toBe("transient");
+  });
+
+  it("still classifies a real BadRequestError as 'input' even with a troubleshooting URL appended", () => {
+    // addLangChainErrorFields mutates .message in place on the SAME object
+    // (verified against source) rather than constructing a new one —
+    // instanceof must survive that.
+    const err = new BadRequestError(400, {}, "bad request\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/x/\n", makeHeaders());
+    expect(classifyEmbedError(err)).toBe("input");
+  });
+});
+
+describe("countEmbeddingTokens", () => {
+  it("is deterministic for the same text", async () => {
+    const text = "This is a short chunk of text about the project status.";
+    expect(await countEmbeddingTokens(text)).toBe(await countEmbeddingTokens(text));
+  });
+
+  it("returns a positive count for non-empty text and 0 for empty text", async () => {
+    expect(await countEmbeddingTokens("hello world")).toBeGreaterThan(0);
+    expect(await countEmbeddingTokens("")).toBe(0);
   });
 });
