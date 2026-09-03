@@ -41,6 +41,16 @@ export const SeatRef = z.object({
 })
 export type SeatRef = z.infer<typeof SeatRef>
 
+/**
+ * The longest a run may live before it is killed.
+ *
+ * Exported because two things have to agree about it and cannot be allowed to drift: dispatch
+ * enforces it, and the seat refresher uses it to decide how much life a token needs before it is
+ * handed to a run. A token that expires mid-run fails the stage rather than the request, and
+ * Claude Code cannot refresh one headless — so the margin has to exceed this, not approximate it.
+ */
+export const RUN_WALL_CLOCK_SEC = 1800
+
 export const RunLimits = z.object({
   wallClockSec: z.number().int().positive(),
   idleKillSec: z.number().int().positive(),

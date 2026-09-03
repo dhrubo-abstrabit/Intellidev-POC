@@ -1,4 +1,4 @@
-import type { HarnessId } from '@intellidev/shared'
+import { RUN_WALL_CLOCK_SEC, type HarnessId } from '@intellidev/shared'
 
 /**
  * Keeping a harness seat alive.
@@ -238,11 +238,19 @@ export function refresherFor(harness: HarnessId): HarnessRefresher | undefined {
 /**
  * How much life an access token must have left to be handed to a run.
  *
- * A run can last the better part of an hour, and a token that expires in the middle of one fails
- * the stage rather than the request — so the margin is the run budget plus room, not a few
- * seconds of clock skew.
+ * Derived from the run's own ceiling rather than chosen: a run is killed at `RUN_WALL_CLOCK_SEC`,
+ * so a token handed out at the start has to outlive that or it expires somewhere in the middle —
+ * and Claude Code cannot refresh one headless, so the run would fail having done the work.
+ *
+ * The slack on top covers the gap between this check and the container actually starting: the
+ * task is queued, an image is pulled, the run boots. That is minutes rather than seconds, and
+ * measuring it precisely would be false precision — doubling the ceiling is the honest version of
+ * "comfortably more than a run can take".
+ *
+ * Renewal is the backstop, not the plan. A run that outlasts even this asks again and gets a
+ * fresh token; this margin is what makes that rare rather than routine.
  */
-export const REFRESH_MARGIN_MS = 90 * 60 * 1000
+export const REFRESH_MARGIN_MS = RUN_WALL_CLOCK_SEC * 2 * 1000
 
 /** Whether this credential should be refreshed before being used. */
 export function needsRefresh(expiry: SeatExpiry, now = new Date()): boolean {

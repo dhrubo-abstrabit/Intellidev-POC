@@ -12,7 +12,7 @@ import {
   type StageRecord,
   type TaskStatus,
 } from '@intellidev/shared'
-import { isRunTerminal } from '@intellidev/shared'
+import { RUN_WALL_CLOCK_SEC, isRunTerminal } from '@intellidev/shared'
 import { DockerRunner, LocalCredentialProvider, runAdapter } from '@intellidev/adapter'
 import type { Runner } from '@intellidev/adapter'
 import type { AwsRuntimeConfig } from './aws/config.js'
@@ -841,7 +841,9 @@ function buildRunSpec(args: {
     },
     seat: { id: 'local', pool: config.projectId, provider: 'local' },
     limits: {
-      wallClockSec: 1800,
+      // The shared constant, so the refresh margin is derived from the same number rather than
+      // from someone's memory of it.
+      wallClockSec: RUN_WALL_CLOCK_SEC,
       idleKillSec: 600,
       perStageTimeoutSec: 600,
       tokensMax: 2_000_000,

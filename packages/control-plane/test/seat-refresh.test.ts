@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SeatRefresher } from '../src/harness/seat-refresher.js'
 import { RefreshSweep } from '../src/harness/refresh-sweep.js'
+import { RUN_WALL_CLOCK_SEC } from '@intellidev/shared'
 import {
   canStillRefresh,
   claudeCodeRefresher,
@@ -78,8 +79,15 @@ function seatStore(initial: string) {
 
 describe('deciding when a seat needs refreshing', () => {
   it('refreshes well before expiry, not at it', () => {
-    // A run can last the better part of an hour. A token that is valid *now* but expires in ten
-    // minutes fails the stage rather than the request, which is far more expensive.
+    /**
+     * The margin is twice the run's own wall-clock ceiling, not a number someone liked. A run is
+     * killed at `RUN_WALL_CLOCK_SEC`, so a token handed out at the start must outlive that or it
+     * expires mid-run — and Claude Code cannot refresh one headless.
+     *
+     * Asserted against the constant rather than a literal, so raising the run budget without
+     * revisiting this fails here instead of in production.
+     */
+    expect(REFRESH_MARGIN_MS).toBeGreaterThan(RUN_WALL_CLOCK_SEC * 1000)
     expect(needsRefresh({ accessExpiresAt: new Date(Date.now() + 10 * 60 * 1000) })).toBe(true)
     expect(needsRefresh({ accessExpiresAt: new Date(Date.now() + REFRESH_MARGIN_MS + HOUR) })).toBe(
       false,
