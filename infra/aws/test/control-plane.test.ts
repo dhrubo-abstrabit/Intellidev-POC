@@ -154,6 +154,9 @@ describe('the control plane service', () => {
       'INTELLIDEV_PUBLIC_URL',
       'INTELLIDEV_BIND_HOST',
       'SUPABASE_URL',
+      // Without the key the sign-in page loads and every login fails with "Invalid API key",
+      // which local development never shows because the key is in `.env` there.
+      'SUPABASE_ANON_KEY',
       'AWS_REGION',
       // Both halves of the App, or it is silently not configured and every push fails at the
       // very end of a run that did all its work first.

@@ -429,7 +429,21 @@ process.stderr.write(
     }`,
     `  keys    ${Object.keys(harnessEnv).join(', ') || 'none forwarded'}`,
     `  seats   ${connectedSeats.join(', ') || 'no harness connected'}`,
-    `  auth    ${auth ? `supabase (${new URL(supabaseUrl!).hostname})` : 'OPEN — no SUPABASE_URL, anyone reaching this port can dispatch'}`,
+    /**
+     * Three states, not two.
+     *
+     * A gate with no publishable key is the third: the API is correctly closed, and the sign-in
+     * page cannot open it, because the browser has nothing to present. It looks healthy from
+     * every angle except a person trying to log in — which is how it reached production, working
+     * locally the whole time because the key was in `.env`.
+     */
+    `  auth    ${
+      !auth
+        ? 'OPEN — no SUPABASE_URL, anyone reaching this port can dispatch'
+        : process.env['SUPABASE_ANON_KEY']
+          ? `supabase (${new URL(supabaseUrl!).hostname})`
+          : `supabase (${new URL(supabaseUrl!).hostname}) — but NO SUPABASE_ANON_KEY, so nobody can sign in`
+    }`,
     `  crypto  ${credentialKeyArn ? `kms (${credentialKeyArn.split('/').pop()})` : 'local passphrase — development only'}`,
     ``,
   ].join('\n'),

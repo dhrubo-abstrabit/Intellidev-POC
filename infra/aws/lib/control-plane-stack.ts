@@ -227,6 +227,23 @@ export class ControlPlaneStack extends Stack {
           ssmPath(env.name, 'control-plane', 'github-app-id'),
         ),
         /**
+         * The publishable key the sign-in page presents.
+         *
+         * FOUND BY SIGNING IN. `SUPABASE_URL` was injected and this was not, so `/auth-config`
+         * served a null key, the browser sent `apikey: null`, and Supabase answered "Invalid API
+         * key" — while the same page worked locally, where the key comes from `.env`. A hosted
+         * deployment that nobody can log in to is not a subtle failure, but nothing before the
+         * first real sign-in attempt notices it.
+         *
+         * Not a secret: it identifies the project and authorises nothing on its own. Every real
+         * permission comes from a user's own token and the RLS policies behind it, which is why
+         * Supabase ships this key to browsers.
+         */
+        SUPABASE_ANON_KEY: ssm.StringParameter.valueForStringParameter(
+          this,
+          ssmPath(env.name, 'control-plane', 'supabase-anon-key'),
+        ),
+        /**
          * The key credential material is sealed under.
          *
          * Without it the process falls back to a passphrase compiled into the source, which
