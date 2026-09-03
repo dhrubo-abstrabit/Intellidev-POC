@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HarnessId } from '@intellidev/shared'
@@ -125,6 +125,31 @@ export class HarnessLogin {
   async start(harness: HarnessId): Promise<LoginState> {
     const recipe = LOGIN_RECIPES[harness]
     if (!recipe) throw new Error(`${harness} has no scriptable login; import its file instead`)
+
+    /**
+     * A host login needs a host that is the person's own machine.
+     *
+     * `where: 'host'` exists so the CLI's callback on localhost lands on the same localhost the
+     * browser will visit. That is true when the control plane runs on someone's laptop and false
+     * on a hosted deployment, where "host" is a container in another datacentre — the browser's
+     * localhost is not its localhost, so the flow cannot complete however it is spawned.
+     *
+     * Refused up front rather than attempted, because the attempt fails as `spawn ENOENT`: the
+     * binary is not in the control plane's image, and Node surfaces that as exit -2 with no
+     * output at all. A person reading "login exited -2: (no output)" learns nothing about what
+     * is actually wrong or what to do instead.
+     */
+    if (recipe.where === 'host') {
+      const missing = spawnSync(recipe.argv[0]!, ['--version'], { stdio: 'ignore' }).error
+      if (missing) {
+        throw new Error(
+          `${harness} signs in through a callback on localhost, so it has to run on the machine ` +
+            `whose browser you are using — not on a hosted control plane. Run ` +
+            `\`${recipe.argv.join(' ')}\` yourself, then use "Import" here to upload the file ` +
+            `it writes (~/${recipe.capture[0]}).`,
+        )
+      }
+    }
 
     this.cancel()
     this.recipe = recipe

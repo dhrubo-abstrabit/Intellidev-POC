@@ -103,6 +103,15 @@ const ConnectHarness = z.object({
   token: z.string().min(1).optional(),
   /** For file-based harnesses; defaults to where that CLI writes its credential. */
   path: z.string().min(1).optional(),
+  /**
+   * The credential file's contents, sent by the browser.
+   *
+   * `path` only works when the control plane shares a filesystem with the person using it,
+   * which stopped being true the moment it was hosted: reading `~/.codex/auth.json` on a
+   * container in another datacentre finds nothing. Uploading the contents is the form that
+   * works in both places, so the UI sends this and `path` remains for the CLI.
+   */
+  contents: z.string().min(1).max(256_000).optional(),
 })
 
 const CreateTask = z.object({
@@ -356,8 +365,22 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         return reply.code(201).send({ account: accountToPublic(account) })
       }
 
+      /**
+       * Contents when the browser sent them, the filesystem otherwise.
+       *
+       * Parsed either way rather than trusted: a truncated or wrong-file upload is a real
+       * mistake, and it is far cheaper to reject it here than to store it, show the seat as
+       * connected, and have a run fail at its first model call.
+       */
       const from = path ?? recipe.hostPath!
-      const contents = await readCredentialFile(from)
+      const contents = parsed.data.contents ?? (await readCredentialFile(from))
+      try {
+        JSON.parse(contents)
+      } catch {
+        return reply
+          .code(400)
+          .send({ error: `that does not look like ${harness}'s credential file (not valid JSON)` })
+      }
       const account = {
         harness,
         label: parsed.data.label ?? harness,

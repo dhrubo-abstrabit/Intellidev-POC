@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loginSupported, pickSignInUrl } from '../src/harness/login.js'
+import { HarnessLogin, loginSupported, pickSignInUrl } from '../src/harness/login.js'
 
 /**
  * Both fixtures are verbatim from the pinned CLIs, because the whole point of this function is
@@ -54,6 +54,50 @@ describe('which harnesses can sign in', () => {
     expect(loginSupported('claude-code')).toBe(true)
     expect(loginSupported('codex')).toBe(true)
     // opencode's login is an interactive provider picker with no scriptable form.
+    expect(loginSupported('opencode')).toBe(false)
+  })
+})
+
+describe('a login that cannot work where it is running', () => {
+  /**
+   * FOUND BY CLICKING IT. On the hosted control plane "Sign in to codex" failed with
+   * `login exited -2: (no output)` — Node's rendering of `spawn ENOENT`, because the CLI is not
+   * in the control plane's image.
+   *
+   * Installing it would not have helped. Codex signs in through a callback on localhost:1455,
+   * and a container's localhost is not the browser's, so the flow cannot complete there however
+   * it is spawned. The only honest answer is to say so and point at importing the file instead.
+   */
+  it('explains itself rather than failing as exit -2', async () => {
+    const login = new HarnessLogin(
+      // None of these are reached: the refusal happens before anything is spawned.
+      {} as never,
+      { clientSpaceId: 'space' },
+      'intellidev/runner:dev',
+      '/tmp',
+    )
+    /**
+     * PATH is emptied so the binary cannot resolve, which is the hosted condition exactly.
+     * Without this the test would pass vacuously on any machine that has codex installed — and
+     * a developer's machine is precisely where it is installed.
+     */
+    const realPath = process.env['PATH']
+    process.env['PATH'] = ''
+    try {
+      await expect(login.start('codex')).rejects.toThrow(/localhost/)
+      const message = await login.start('codex').catch((e: Error) => e.message)
+      expect(message).toContain('Import')
+      // It must name the file, since that is the thing the person has to go and find.
+      expect(message).toContain('.codex/auth.json')
+      // And it must not be the raw spawn failure, which is what it said before.
+      expect(message).not.toContain('ENOENT')
+      expect(message).not.toContain('-2')
+    } finally {
+      process.env['PATH'] = realPath
+    }
+  })
+
+  it('offers no scriptable login for opencode, whose picker cannot be driven', () => {
     expect(loginSupported('opencode')).toBe(false)
   })
 })

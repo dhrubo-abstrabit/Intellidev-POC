@@ -738,11 +738,31 @@
             b.onclick = async () => {
               const harness = b.dataset.import
               const recipe = state.recipes.find((r) => r.harness === harness)
-              const path = prompt(`Import ${harness} credentials from:`, recipe.hostPath)
-              if (!path) return
-              b.disabled = true
-              await connectHarness({ harness, path })
-              b.disabled = false
+              /**
+               * A file picker, not a path prompt.
+               *
+               * A path is only meaningful when the control plane shares a filesystem with the
+               * person at the keyboard. Hosted, it reads a container's disk and finds nothing —
+               * so the browser reads the file and uploads what it contains instead, which is the
+               * form that works in both places.
+               */
+              const input = document.createElement('input')
+              input.type = 'file'
+              // A hint, not a restriction: these files have no consistent extension.
+              input.accept = '.json,application/json'
+              input.onchange = async () => {
+                const file = input.files?.[0]
+                if (!file) return
+                b.disabled = true
+                try {
+                  await connectHarness({ harness, contents: await file.text() })
+                } finally {
+                  b.disabled = false
+                }
+              }
+              // Told where to look, since the file is usually hidden in the home directory.
+              b.title = `usually ${recipe.hostPath}`
+              input.click()
             }
           })
         $('seats')
