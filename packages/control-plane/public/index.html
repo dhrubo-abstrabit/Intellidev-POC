@@ -794,9 +794,18 @@
        */
       async function signIn(harness, button) {
         button.disabled = true
-        // Opened blank and navigated later. `noopener` so the vendor's page cannot reach back
-        // into this one through `window.opener`.
-        const authWindow = window.open('', '_blank', 'noopener,width=520,height=720')
+        /**
+         * Opened blank on the click, navigated once the URL is known.
+         *
+         * FOUND BY CLICKING IT. This asked for `noopener` too, and `window.open` returns **null**
+         * whenever that is set — by specification, since there is no handle to give back. So the
+         * window opened, stayed `about:blank`, and nothing could ever navigate it.
+         *
+         * A handle is the whole point here, so `noopener` cannot be used. The page it will hold
+         * is the vendor's own sign-in, and the anchor below keeps `rel="noopener"` for the case
+         * where a person clicks that instead.
+         */
+        const authWindow = window.open('', '_blank', 'width=520,height=720')
         const panel = $('loginPanel')
         panel.hidden = false
         $('loginTitle').textContent = `Sign in to ${harness}`

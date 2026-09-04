@@ -45,3 +45,21 @@ describe('the built-in UI carries its token everywhere', () => {
     expect(page).not.toMatch(/localStorage\.(get|set)Item\(\s*TOKEN_KEY/)
   })
 })
+
+describe('the sign-in popup', () => {
+  it('does not ask for noopener on the window it needs to navigate', () => {
+    /**
+     * FOUND BY CLICKING IT. `window.open` returns null whenever `noopener` is set — there is no
+     * handle to give back, by specification. The window opened, stayed `about:blank`, and
+     * nothing could navigate it, for both harnesses.
+     *
+     * The handle is the entire reason the window is opened blank on the click and navigated
+     * afterwards, so the two cannot both be had.
+     */
+    const call = page.match(/window\.open\([^)]*\)/)
+    expect(call).not.toBeNull()
+    expect(call![0]).not.toContain('noopener')
+    // The anchor fallback still carries it, since nothing needs that window's handle.
+    expect(page).toContain('rel="noopener noreferrer"')
+  })
+})
