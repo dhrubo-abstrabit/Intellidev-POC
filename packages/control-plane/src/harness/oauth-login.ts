@@ -135,9 +135,17 @@ const CODEX_SCOPES = 'openid profile email offline_access api.connectors.read ap
 const CODEX_STALE_AFTER_MS = 8 * 24 * 3600 * 1000
 
 export const codexFlow: OAuthFlow = {
+  /**
+   * Written to pre-empt the alarm rather than explain it afterwards.
+   *
+   * The last step shows "This site can't be reached", which looks exactly like a broken sign-in
+   * and is in fact the sign-in working: the redirect targets a server the codex CLI would run on
+   * your machine, and there isn't one. Saying so *before* it happens is the difference between a
+   * copy-paste and a support question.
+   */
   inputHint:
-    'Sign in. Your browser will then fail to open a localhost page — that is expected, and the ' +
-    "code is in its address bar. Copy that failed page's whole address and paste it below.",
+    "Sign in, then copy that page's address (⌘L, ⌘C) and paste it below. " +
+    'It will say "This site can\'t be reached" — that is expected, and the code is in the address.',
 
   authorizeUrl({ challenge, state }) {
     const params = new URLSearchParams({

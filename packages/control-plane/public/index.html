@@ -453,7 +453,19 @@
           </p>
           <div id="loginCodeRow" hidden>
             <label for="loginCode">Code from that page</label>
-            <input id="loginCode" placeholder="paste it here" />
+            <div class="row" style="gap: 6px">
+              <input id="loginCode" placeholder="paste it here" style="flex: 1" />
+              <!--
+                One click instead of click-then-paste. The clipboard read needs a gesture and a
+                permission, and is allowed to be refused — the field beside it still works, so
+                nothing depends on this button succeeding.
+              -->
+              <button type="button" id="loginPaste" class="secondary" title="Paste from clipboard">
+                Paste
+              </button>
+            </div>
+            <!-- Says whether what was pasted is usable, before anything is submitted. -->
+            <p class="hint" id="loginCodeState" style="min-height: 1.2em"></p>
           </div>
           <div class="row" style="margin-top: 10px">
             <button type="button" id="loginSubmit" hidden>Submit code</button>
@@ -860,6 +872,71 @@
         } finally {
           button.disabled = false
           await loadSeats()
+        }
+      }
+
+      /**
+       * Is this paste usable, and what is the code inside it?
+       *
+       * Mirrors the control plane's own extraction so the answer appears as the person pastes
+       * rather than after a round trip. Codex sends them back with a whole failed URL — the code
+       * is a parameter inside it — and Claude with `code#state`.
+       */
+      function readPastedCode(raw) {
+        const text = (raw ?? '').trim()
+        if (!text) return { ok: false }
+        if (/^https?:\/\//.test(text)) {
+          try {
+            const code = new URL(text).searchParams.get('code')
+            return code ? { ok: true, code } : { ok: false, why: 'that address has no code in it' }
+          } catch {
+            return { ok: false, why: 'that does not look like an address' }
+          }
+        }
+        return { ok: true, code: text.split('#')[0] }
+      }
+
+      /** Submits whatever is in the box, and reports what came back. */
+      async function submitLoginCode() {
+        const parsed = readPastedCode($('loginCode').value)
+        if (!parsed.ok) return
+        $('loginSubmit').disabled = true
+        const res = await fetch('/api/harness/login/code', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code: $('loginCode').value.trim() }),
+        })
+        $('loginSubmit').disabled = false
+        $('loginCode').value = ''
+        $('loginCodeState').textContent = ''
+        $('loginStatus').textContent = res.ok
+          ? 'finishing…'
+          : ((await res.json()).error ?? 'code rejected')
+      }
+
+      /**
+       * Validates as it is typed or pasted, and submits itself once it is valid.
+       *
+       * The last step of a sign-in should not be a form. Everything needed is in what they
+       * pasted, so asking them to then find a button is asking for a click that carries no
+       * information.
+       */
+      $('loginCode').oninput = () => {
+        const parsed = readPastedCode($('loginCode').value)
+        $('loginCodeState').textContent = parsed.ok
+          ? 'code found — signing in…'
+          : (parsed.why ?? '')
+        $('loginCodeState').style.color = parsed.ok ? 'var(--ok, #2f7d4f)' : 'var(--fg3)'
+        if (parsed.ok) void submitLoginCode()
+      }
+
+      $('loginPaste').onclick = async () => {
+        try {
+          $('loginCode').value = await navigator.clipboard.readText()
+          $('loginCode').dispatchEvent(new Event('input'))
+        } catch {
+          // Refused, or unsupported. The field beside it is the fallback, and always was.
+          $('loginCodeState').textContent = 'could not read the clipboard — paste into the box'
         }
       }
 
