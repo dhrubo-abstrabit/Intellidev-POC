@@ -217,6 +217,23 @@ describe('choosing a sign-in path', () => {
     task.cancel()
   })
 
+  it('drives codex through its own CLI, not through our OAuth', async () => {
+    /**
+     * Codex has a direct flow and deliberately does not use it. That flow ends on "This site
+     * can't be reached" — correct behaviour, read as a failure every time — while its device
+     * flow has no redirect at all, and only the CLI can perform that one because it holds the
+     * device code and polls.
+     *
+     * The CLI is in the control-plane image now, so this is a subprocess rather than a container:
+     * the same flow, about a second instead of thirty.
+     */
+    const { login: direct } = login('direct')
+    const state = await direct.start('codex')
+    // Not our authorize URL: the CLI produces its own, and it is a device page.
+    expect(state.authorizationUrl ?? '').not.toContain('auth.openai.com/oauth/authorize')
+    direct.cancel()
+  })
+
   it('has a flow for both harnesses that can be driven, and none for opencode', () => {
     expect(oauthFlowFor('claude-code')).toBeDefined()
     expect(oauthFlowFor('codex')).toBeDefined()

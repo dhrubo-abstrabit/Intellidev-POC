@@ -61,14 +61,14 @@ interface Recipe {
   /** What to tell the person to paste back, when it is not simply "the code". */
   inputHint?: string
   /**
-   * Prefer the container even when a direct flow exists.
+   * Drive the harness's own CLI rather than our OAuth implementation.
    *
-   * True for codex only, and only because its direct flow ends on a page that says "This site
-   * can't be reached". That is the flow working — the redirect targets a server its CLI would run
-   * on your machine — but nobody reads it that way, and the device flow has no such step. Where
-   * there is no container to run, the direct flow is still the better of what remains.
+   * True for codex only. Its direct flow ends on a page saying "This site can't be reached" —
+   * the flow working, and read as a failure every time — while its device flow has no redirect
+   * at all. Only the CLI can perform that one, because it holds the device code and does the
+   * polling, so this is what asks for it.
    */
-  preferTask?: boolean
+  preferCli?: boolean
   /**
    * Where this CLI's own callback server listens, when it has one.
    *
@@ -133,7 +133,7 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
       'Open the page, sign in, and enter the code above. If it says device code authorization ' +
       'is disabled, turn it on in ChatGPT → Settings → Security → device code authorization for ' +
       'Codex, then start this again.',
-    preferTask: true,
+    preferCli: true,
   },
   // opencode's login is an interactive provider picker with no scriptable form, so it is
   // deliberately absent: importing the file it writes is the honest path there.
@@ -265,25 +265,23 @@ export class HarnessLogin {
     this.recipe = recipe
 
     /**
-     * The direct flow first, wherever there is one.
+     * Three paths, in order of what serves the person best.
      *
-     * It needs no container and no CLI: two HTTP calls and the code the person pastes. The task
-     * path remains for harnesses without one, and as the thing to fall back to if a vendor
-     * changes a flow we now drive ourselves.
+     *  1. **The CLI, here.** Where a recipe asks for it — codex, whose device flow is the only
+     *     sign-in with no localhost redirect in it. The CLI is in this image, so it is a
+     *     subprocess and answers in about a second.
+     *  2. **Our own OAuth.** Claude Code: two HTTP calls, nothing to install, no subprocess.
+     *  3. **A container.** Only when explicitly asked for. Kept because the CLI adapts to its
+     *     own vendor, so a flow changing under us is a setting rather than a deploy.
      */
-    /**
-     * Which path, and why.
-     *
-     * `task` mode forces the CLI. Otherwise the direct flow wins — instant, no container —
-     * except where a recipe asks for the container *and* there is one to run, which today means
-     * codex: its device flow removes a step that looks like a failure, and that is worth a
-     * container.
-     */
-    const preferTask = recipe.preferTask && this.launcher !== undefined
-    const flow = this.mode === 'direct' && !preferTask ? oauthFlowFor(harness) : undefined
-    if (flow) return this.startDirect(harness, flow)
+    if (this.mode === 'task' && this.launcher) return this.startTask(harness, recipe)
 
-    if (this.launcher) return this.startTask(harness, recipe)
+    if (!recipe.preferCli) {
+      const flow = oauthFlowFor(harness)
+      if (flow) return this.startDirect(harness, flow)
+    }
+
+    // Falls through to the local CLI below.
     await mkdir(join(this.workRoot, 'logins'), { recursive: true })
     this.home = await mkdtemp(join(this.workRoot, 'logins', `${harness}-`))
     const state: LoginState = {
@@ -297,29 +295,21 @@ export class HarnessLogin {
     // HOME is redirected either way: in a container so the credential outlives it, and on the
     // host so a re-login cannot clobber the developer's own credential file.
     /**
-     * Always a container.
+     * The CLI directly, with a HOME of its own.
      *
-     * A `host` variant existed for codex, whose callback had to land on the same localhost the
-     * browser would visit. Its device flow needs no callback at all, so nothing runs on the host
-     * any more — and a login that writes to the developer's own HOME was never something to keep
-     * for its own sake.
+     * It used to be `docker run`, which is why this path could not work on a hosted control
+     * plane: there is no docker in the image and Fargate cannot nest containers. The CLI is in
+     * the image now — 135 MB, measured — so it is simply a subprocess, and a sign-in answers in
+     * about a second rather than waiting on a task to start and pull.
+     *
+     * HOME is redirected so the credential lands somewhere this login owns: the process runs as
+     * one user for everything, and a harness writing into the real home directory would have one
+     * sign-in overwrite the last.
      */
-    const child = spawn(
-      'docker',
-      [
-        'run',
-        '--rm',
-        // Keeps stdin open for the code.
-        '-i',
-        '--mount',
-        `type=bind,source=${this.home},target=/home/adapter`,
-        '--entrypoint',
-        recipe.argv[0]!,
-        this.image,
-        ...recipe.argv.slice(1),
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    )
+    const child = spawn(recipe.argv[0]!, recipe.argv.slice(1), {
+      env: { ...process.env, HOME: this.home },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     this.child = child
 
     let seen = ''
@@ -639,7 +629,7 @@ export class HarnessLogin {
       label: state.harness,
       files,
       connectedAt: new Date().toISOString(),
-      importedFrom: `${recipe.argv.join(' ')} (in ${this.image})`,
+      importedFrom: recipe.argv.join(' '),
     })
     state.status = 'connected'
   }

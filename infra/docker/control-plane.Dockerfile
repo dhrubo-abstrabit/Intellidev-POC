@@ -28,6 +28,31 @@ COPY packages/control-plane/package.json packages/control-plane/
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # ---------------------------------------------------------------------------
+# Stage 1b: the codex CLI, for signing in.
+# ---------------------------------------------------------------------------
+# Only codex, and only for its sign-in.
+#
+# Its device-code flow is the one harness login with no localhost redirect in it, and the CLI is
+# what performs it: it holds the device code and polls until someone approves. Running that in a
+# Fargate task meant a container start and an image pull before a person saw anything — about
+# thirty seconds of blank window for an action that happens once per account.
+#
+# Here it is a subprocess of a process that is already running, so the same flow answers in about
+# a second. It costs 135 MB compressed, which is 15 cents a month of ECR and roughly three
+# seconds on a control-plane start. Measured, not estimated, because "it nearly doubles the
+# image" sounded expensive and was not.
+#
+# Claude Code is deliberately absent: its sign-in is plain OAuth this process does itself, so its
+# CLI would be weight with nothing to do.
+#
+# `--ignore-scripts=false` matters: codex fetches its platform binary in a postinstall step, and
+# without it installs as a stub that fails at first use.
+FROM node:24-bookworm-slim AS codex
+ARG CODEX_VERSION=0.147.0
+RUN npm install -g --ignore-scripts=false "@openai/codex@${CODEX_VERSION}" \
+ && npm cache clean --force
+
+# ---------------------------------------------------------------------------
 # Stage 2: the runtime image.
 # ---------------------------------------------------------------------------
 FROM node:24-bookworm-slim
@@ -40,6 +65,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
+
+# Copied rather than installed, so the slow layer is cached apart from application code.
+COPY --from=codex /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+# Linked, not copied. npm puts a symlink here, and `COPY` dereferences it — which leaves the
+# launcher sitting in /usr/local/bin with no package above it, so resolving its own platform
+# binary walks up to / and fails with "Missing optional dependency @openai/codex-linux-arm64"
+# while that dependency is present and 263 MB of it is right there.
+RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 
 # Never root. The control plane holds the GitHub App key and every decrypted credential in
 # memory; a process that also owns its own filesystem is a larger blast radius than it needs.
