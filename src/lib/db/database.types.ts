@@ -1343,6 +1343,7 @@ export type Database = {
           chunk_id: string | null
           client_space_id: string
           linked_at: string
+          linked_by: string | null
           llm_run_id: string | null
           normalized_event_id: string
           relevance: number | null
@@ -1353,6 +1354,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id: string
           relevance?: number | null
@@ -1363,6 +1365,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id?: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id?: string
           relevance?: number | null
@@ -1382,6 +1385,13 @@ export type Database = {
             columns: ["client_space_id"]
             isOneToOne: false
             referencedRelation: "client_spaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "task_sources_linked_by_fkey"
+            columns: ["linked_by"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
           {
@@ -1981,6 +1991,7 @@ export type Database = {
         | "daily_summary"
         | "embed"
         | "backfill"
+        | "enrich_task"
       llm_run_status: "queued" | "running" | "succeeded" | "failed"
       project_role: "member" | "viewer"
       project_visibility: "space" | "restricted"
@@ -2157,6 +2168,7 @@ export const Constants = {
         "daily_summary",
         "embed",
         "backfill",
+        "enrich_task",
       ],
       llm_run_status: ["queued", "running", "succeeded", "failed"],
       project_role: ["member", "viewer"],
