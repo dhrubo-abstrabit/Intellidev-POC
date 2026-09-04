@@ -99,27 +99,28 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
    * signing in from a local UI, which writes to the same shared seat store.
    */
   /**
-   * Device code, not the browser callback.
+   * Device code — available, but not the default.
    *
-   * The callback flow redirects to `localhost:1455` — a server the CLI runs on *your* machine.
-   * Hosted there is no such machine, so the browser lands on "This site can't be reached" and
-   * the person has to copy an address out of a failed page. That works, and it looks broken.
+   * It is the nicer flow: a plain page, a code to type, nothing to paste back. Two things keep
+   * it off by default.
    *
-   * The device flow has none of that: a plain page, a code to type, and the CLI polls until it
-   * is approved. Nothing to paste back, and nothing that looks like an error. It costs a
-   * container, because the CLI holds the device code and does the polling — worth it to remove
-   * the one step in this product that made people ask whether it had failed.
+   * **It needs a setting nobody has turned on.** Device code authorization for Codex is off
+   * until someone enables it in ChatGPT security settings, and the refusal appears on the
+   * *consent page*, not in the CLI — which prints a URL and code optimistically either way. That
+   * is how it was mistaken for working here.
    *
-   * Device login has to be enabled once in ChatGPT security settings. It is on for the account
-   * this was tested with; when it is off the CLI says so plainly, which is a better failure than
-   * a broken-looking page.
+   * **It costs a container to start.** The CLI holds the device code and does the polling, so
+   * this path waits on a Fargate task and an image pull — about a minute of nothing, against one
+   * second for the direct flow.
+   *
+   * Reachable through INTELLIDEV_LOGIN_MODE=task once the setting is on, at which point the
+   * paste disappears and the wait is the only cost left.
    */
   codex: {
     argv: ['codex', 'login', '--device-auth'],
     capture: ['.codex/auth.json'],
     // Nothing comes back to us: the code goes to the vendor's page and the CLI waits.
     needsCode: false,
-    preferTask: true,
   },
   // opencode's login is an interactive provider picker with no scriptable form, so it is
   // deliberately absent: importing the file it writes is the honest path there.

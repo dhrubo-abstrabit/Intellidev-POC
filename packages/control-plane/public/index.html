@@ -818,6 +818,23 @@
          * where a person clicks that instead.
          */
         const authWindow = window.open('', '_blank', 'width=520,height=720')
+        /**
+         * Say something while it is blank.
+         *
+         * The window is opened on the click and navigated once the URL is known, which is
+         * instant for a direct sign-in and about a minute when a container has to start. A blank
+         * window for a minute reads as a broken popup, and the person closes it — so it holds a
+         * line of text until it has somewhere to go.
+         */
+        try {
+          authWindow?.document.write(
+            '<title>Signing in…</title>' +
+              '<body style="font:14px system-ui;display:grid;place-items:center;height:90vh;' +
+              'margin:0;color:#555">Preparing the sign-in page…</body>',
+          )
+        } catch {
+          /* a blocker took it; the link in the panel still works */
+        }
         const panel = $('loginPanel')
         panel.hidden = false
         $('loginTitle').textContent = `Sign in to ${harness}`
