@@ -61,9 +61,14 @@ describe('a login that runs as a task', () => {
     expect(state.authorizationUrl).toBe(CODEX_URL)
     // Not the callback server it announces first — that is a blank page for the person.
     expect(state.authorizationUrl).not.toContain('localhost:1455')
-    expect(state.needsCode).toBe(true)
-    // And it must say what to paste, because "the code" would be wrong here.
-    expect(state.inputHint).toMatch(/localhost/)
+    /**
+     * Nothing to paste back.
+     *
+     * Codex signs in by device code now: the person types a code into the vendor's own page and
+     * the CLI polls until it is approved. The callback flow it replaced ended on "This site
+     * can't be reached", which was the flow working and looked like a failure.
+     */
+    expect(state.needsCode).toBe(false)
   })
 
   it('sends a pasted URL as a callback to replay, and a pasted code as a code', async () => {

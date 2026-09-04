@@ -40,8 +40,22 @@ describe('picking the sign-in link', () => {
     )
   })
 
-  it('ignores a bare link with no parameters, which is never the sign-in page', () => {
+  it('ignores a bare docs link, but not a bare device-code page', () => {
+    /**
+     * The rule used to be "no query string, not a sign-in link", which held until codex's device
+     * flow — it sends someone to `https://auth.openai.com/codex/device` and passes the code
+     * separately, so the only URL in the output was being discarded and the panel showed nothing.
+     *
+     * A bare URL now qualifies on its path alone, which still excludes documentation.
+     */
     expect(pickSignInUrl('see https://example.test/docs for help')).toBeUndefined()
+    expect(pickSignInUrl('open https://auth.openai.com/codex/device and enter TTBH-R6N6P')).toBe(
+      'https://auth.openai.com/codex/device',
+    )
+    // A real authorization URL still wins over anything bare in the same output.
+    expect(
+      pickSignInUrl('docs https://auth.openai.com/codex/device or https://x.test/authorize?a=1'),
+    ).toBe('https://x.test/authorize?a=1')
   })
 
   it('returns nothing when the CLI printed no link at all', () => {
@@ -58,46 +72,21 @@ describe('which harnesses can sign in', () => {
   })
 })
 
-describe('a login that cannot work where it is running', () => {
+describe('a login that runs nowhere but a container', () => {
   /**
-   * FOUND BY CLICKING IT. On the hosted control plane "Sign in to codex" failed with
-   * `login exited -2: (no output)` — Node's rendering of `spawn ENOENT`, because the CLI is not
-   * in the control plane's image.
+   * The `host` variant is gone.
    *
-   * Installing it would not have helped. Codex signs in through a callback on localhost:1455,
-   * and a container's localhost is not the browser's, so the flow cannot complete there however
-   * it is spawned. The only honest answer is to say so and point at importing the file instead.
+   * It existed for codex, whose browser callback had to land on the same localhost the browser
+   * would visit — impossible on a hosted control plane, where "host" is a container in another
+   * datacentre. Its device flow needs no callback at all, so nothing runs on the host any more
+   * and the refusal that explained the impossibility has nothing left to refuse.
    */
-  it('explains itself rather than failing as exit -2', async () => {
-    const login = new HarnessLogin(
-      // None of these are reached: the refusal happens before anything is spawned.
-      {} as never,
-      { clientSpaceId: 'space' },
-      'intellidev/runner:dev',
-      '/tmp',
-    )
-    /**
-     * PATH is emptied so the binary cannot resolve, which is the hosted condition exactly.
-     * Without this the test would pass vacuously on any machine that has codex installed — and
-     * a developer's machine is precisely where it is installed.
-     */
-    const realPath = process.env['PATH']
-    process.env['PATH'] = ''
-    try {
-      await expect(login.start('codex')).rejects.toThrow(/localhost/)
-      const message = await login.start('codex').catch((e: Error) => e.message)
-      expect(message).toContain('Import')
-      // It must name the file, since that is the thing the person has to go and find.
-      expect(message).toContain('.codex/auth.json')
-      // And it must not be the raw spawn failure, which is what it said before.
-      expect(message).not.toContain('ENOENT')
-      expect(message).not.toContain('-2')
-    } finally {
-      process.env['PATH'] = realPath
-    }
-  })
-
   it('offers no scriptable login for opencode, whose picker cannot be driven', () => {
     expect(loginSupported('opencode')).toBe(false)
+  })
+
+  it('signs codex in by device code, which needs no callback', () => {
+    // The property that removed the whole class of problem: no localhost, nothing to paste.
+    expect(loginSupported('codex')).toBe(true)
   })
 })

@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { oauthFlowFor, pkce, type OAuthFlow } from './oauth-login.js'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
@@ -45,16 +45,6 @@ export interface LoginState {
 }
 
 interface Recipe {
-  /**
-   * Where the login runs, which is decided per harness by where its credential lands.
-   *
-   *  - `container` for Claude Code: on macOS it writes to the Keychain, so a host login leaves
-   *    nothing importable, while a Linux login writes exactly the file a run reads.
-   *  - `host` for Codex: it stores a file on macOS too, *and* its flow completes through a
-   *    callback on localhost — which the browser can reach on the host but not inside a
-   *    container, where the server binds the container's own loopback.
-   */
-  where: 'container' | 'host'
   /** Argv for the login. */
   argv: string[]
   /**
@@ -71,6 +61,15 @@ interface Recipe {
   /** What to tell the person to paste back, when it is not simply "the code". */
   inputHint?: string
   /**
+   * Prefer the container even when a direct flow exists.
+   *
+   * True for codex only, and only because its direct flow ends on a page that says "This site
+   * can't be reached". That is the flow working — the redirect targets a server its CLI would run
+   * on your machine — but nobody reads it that way, and the device flow has no such step. Where
+   * there is no container to run, the direct flow is still the better of what remains.
+   */
+  preferTask?: boolean
+  /**
    * Where this CLI's own callback server listens, when it has one.
    *
    * Only meaningful for a login running as a task: the browser's redirect to that port lands on
@@ -82,7 +81,6 @@ interface Recipe {
 const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
   // Prints an authorize URL, then reads the code from stdin.
   'claude-code': {
-    where: 'container',
     argv: ['claude', 'auth', 'login', '--claudeai'],
     capture: ['.claude/.credentials.json'],
     needsCode: true,
@@ -100,17 +98,28 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
    * `start` refuses there rather than spawning something that cannot succeed, and points at
    * signing in from a local UI, which writes to the same shared seat store.
    */
+  /**
+   * Device code, not the browser callback.
+   *
+   * The callback flow redirects to `localhost:1455` — a server the CLI runs on *your* machine.
+   * Hosted there is no such machine, so the browser lands on "This site can't be reached" and
+   * the person has to copy an address out of a failed page. That works, and it looks broken.
+   *
+   * The device flow has none of that: a plain page, a code to type, and the CLI polls until it
+   * is approved. Nothing to paste back, and nothing that looks like an error. It costs a
+   * container, because the CLI holds the device code and does the polling — worth it to remove
+   * the one step in this product that made people ask whether it had failed.
+   *
+   * Device login has to be enabled once in ChatGPT security settings. It is on for the account
+   * this was tested with; when it is off the CLI says so plainly, which is a better failure than
+   * a broken-looking page.
+   */
   codex: {
-    where: 'host',
-    argv: ['codex', 'login'],
+    argv: ['codex', 'login', '--device-auth'],
     capture: ['.codex/auth.json'],
-    // The person pastes the URL their browser could not load; the container replays it here.
-    needsCode: true,
-    inputHint:
-      'Sign in. Your browser will then fail to open a localhost page — that is expected, ' +
-      'because the sign-in server is running here rather than on your machine. Copy that ' +
-      "failed page's whole address and paste it below.",
-    callbackPort: 1455,
+    // Nothing comes back to us: the code goes to the vendor's page and the CLI waits.
+    needsCode: false,
+    preferTask: true,
   },
   // opencode's login is an interactive provider picker with no scriptable form, so it is
   // deliberately absent: importing the file it writes is the honest path there.
@@ -238,30 +247,6 @@ export class HarnessLogin {
     const recipe = LOGIN_RECIPES[harness]
     if (!recipe) throw new Error(`${harness} has no scriptable login; import its file instead`)
 
-    /**
-     * A host login needs a host that is the person's own machine.
-     *
-     * `where: 'host'` exists so the CLI's callback on localhost lands on the same localhost the
-     * browser will visit. That is true when the control plane runs on someone's laptop and false
-     * on a hosted deployment, where "host" is a container in another datacentre — the browser's
-     * localhost is not its localhost, so the flow cannot complete however it is spawned.
-     *
-     * Refused up front rather than attempted, because the attempt fails as `spawn ENOENT`: the
-     * binary is not in the control plane's image, and Node surfaces that as exit -2 with no
-     * output at all. A person reading "login exited -2: (no output)" learns nothing about what
-     * is actually wrong or what to do instead.
-     */
-    if (recipe.where === 'host' && !this.launcher) {
-      const missing = spawnSync(recipe.argv[0]!, ['--version'], { stdio: 'ignore' }).error
-      if (missing) {
-        throw new Error(
-          `${harness} signs in through a callback on localhost, and its CLI is not installed ` +
-            `here. Install it, or run \`${recipe.argv.join(' ')}\` and use "Import" to upload ` +
-            `~/${recipe.capture[0]}.`,
-        )
-      }
-    }
-
     this.cancel()
     this.recipe = recipe
 
@@ -272,7 +257,16 @@ export class HarnessLogin {
      * path remains for harnesses without one, and as the thing to fall back to if a vendor
      * changes a flow we now drive ourselves.
      */
-    const flow = this.mode === 'direct' ? oauthFlowFor(harness) : undefined
+    /**
+     * Which path, and why.
+     *
+     * `task` mode forces the CLI. Otherwise the direct flow wins — instant, no container —
+     * except where a recipe asks for the container *and* there is one to run, which today means
+     * codex: its device flow removes a step that looks like a failure, and that is worth a
+     * container.
+     */
+    const preferTask = recipe.preferTask && this.launcher !== undefined
+    const flow = this.mode === 'direct' && !preferTask ? oauthFlowFor(harness) : undefined
     if (flow) return this.startDirect(harness, flow)
 
     if (this.launcher) return this.startTask(harness, recipe)
@@ -288,28 +282,30 @@ export class HarnessLogin {
 
     // HOME is redirected either way: in a container so the credential outlives it, and on the
     // host so a re-login cannot clobber the developer's own credential file.
-    const child =
-      recipe.where === 'container'
-        ? spawn(
-            'docker',
-            [
-              'run',
-              '--rm',
-              // Keeps stdin open for the code.
-              '-i',
-              '--mount',
-              `type=bind,source=${this.home},target=/home/adapter`,
-              '--entrypoint',
-              recipe.argv[0]!,
-              this.image,
-              ...recipe.argv.slice(1),
-            ],
-            { stdio: ['pipe', 'pipe', 'pipe'] },
-          )
-        : spawn(recipe.argv[0]!, recipe.argv.slice(1), {
-            env: { ...process.env, HOME: this.home },
-            stdio: ['pipe', 'pipe', 'pipe'],
-          })
+    /**
+     * Always a container.
+     *
+     * A `host` variant existed for codex, whose callback had to land on the same localhost the
+     * browser would visit. Its device flow needs no callback at all, so nothing runs on the host
+     * any more — and a login that writes to the developer's own HOME was never something to keep
+     * for its own sake.
+     */
+    const child = spawn(
+      'docker',
+      [
+        'run',
+        '--rm',
+        // Keeps stdin open for the code.
+        '-i',
+        '--mount',
+        `type=bind,source=${this.home},target=/home/adapter`,
+        '--entrypoint',
+        recipe.argv[0]!,
+        this.image,
+        ...recipe.argv.slice(1),
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    )
     this.child = child
 
     let seen = ''
@@ -654,10 +650,23 @@ function stripAnsi(text: string): string {
  * and the real link always carries query parameters.
  */
 export function pickSignInUrl(output: string): string | undefined {
-  const candidates = output.match(URL_PATTERN) ?? []
-  return candidates
-    .map((url) => url.replace(/[.,)]+$/, ''))
-    .find((url) => !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) && url.includes('?'))
+  const candidates = (output.match(URL_PATTERN) ?? []).map((url) => url.replace(/[.,)]+$/, ''))
+  // Never loopback: that is the CLI announcing its own callback server, and sending someone
+  // there shows them a blank page at best.
+  const remote = candidates.filter((url) => !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(url))
+
+  /**
+   * A query string is a strong hint, not a requirement.
+   *
+   * An authorization URL carries its parameters, so preferring one is how a plain announcement
+   * or a docs link in the same output is skipped. But a device-code flow sends someone to a bare
+   * page — `https://auth.openai.com/codex/device` — and passes the code separately, so requiring
+   * a query discarded the only URL there was and the login sat showing nothing.
+   *
+   * The fallback is therefore narrow: a bare URL qualifies only if its path says what it is. A
+   * link to documentation in the same output must still lose.
+   */
+  return remote.find((url) => url.includes('?')) ?? remote.find(looksLikeSignIn)
 }
 
 /**
@@ -682,4 +691,18 @@ function applyOutput(state: LoginState, seen: string, recipe: Recipe): boolean {
   state.authorizationUrl = url
   state.status = recipe.needsCode ? 'awaiting_code' : 'awaiting_authorization'
   return true
+}
+
+/**
+ * Whether a URL with no parameters is nonetheless where someone signs in.
+ *
+ * Only the path is read. Matching on the host would admit every link a vendor prints, and these
+ * words are what a sign-in page is actually called across the flows we drive.
+ */
+function looksLikeSignIn(url: string): boolean {
+  try {
+    return /\/(device|login|signin|sign-in|authorize|oauth)(\/|$)/i.test(new URL(url).pathname)
+  } catch {
+    return false
+  }
 }
