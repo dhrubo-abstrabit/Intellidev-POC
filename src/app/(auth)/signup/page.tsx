@@ -27,7 +27,7 @@ export default async function SignupPage({
           <span className="text-xs text-muted-foreground">OR</span>
           <Separator className="flex-1" />
         </div>
-        <CredentialsForm action={signUpWithPassword} next={next} submitLabel="Sign up" pendingLabel="Signing up..." />
+        <CredentialsForm action={signUpWithPassword} next={next} collectName submitLabel="Sign up" pendingLabel="Signing up..." />
         <p className="text-center text-sm text-muted-foreground">
           Already have an account?{" "}
           <Link href="/login" className="font-medium text-foreground underline underline-offset-4">

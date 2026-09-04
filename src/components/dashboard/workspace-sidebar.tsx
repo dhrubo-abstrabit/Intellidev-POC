@@ -156,7 +156,7 @@ export function WorkspaceSidebar({
               render={<Link href={`${base}/team-members`} />}
               className={isTeamMembers ? "bg-accent" : undefined}
             >
-              Team Members
+              Contacts
             </DropdownMenuItem>
             <DropdownMenuItem
               render={<Link href={`${base}/members`} />}
@@ -233,7 +233,7 @@ export function WorkspaceSidebar({
             Overview
           </Link>
           <Link href={`${base}/team-members`} className={navRowClass(isTeamMembers)}>
-            Team Members
+            Contacts
           </Link>
           <Link href={`${base}/members`} className={navRowClass(isMembers)}>
             Access
@@ -323,8 +323,8 @@ export function WorkspaceSidebar({
           </Link>
           <Link
             href={`${base}/team-members`}
-            title="Team Members"
-            aria-label="Team Members"
+            title="Contacts"
+            aria-label="Contacts"
             className={railIconClass(isTeamMembers)}
           >
             <Users className="size-4" />

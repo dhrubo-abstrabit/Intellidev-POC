@@ -26,6 +26,18 @@ export function CreateAccountForm({ token, email }: { token: string; email: stri
         <Input id="invite-account-email" value={email} disabled readOnly />
       </div>
       <div className="grid gap-1.5">
+        <Label htmlFor="invite-account-name">Your name</Label>
+        <Input
+          id="invite-account-name"
+          name="fullName"
+          type="text"
+          required
+          maxLength={120}
+          autoComplete="name"
+          placeholder="Priya Nair"
+        />
+      </div>
+      <div className="grid gap-1.5">
         <Label htmlFor="invite-account-password">Choose a password</Label>
         <Input
           id="invite-account-password"

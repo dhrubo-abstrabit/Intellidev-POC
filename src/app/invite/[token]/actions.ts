@@ -38,8 +38,12 @@ export async function acceptInvitation(token: string): Promise<{ error?: string 
   return await redirectIntoGrantedScope();
 }
 
-const passwordSchema = z.object({
+const newAccountSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters"),
+  // Collected here for the same reason signup collects it: handle_new_auth_user
+  // mirrors raw_user_meta_data into public.users.full_name, and no later screen
+  // ever asks — so without it this person is "—" on every roster forever.
+  fullName: z.string().trim().min(1, "Enter your name").max(120),
 });
 
 /**
@@ -71,7 +75,10 @@ export async function acceptWithNewAccount(
   _prev: { error?: string } | undefined,
   formData: FormData,
 ): Promise<{ error?: string }> {
-  const parsed = passwordSchema.safeParse({ password: formData.get("password") });
+  const parsed = newAccountSchema.safeParse({
+    password: formData.get("password"),
+    fullName: formData.get("fullName"),
+  });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid password" };
   }
@@ -91,6 +98,7 @@ export async function acceptWithNewAccount(
   const { error: createError } = await service.auth.admin.createUser({
     email: invite.email,
     password: parsed.data.password,
+    user_metadata: { full_name: parsed.data.fullName },
     // The whole point: they proved control of this mailbox by opening the
     // link, so do not make them prove it again.
     email_confirm: true,

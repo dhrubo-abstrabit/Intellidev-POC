@@ -10,6 +10,10 @@ const credentialsSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
+const signUpSchema = credentialsSchema.extend({
+  fullName: z.string().trim().min(1, "Enter your name").max(120),
+});
+
 export interface AuthActionResult {
   error?: string;
 }
@@ -31,9 +35,10 @@ function safeNext(raw: FormDataEntryValue | null): string {
 }
 
 export async function signUpWithPassword(_prev: AuthActionResult, formData: FormData): Promise<AuthActionResult> {
-  const parsed = credentialsSchema.safeParse({
+  const parsed = signUpSchema.safeParse({
     email: formData.get("email"),
     password: formData.get("password"),
+    fullName: formData.get("fullName"),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
@@ -50,6 +55,10 @@ export async function signUpWithPassword(_prev: AuthActionResult, formData: Form
     password: parsed.data.password,
     options: {
       emailRedirectTo: `${appUrl()}/api/auth/callback?next=${encodeURIComponent(next)}`,
+      // handle_new_auth_user() mirrors raw_user_meta_data ->> 'full_name' into
+      // public.users. Omit it and every members table shows this person as "—"
+      // permanently, because no later screen collects it.
+      data: { full_name: parsed.data.fullName },
     },
   });
 
