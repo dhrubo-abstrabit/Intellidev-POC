@@ -87,7 +87,7 @@ export function WorkspaceSidebar({
   const isOverview = pathname === base;
   const isTeamMembers = pathname === `${base}/team-members`;
   const isMembers = pathname === `${base}/members`;
-  const isOrg = pathname === "/org";
+  const isOrg = pathname === `${base}/org`;
   const isProjectActive = (projectId: string) => pathname.startsWith(`${base}/p/${projectId}`);
 
   const projectPrefix = `${base}/p/`;
@@ -164,7 +164,7 @@ export function WorkspaceSidebar({
             >
               Access
             </DropdownMenuItem>
-            <DropdownMenuItem render={<Link href="/org" />} className={isOrg ? "bg-accent" : undefined}>
+            <DropdownMenuItem render={<Link href={`${base}/org`} />} className={isOrg ? "bg-accent" : undefined}>
               Organisation
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -238,7 +238,7 @@ export function WorkspaceSidebar({
           <Link href={`${base}/members`} className={navRowClass(isMembers)}>
             Access
           </Link>
-          <Link href="/org" className={navRowClass(isOrg)}>
+          <Link href={`${base}/org`} className={navRowClass(isOrg)}>
             Organisation
           </Link>
         </div>
@@ -332,7 +332,7 @@ export function WorkspaceSidebar({
           <Link href={`${base}/members`} title="Access" aria-label="Access" className={railIconClass(isMembers)}>
             <Shield className="size-4" />
           </Link>
-          <Link href="/org" title="Organisation" aria-label="Organisation" className={railIconClass(isOrg)}>
+          <Link href={`${base}/org`} title="Organisation" aria-label="Organisation" className={railIconClass(isOrg)}>
             <Building2 className="size-4" />
           </Link>
 

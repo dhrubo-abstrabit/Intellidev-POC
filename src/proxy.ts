@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { publicEnv } from "@/lib/env";
 
-const PROTECTED_PREFIXES = ["/w", "/onboarding", "/org"];
+const PROTECTED_PREFIXES = ["/w", "/onboarding"];
 const AUTH_PATHS = new Set(["/login", "/signup"]);
 
 /**

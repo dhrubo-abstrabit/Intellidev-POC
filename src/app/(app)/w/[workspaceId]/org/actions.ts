@@ -64,7 +64,7 @@ export async function changeTenantMemberRole(
   }
 
   await recordAudit(tenantId, user.id, "tenant_member.role_changed", targetUserId, { new_role: role });
-  revalidatePath("/org");
+  revalidatePath("/", "layout");
   return { message: "Role updated." };
 }
 
@@ -108,6 +108,6 @@ export async function removeTenantMember(
   }
 
   await recordAudit(tenantId, user.id, "tenant_member.removed", targetUserId, {});
-  revalidatePath("/org");
+  revalidatePath("/", "layout");
   return { message: "Removed from the organisation." };
 }

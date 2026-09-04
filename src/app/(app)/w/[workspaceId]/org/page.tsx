@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { requireUser } from "@/lib/auth";
+import { requireUser, assertWorkspaceMembership } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,19 +10,36 @@ import { changeTenantMemberRole, removeTenantMember } from "./actions";
  * The organisation screen — the tenant level, which had no route at all before
  * this.
  *
- * It is the only place that can answer two questions: who is on the company
- * roster (as opposed to who is in one workspace or one client engagement), and
- * how many seats the plan allows. Removing someone here is the one action that
- * actually offboards them, because tenant_members is the FK target every deeper
+ * It lives UNDER the workspace segment rather than at a bare /org so it
+ * inherits w/[workspaceId]/layout.tsx: the sidebar, the page padding, the
+ * whole shell. That layout is where those come from, and a top-level route
+ * rendered outside it looked like a different application — no navigation, no
+ * padding, content flush against the viewport. Being nested does not make this
+ * workspace-scoped: the tenant is resolved FROM the workspace below, and
+ * everything shown belongs to the tenant.
+ *
+ * It answers two questions nothing else can: who is on the company roster (as
+ * opposed to in one workspace or one client engagement), and how many seats
+ * the plan allows. Removing someone here is the one action that actually
+ * offboards them, because tenant_members is the FK target every deeper
  * membership hangs from.
  */
-export default async function OrgPage() {
+export default async function OrgPage({ params }: { params: Promise<{ workspaceId: string }> }) {
+  const { workspaceId } = await params;
   const user = await requireUser();
+  await assertWorkspaceMembership(workspaceId);
+
   const supabase = await createClient();
 
-  // RLS scopes tenants to the caller (tenant.read), and this app gives a user
-  // exactly one tenant today, so the first visible row is theirs.
-  const { data: tenant } = await supabase.from("tenants").select("id, name").limit(1).maybeSingle();
+  // Resolve the tenant FROM the workspace rather than taking the first visible
+  // one: same answer today (a user has one tenant), but it stays correct the
+  // moment someone belongs to two.
+  const { data: workspace } = await supabase
+    .from("workspaces")
+    .select("tenant_id, tenants(id, name)")
+    .eq("id", workspaceId)
+    .maybeSingle();
+  const tenant = workspace?.tenants;
   if (!tenant) notFound();
 
   const [{ data: memberRows }, { data: assignable }, { data: roleCatalog }, { data: subscription }] =
