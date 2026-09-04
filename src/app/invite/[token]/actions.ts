@@ -152,5 +152,11 @@ async function redirectIntoGrantedScope(): Promise<never> {
   if (project) redirect(`/w/${project.workspace_id}/p/${project.id}`);
 
   const { data: workspace } = await supabase.from("workspaces").select("id").limit(1).maybeSingle();
-  redirect(workspace ? `/w/${workspace.id}` : "/");
+  if (workspace) redirect(`/w/${workspace.id}`);
+
+  // No project and no workspace means a TENANT-only invitation — a billing
+  // admin. /org is the whole of what they were granted. Sending them to "/"
+  // here is what previously bounced them into onboarding, where they created a
+  // second organisation and orphaned the membership they had just accepted.
+  redirect("/org");
 }

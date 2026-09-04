@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { requireUser, assertWorkspaceMembership } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,13 +11,10 @@ import { changeTenantMemberRole, removeTenantMember } from "./actions";
  * The organisation screen — the tenant level, which had no route at all before
  * this.
  *
- * It lives UNDER the workspace segment rather than at a bare /org so it
- * inherits w/[workspaceId]/layout.tsx: the sidebar, the page padding, the
- * whole shell. That layout is where those come from, and a top-level route
- * rendered outside it looked like a different application — no navigation, no
- * padding, content flush against the viewport. Being nested does not make this
- * workspace-scoped: the tenant is resolved FROM the workspace below, and
- * everything shown belongs to the tenant.
+ * TOP LEVEL on purpose. It was briefly nested under /w/:workspaceId to inherit
+ * that layout's sidebar and padding, which stranded the very person it exists
+ * for: a billing admin has no workspace, so there was no id to nest under.
+ * org/layout.tsx reproduces the shell instead.
  *
  * It answers two questions nothing else can: who is on the company roster (as
  * opposed to in one workspace or one client engagement), and how many seats
@@ -25,22 +22,16 @@ import { changeTenantMemberRole, removeTenantMember } from "./actions";
  * offboards them, because tenant_members is the FK target every deeper
  * membership hangs from.
  */
-export default async function OrgPage({ params }: { params: Promise<{ workspaceId: string }> }) {
-  const { workspaceId } = await params;
+export default async function OrgPage() {
   const user = await requireUser();
-  await assertWorkspaceMembership(workspaceId);
-
   const supabase = await createClient();
 
-  // Resolve the tenant FROM the workspace rather than taking the first visible
-  // one: same answer today (a user has one tenant), but it stays correct the
-  // moment someone belongs to two.
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("tenant_id, tenants(id, name)")
-    .eq("id", workspaceId)
-    .maybeSingle();
-  const tenant = workspace?.tenants;
+  // Read the tenant DIRECTLY. Resolving it via a workspace was the bug: a
+  // billing admin has a tenant_members row and no workspace, so there was no
+  // id to resolve from and the page they were invited to see was unreachable.
+  // RLS scopes `tenants` to the caller's own (tenant.read), so this returns
+  // theirs whether or not they belong to any workspace.
+  const { data: tenant } = await supabase.from("tenants").select("id, name").limit(1).maybeSingle();
   if (!tenant) notFound();
 
   const [

@@ -77,17 +77,27 @@ export function WorkspaceSidebar({
   workspaces,
   projects,
 }: {
-  workspaceId: string;
-  current: Summary;
+  /**
+   * NULL when the signed-in person belongs to no workspace at all.
+   *
+   * That is a real state, not a defensive nicety: someone invited to the
+   * organisation alone — a billing admin — gets a tenant_members row and
+   * nothing beneath it. Before this, the sidebar assumed a workspace always
+   * existed, /org lived under /w/:workspaceId, and such a person had no
+   * reachable page at all. They were sent to onboarding and silently created a
+   * SECOND organisation, orphaning the membership they were invited to.
+   */
+  workspaceId: string | null;
+  current: Summary | null;
   workspaces: Summary[];
   projects: Summary[];
 }) {
   const pathname = usePathname();
-  const base = `/w/${workspaceId}`;
+  const base = workspaceId ? `/w/${workspaceId}` : "";
   const isOverview = pathname === base;
   const isTeamMembers = pathname === `${base}/team-members`;
   const isMembers = pathname === `${base}/members`;
-  const isOrg = pathname === `${base}/org`;
+  const isOrg = pathname === "/org";
   const isProjectActive = (projectId: string) => pathname.startsWith(`${base}/p/${projectId}`);
 
   const projectPrefix = `${base}/p/`;
@@ -164,7 +174,7 @@ export function WorkspaceSidebar({
             >
               Access
             </DropdownMenuItem>
-            <DropdownMenuItem render={<Link href={`${base}/org`} />} className={isOrg ? "bg-accent" : undefined}>
+            <DropdownMenuItem render={<Link href="/org" />} className={isOrg ? "bg-accent" : undefined}>
               Organisation
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -174,7 +184,7 @@ export function WorkspaceSidebar({
                   {project.name}
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  {projectTabs(workspaceId, project.id).map((tab) => (
+                  {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                     <DropdownMenuItem
                       key={tab.href}
                       render={<Link href={tab.href} />}
@@ -222,13 +232,17 @@ export function WorkspaceSidebar({
           <PanelLeftClose className="size-4" />
         </Button>
       </div>
-      <div className="px-3">
-        <WorkspaceSwitcher current={current} workspaces={workspaces} />
-      </div>
+      {current ? (
+        <div className="px-3">
+          <WorkspaceSwitcher current={current} workspaces={workspaces} />
+        </div>
+      ) : null}
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
         <div className="space-y-1">
           <div className={SECTION_LABEL}>Workspace</div>
+          {workspaceId ? (
+            <>
           <Link href={base} className={navRowClass(isOverview)}>
             Overview
           </Link>
@@ -238,11 +252,18 @@ export function WorkspaceSidebar({
           <Link href={`${base}/members`} className={navRowClass(isMembers)}>
             Access
           </Link>
-          <Link href={`${base}/org`} className={navRowClass(isOrg)}>
+            </>
+          ) : (
+            <p className="px-2.5 text-xs text-sidebar-foreground/50">
+              You are not in a workspace yet.
+            </p>
+          )}
+          <Link href="/org" className={navRowClass(isOrg)}>
             Organisation
           </Link>
         </div>
 
+        {workspaceId ? (
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className={SECTION_LABEL}>Projects</span>
@@ -272,7 +293,7 @@ export function WorkspaceSidebar({
                   </button>
                   {isExpanded ? (
                     <div className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-2.5">
-                      {projectTabs(workspaceId, project.id).map((tab) => (
+                      {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                         <Link key={tab.href} href={tab.href} className={navRowClass(pathname === tab.href)}>
                           {tab.label}
                         </Link>
@@ -284,6 +305,7 @@ export function WorkspaceSidebar({
             })
           )}
         </div>
+        ) : null}
       </nav>
 
       <div className="flex items-center gap-1.5 border-t border-sidebar-border p-3">
@@ -314,13 +336,15 @@ export function WorkspaceSidebar({
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
 
-          <WorkspaceSwitcher current={current} workspaces={workspaces} collapsed />
+          {current ? <WorkspaceSwitcher current={current} workspaces={workspaces} collapsed /> : null}
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
 
+          {workspaceId ? (
           <Link href={base} title="Overview" aria-label="Overview" className={railIconClass(isOverview)}>
             <LayoutDashboard className="size-4" />
           </Link>
+          ) : null}
           <Link
             href={`${base}/team-members`}
             title="Contacts"
@@ -332,7 +356,7 @@ export function WorkspaceSidebar({
           <Link href={`${base}/members`} title="Access" aria-label="Access" className={railIconClass(isMembers)}>
             <Shield className="size-4" />
           </Link>
-          <Link href={`${base}/org`} title="Organisation" aria-label="Organisation" className={railIconClass(isOrg)}>
+          <Link href="/org" title="Organisation" aria-label="Organisation" className={railIconClass(isOrg)}>
             <Building2 className="size-4" />
           </Link>
 
@@ -372,7 +396,7 @@ export function WorkspaceSidebar({
                     onMouseEnter={() => setRailOpenProjectId(project.id)}
                     onMouseLeave={closeIfOwn}
                   >
-                    {projectTabs(workspaceId, project.id).map((tab) => (
+                    {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                       <DropdownMenuItem
                         key={tab.href}
                         render={<Link href={tab.href} />}
