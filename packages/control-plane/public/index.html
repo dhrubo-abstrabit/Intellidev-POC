@@ -448,6 +448,33 @@
         <div id="loginPanel" class="card" hidden style="margin-top: 8px">
           <div class="name" id="loginTitle"></div>
           <p class="hint" id="loginHint"></p>
+          <!--
+            The device code, when there is one. Shown large because its whole job is to be read
+            off this screen and typed into another window — a hint-sized line is the wrong shape
+            for that, and it was previously buried in one.
+          -->
+          <div
+            id="loginCodeShown"
+            hidden
+            style="
+              margin: 10px 0;
+              padding: 12px;
+              border: 1px solid var(--line);
+              border-radius: 10px;
+              text-align: center;
+            "
+          >
+            <div class="hint" style="margin-bottom: 4px">Enter this code on that page</div>
+            <div
+              id="loginUserCode"
+              style="
+                font:
+                  600 22px/1.2 ui-monospace,
+                  monospace;
+                letter-spacing: 2px;
+              "
+            ></div>
+          </div>
           <p style="margin: 8px 0">
             <a id="loginLink" target="_blank" rel="noopener noreferrer"></a>
           </p>
@@ -842,6 +869,7 @@
         $('loginLink').textContent = ''
         $('loginLink').removeAttribute('href')
         $('loginCodeRow').hidden = true
+        $('loginCodeShown').hidden = true
         $('loginSubmit').hidden = true
         $('loginStatus').textContent = ''
 
@@ -869,13 +897,14 @@
           } catch {
             /* a blocker took it; the link stands */
           }
+          // The code gets its own box; the hint explains what to do with it.
+          $('loginCodeShown').hidden = !login.userCode
+          $('loginUserCode').textContent = login.userCode ?? ''
           $('loginHint').textContent = login.inputHint
             ? login.inputHint
             : login.needsCode
               ? 'Sign in, then paste the code that page shows you.'
-              : login.userCode
-                ? `Sign in, and enter this code when asked: ${login.userCode}`
-                : 'Sign in; this page will notice when it completes.'
+              : 'Sign in; this page will notice when it completes.'
           $('loginCodeRow').hidden = !login.needsCode
           $('loginSubmit').hidden = !login.needsCode
 

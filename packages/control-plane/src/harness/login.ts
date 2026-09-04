@@ -121,6 +121,19 @@ const LOGIN_RECIPES: Partial<Record<HarnessId, Recipe>> = {
     capture: ['.codex/auth.json'],
     // Nothing comes back to us: the code goes to the vendor's page and the CLI waits.
     needsCode: false,
+    /**
+     * Requires one setting, and says so.
+     *
+     * Device code authorization for Codex is off until it is enabled in ChatGPT security
+     * settings, and the refusal appears on the *consent page* rather than in the CLI — which
+     * prints a URL and code either way. There is therefore nothing to detect and fall back on,
+     * so the requirement is stated before someone spends a minute finding out.
+     */
+    inputHint:
+      'Open the page, sign in, and enter the code above. If it says device code authorization ' +
+      'is disabled, turn it on in ChatGPT → Settings → Security → device code authorization for ' +
+      'Codex, then start this again.',
+    preferTask: true,
   },
   // opencode's login is an interactive provider picker with no scriptable form, so it is
   // deliberately absent: importing the file it writes is the honest path there.
