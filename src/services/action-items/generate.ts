@@ -242,33 +242,6 @@ interface ResolvedItem {
   confidence: number;
   ownerHint?: string;
   sourceEventIds: string[];
-  /** Ephemeral per-run labels (e.g. "R2") cited from RELATED CONTEXT — see
-   * chunksByLabel in generateActionItems for how these get resolved into
-   * task_sources rows, and prompt.ts's Citations design for why this is a
-   * separate, differently-trusted field from sourceEventIds. */
-  relatedContextRefs: string[];
-}
-
-/** task_sources rows for a citation channel distinct from sourceEventIds —
- * one per RELATED CONTEXT chunk the model actually cited AND that resolves
- * to a real event (citableEventId is null for a context_document chunk,
- * which can't be cited via task_sources — see match_search_chunks' own doc
- * comment). role:'enriched' is what distinguishes these from the
- * sourceEventIds-driven rows below. relevance is a rough proxy from cosine
- * distance, not a calibrated confidence. */
-function citationSourceLinks(
-  taskId: string,
-  clientSpaceId: string,
-  citedChunks: RelatedContextChunk[],
-): Database["public"]["Tables"]["task_sources"]["Insert"][] {
-  return citedChunks.map((chunk) => ({
-    task_id: taskId,
-    normalized_event_id: chunk.citableEventId!,
-    client_space_id: clientSpaceId,
-    chunk_id: chunk.chunkId,
-    role: "enriched",
-    relevance: Math.max(0, Math.min(1, 1 - chunk.distance)),
-  }));
 }
 
 /**
@@ -400,7 +373,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       resolvedItems = consolidationResult.consolidation.groups.map((group) => {
         const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
         const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
-        const relatedContextRefs = [...new Set(groupDrafts.flatMap((d) => d.relatedContextRefs))];
         // Never trust the model's echoed id/title pairing blindly — an id
         // it invented or that no longer matches falls back to treating the
         // group as new, same as sourceEventIds is validated below.
@@ -414,7 +386,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
           confidence: group.confidence,
           ownerHint: group.ownerHint,
           sourceEventIds,
-          relatedContextRefs,
         };
       });
     } else {
@@ -427,7 +398,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
         confidence: draft.confidence,
         ownerHint: draft.ownerHint,
         sourceEventIds: draft.sourceEventIds,
-        relatedContextRefs: draft.relatedContextRefs,
       }));
     }
 
@@ -446,12 +416,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       : { data: [] as { id: string; dedupe_hash: string }[] };
     const existingByHash = new Map((existingOpen ?? []).map((row) => [row.dedupe_hash, row.id]));
 
-    // Built once per run — RELATED CONTEXT and its labels are identical
-    // across every extraction chunk (retrieval happens once in
-    // loadContext, shared via `base`), so this map is valid for every item
-    // below regardless of which chunk produced its underlying draft(s).
-    const chunksByLabel = new Map((base.relatedContext ?? []).map((c) => [c.label, c]));
-
     let itemsCreated = 0;
     let itemsMerged = 0;
     const sourceLinks: Database["public"]["Tables"]["task_sources"]["Insert"][] = [];
@@ -464,15 +428,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       // inserting — the bug the exact-hash-only design used to have.
       const existingId = existingByHash.get(hash);
       const sourceEventIds = item.sourceEventIds.filter((id) => validEventIds.has(id));
-      // A hallucinated or stale label simply isn't in the map — dropped
-      // silently here, never trusted, same posture as sourceEventIds'
-      // validEventIds filter above. citableEventId is checked too: a
-      // context_document chunk's citation is never persisted, since
-      // task_sources.normalized_event_id is NOT NULL (see match_search_chunks'
-      // own doc comment).
-      const citedChunks = (item.relatedContextRefs ?? [])
-        .map((label) => chunksByLabel.get(label))
-        .filter((c): c is RelatedContextChunk => c !== undefined && c.citableEventId !== null);
 
       if (existingId) {
         await service
@@ -500,7 +455,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             // default, which the not-null role column then rejects.
             role: "mentioned" as const,
           })),
-          ...citationSourceLinks(existingId, clientSpaceId, citedChunks),
         );
         continue;
       }
@@ -563,7 +517,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             // explicit rather than left for the column default.
             role: "mentioned" as const,
           })),
-          ...citationSourceLinks(conflictRow.id, clientSpaceId, citedChunks),
         );
         continue;
       }
@@ -580,7 +533,6 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
           // merge branches above, which use 'mentioned' instead).
           role: "created_from" as const,
         })),
-        ...citationSourceLinks(newId, clientSpaceId, citedChunks),
       );
     }
 

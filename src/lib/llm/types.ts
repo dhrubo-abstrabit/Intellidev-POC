@@ -1,4 +1,4 @@
-import type { ActionItemDraft, ActionItemConsolidation } from "./schema";
+import type { ActionItemDraft, ActionItemConsolidation, TaskEnrichment } from "./schema";
 
 export interface OpenActionItemSummary {
   id: string;
@@ -35,8 +35,11 @@ export interface NewEventSummary {
  * lib/llm/prompt.ts's renderRelatedContext for how they're rendered. */
 export interface RelatedContextChunk {
   /** Stable within one generateActionItems() run — "R1", "R2", ... in
-   * chronological order. This, not chunkId, is what the model is ever shown
-   * or allowed to cite in ActionItemDraft.relatedContextRefs. */
+   * chronological order. Render-only: renderRelatedContext uses it to give
+   * the model a way to distinguish excerpts from each other in the prompt.
+   * There is no citation channel anymore (see PROMPT_VERSION's "v5" note in
+   * prompt.ts) — the model is never asked to echo a label back, and nothing
+   * reads one out of its output. */
   label: string;
   chunkId: string;
   sourceKind: "normalized_event" | "event_attachment" | "context_document";
@@ -46,12 +49,15 @@ export interface RelatedContextChunk {
   /** Resolved server-side by the match_search_chunks RPC — the
    * normalized_events row this chunk traces back to, or null for a
    * context_document chunk (task_sources.normalized_event_id is NOT NULL,
-   * so those can't be recorded as a citation yet). */
+   * so those can never be linked to a task via this codebase's current
+   * schema). */
   citableEventId: string | null;
   /** Cosine distance from the query vector. Deliberately NOT rendered into
    * the prompt (models reason poorly over bare floats); carried for the
-   * threshold-calibration pass (via llm_runs.prompt) and as the source for
-   * task_sources.relevance when a chunk is cited. */
+   * threshold-calibration pass (via llm_runs.prompt). Unlike this field's
+   * counterpart on services/tasks/find-related.ts's RelatedCandidate, this
+   * one is never written to task_sources.relevance — see enrich.ts for why
+   * a PM-added link stores that column as null instead. */
   distance: number;
 }
 
@@ -109,18 +115,42 @@ export interface ActionItemConsolidationResult {
   response: unknown;
 }
 
+/** Input to a PM-initiated enrichment call — see services/tasks/enrich.ts.
+ * Deliberately carries only the ONE newly-linked chunk, not the task's whole
+ * source set: the existing description already encodes the rest, and a
+ * single chunk keeps the call well inside the route's 60s budget. */
+export interface TaskEnrichmentContext {
+  project: { id: string; name: string; description?: string | null; timezone: string };
+  task: { title: string; kind: string; description: string | null };
+  newContext: {
+    sourceKind: "normalized_event" | "event_attachment" | "context_document";
+    title?: string | null;
+    content: string;
+    occurredAt: string;
+  };
+}
+
+export interface TaskEnrichmentResult {
+  enrichment: TaskEnrichment;
+  usage: LLMUsage;
+  model: string;
+  prompt: unknown;
+  response: unknown;
+}
+
 /**
- * Every LLM backend implements these two methods — adding a second provider
- * (e.g. for a cheaper bulk-summarization pass) means one new file plus one
- * line in factory.ts, never a change to services/action-items.
+ * Every LLM backend implements these three methods — adding a second
+ * provider (e.g. for a cheaper bulk-summarization pass) means one new file
+ * plus one line in factory.ts, never a change to services/action-items or
+ * services/tasks.
  */
 export interface LLMProvider {
   readonly id: string;
   /** The exact model string this provider calls — known up front (not just
    * after a response comes back) so generate.ts can write it into the
    * llm_runs row at insert time, before any call has run. Every provider's
-   * ActionItemGenerationResult.model/ActionItemConsolidationResult.model
-   * must echo this same value. */
+   * ActionItemGenerationResult.model/ActionItemConsolidationResult.model/
+   * TaskEnrichmentResult.model must echo this same value. */
   readonly model: string;
   generateActionItems(context: ActionItemContext): Promise<ActionItemGenerationResult>;
   /** Reconciles this run's draft items against each other and against
@@ -130,4 +160,9 @@ export interface LLMProvider {
     openActionItems: OpenActionItemSummary[],
     drafts: DraftForConsolidation[],
   ): Promise<ActionItemConsolidationResult>;
+  /** Rewrites a task's description in light of one newly PM-linked source,
+   * or declines to (TaskEnrichment.changed === false) when the new context
+   * doesn't add anything worth keeping — see TaskEnrichmentSchema's own
+   * comment in schema.ts for why declining must be possible. */
+  enrichTaskDescription(context: TaskEnrichmentContext): Promise<TaskEnrichmentResult>;
 }

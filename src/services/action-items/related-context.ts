@@ -28,11 +28,14 @@ const RETRIEVAL_MAX_CONTENT_CHARS = 12_000;
 // retrieved chunk's distance is carried through to llm_runs.prompt (see
 // generate.ts), and after ~1-2 weeks of real data this should be
 // recalibrated from the actual distribution rather than left as a guess in
-// either direction. Blast radius of being wrong is bounded — see the
-// Citations section in the design notes: a bad match only ever costs
-// prompt tokens, it cannot corrupt a task, since retrieved chunks carry no
-// ids the model could cite as a NEW EVENT source.
-const RETRIEVAL_MAX_DISTANCE = 0.65;
+// either direction. Blast radius of being wrong is bounded: a bad match
+// only ever costs prompt tokens. There used to be a model citation channel
+// that could turn a bad match into a task_sources row (relatedContextRefs);
+// that's gone now (see PROMPT_VERSION's "v5" note in prompt.ts) — a chunk
+// retrieved here can never reach task_sources on its own, only via a PM
+// explicitly linking it (services/tasks/find-related.ts, a separate query
+// path with its own distance threshold).
+const RETRIEVAL_MAX_DISTANCE = 0.55;
 
 export interface FetchRelatedContextArgs {
   clientSpaceId: string;

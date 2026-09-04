@@ -2,13 +2,15 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { llmEnv } from "@/lib/env";
-import { ActionItemGenerationSchema, ActionItemConsolidationSchema } from "./schema";
+import { ActionItemGenerationSchema, ActionItemConsolidationSchema, TaskEnrichmentSchema } from "./schema";
 import {
   EXTRACTION_SYSTEM_PROMPT,
   CONSOLIDATION_SYSTEM_PROMPT,
+  ENRICH_TASK_SYSTEM_PROMPT,
   renderProjectProfile,
   renderExtractionUserContent,
   renderConsolidationUserContent,
+  renderTaskEnrichmentUserContent,
 } from "./prompt";
 import type {
   ActionItemContext,
@@ -17,6 +19,8 @@ import type {
   DraftForConsolidation,
   LLMProvider,
   OpenActionItemSummary,
+  TaskEnrichmentContext,
+  TaskEnrichmentResult,
 } from "./types";
 
 export const ANTHROPIC_MODEL = "claude-haiku-4-5";
@@ -120,6 +124,36 @@ export const anthropicProvider: LLMProvider = {
       },
       model: MODEL,
       prompt: { system: CONSOLIDATION_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }] },
+      response: message,
+    };
+  },
+
+  async enrichTaskDescription(context: TaskEnrichmentContext): Promise<TaskEnrichmentResult> {
+    const anthropic = getClient();
+    const userContent = renderTaskEnrichmentUserContent(context);
+
+    const message = await anthropic.messages.parse({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      system: ENRICH_TASK_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userContent }],
+      output_config: { format: zodOutputFormat(TaskEnrichmentSchema) },
+    });
+
+    if (!message.parsed_output) {
+      throw new Error("Model did not return parseable structured output for task enrichment");
+    }
+
+    return {
+      enrichment: message.parsed_output,
+      usage: {
+        promptTokens: message.usage.input_tokens,
+        completionTokens: message.usage.output_tokens,
+        cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: message.usage.cache_creation_input_tokens ?? 0,
+      },
+      model: MODEL,
+      prompt: { system: ENRICH_TASK_SYSTEM_PROMPT, messages: [{ role: "user", content: userContent }] },
       response: message,
     };
   },

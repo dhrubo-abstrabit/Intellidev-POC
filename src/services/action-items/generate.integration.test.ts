@@ -212,7 +212,7 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
     expect(allItems?.length ?? 0).toBeGreaterThanOrEqual(beforeTotal ?? 0);
   }, 60000);
 
-  it("retrieves a related historical chunk into the RELATED CONTEXT prompt section", async () => {
+  it("retrieves a related historical chunk into the RELATED CONTEXT prompt section, and never auto-links it as a source", async () => {
     // Pick any already-processed event from this client space's earlier
     // syncs — a real, valid normalized_events id (so a citation, if the
     // model makes one, passes task_sources' FK), and NOT part of today's
@@ -267,14 +267,15 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
     expect(promptText).toContain("RELATED CONTEXT");
     expect(promptText).toContain(earlierEvent.body.slice(0, 40));
 
-    // Whether the model actually CITES the retrieved excerpt is up to the
-    // model and not asserted here — but IF a citation landed, it must be
-    // structurally valid: chunk_id set, role='enriched', and (thanks to the
-    // FK) pointing at a real normalized_events row.
-    const { data: citations } = await service.from("task_sources").select("chunk_id, role").eq("client_space_id", clientSpaceId).eq("role", "enriched");
-    for (const citation of citations ?? []) {
-      expect(citation.chunk_id).not.toBeNull();
-    }
+    // The citation channel that used to let a model call auto-write an
+    // 'enriched' task_sources row from a RELATED CONTEXT excerpt was
+    // removed (see PROMPT_VERSION's "v5" note in lib/llm/prompt.ts) —
+    // extraction can now NEVER produce one, regardless of what's retrieved.
+    // Enrichment is a PM-initiated action (services/tasks/enrich.ts,
+    // exercised by find-related.test.ts and enrich.test.ts) that this
+    // pipeline never touches.
+    const { data: citations } = await service.from("task_sources").select("id").eq("client_space_id", clientSpaceId).eq("role", "enriched");
+    expect(citations ?? []).toHaveLength(0);
   }, 60000);
 
   it("consolidateActionItems merges near-duplicate drafts describing the same underlying issue", async () => {
@@ -289,7 +290,6 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
           priority: "high",
           confidence: 0.8,
           sourceEventIds: [],
-          relatedContextRefs: [],
         },
       },
       {
@@ -301,7 +301,6 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
           priority: "high",
           confidence: 0.75,
           sourceEventIds: [],
-          relatedContextRefs: [],
         },
       },
       {
@@ -313,7 +312,6 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
           priority: "low",
           confidence: 0.6,
           sourceEventIds: [],
-          relatedContextRefs: [],
         },
       },
     ];

@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   EXTRACTION_SYSTEM_PROMPT,
+  ENRICH_TASK_SYSTEM_PROMPT,
   MAX_ATTACHMENT_CHARS_PER_CHUNK,
   renderExtractionUserContent,
   renderNewEvents,
   renderOpenItems,
   renderProjectProfile,
   renderRelatedContext,
+  renderTaskEnrichmentUserContent,
 } from "./prompt";
 import type { ActionItemContext, RelatedContextChunk } from "./types";
 
@@ -121,9 +123,45 @@ describe("renderExtractionUserContent", () => {
 });
 
 describe("EXTRACTION_SYSTEM_PROMPT", () => {
-  it("mentions RELATED CONTEXT, NEW EVENTS, and relatedContextRefs — catching rules/renderer drift", () => {
+  it("mentions RELATED CONTEXT and NEW EVENTS — catching rules/renderer drift", () => {
     expect(EXTRACTION_SYSTEM_PROMPT).toContain("RELATED CONTEXT");
     expect(EXTRACTION_SYSTEM_PROMPT).toContain("NEW EVENTS");
-    expect(EXTRACTION_SYSTEM_PROMPT).toContain("relatedContextRefs");
+  });
+
+  it("does not ask the model to cite a citation channel — that was removed in v5", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("relatedContextRefs");
+  });
+});
+
+describe("renderTaskEnrichmentUserContent", () => {
+  it("includes the project name, the task's current description, and the new context", () => {
+    const rendered = renderTaskEnrichmentUserContent({
+      project: { id: "proj-1", name: "Acme Dashboard", timezone: "UTC" },
+      task: { title: "Fix flaky test", kind: "action", description: "It fails sometimes." },
+      newContext: { sourceKind: "normalized_event", title: "Slack thread", content: "Turns out it's a race condition.", occurredAt: "2026-08-14T00:00:00Z" },
+    });
+    expect(rendered).toContain("Acme Dashboard");
+    expect(rendered).toContain("Fix flaky test");
+    expect(rendered).toContain("It fails sometimes.");
+    expect(rendered).toContain("Turns out it's a race condition.");
+  });
+
+  it("shows '(none)' for a null current description", () => {
+    const rendered = renderTaskEnrichmentUserContent({
+      project: { id: "proj-1", name: "Acme Dashboard", timezone: "UTC" },
+      task: { title: "New task", kind: "action", description: null },
+      newContext: { sourceKind: "normalized_event", content: "some content", occurredAt: "2026-08-14T00:00:00Z" },
+    });
+    expect(rendered).toContain("(none)");
+  });
+});
+
+describe("ENRICH_TASK_SYSTEM_PROMPT", () => {
+  it("instructs the model that it may decline to change the description", () => {
+    expect(ENRICH_TASK_SYSTEM_PROMPT).toMatch(/changed to false/i);
+  });
+
+  it("instructs the model never to change the title", () => {
+    expect(ENRICH_TASK_SYSTEM_PROMPT).toMatch(/never change the title/i);
   });
 });

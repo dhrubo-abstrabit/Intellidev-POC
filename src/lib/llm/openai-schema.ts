@@ -3,8 +3,10 @@ import {
   ActionItemDraftSchema,
   ActionItemGenerationSchema,
   ActionItemConsolidationSchema,
+  TaskEnrichmentSchema,
   type ActionItemGeneration,
   type ActionItemConsolidation,
+  type TaskEnrichment,
 } from "./schema";
 
 /**
@@ -34,7 +36,6 @@ const OpenAIDraftWireSchema = z.object({
   confidence: z.number(),
   ownerHint: z.string().nullable(),
   sourceEventIds: z.array(z.string()),
-  relatedContextRefs: z.array(z.string()),
 });
 
 export const OpenAIGenerationWireSchema = z.object({
@@ -56,8 +57,15 @@ export const OpenAIConsolidationWireSchema = z.object({
   ),
 });
 
+export const OpenAITaskEnrichmentWireSchema = z.object({
+  changed: z.boolean(),
+  description: z.string(),
+  reason: z.string().nullable(),
+});
+
 export type OpenAIGenerationWire = z.infer<typeof OpenAIGenerationWireSchema>;
 export type OpenAIConsolidationWire = z.infer<typeof OpenAIConsolidationWireSchema>;
+export type OpenAITaskEnrichmentWire = z.infer<typeof OpenAITaskEnrichmentWireSchema>;
 
 /** Delegates to zod's own uuid validator rather than a hand-rolled regex —
  * schema.ts's matchesOpenItemId field is z.string().uuid(), and a looser
@@ -101,7 +109,6 @@ function adaptDraft(wire: OpenAIGenerationWire["items"][number]): ReturnType<typ
     confidence: clamp01(wire.confidence),
     ownerHint: wire.ownerHint === null ? undefined : truncate(wire.ownerHint, 200),
     sourceEventIds: wire.sourceEventIds,
-    relatedContextRefs: wire.relatedContextRefs,
   };
   return ActionItemDraftSchema.parse(normalized);
 }
@@ -131,4 +138,21 @@ export function toActionItemConsolidation(wire: OpenAIConsolidationWire): Action
     };
   });
   return ActionItemConsolidationSchema.parse({ groups });
+}
+
+/** Same normalize-then-parse contract as adaptDraft above: description is
+ * clamped to schema.ts's real 2000-char bound, and reason's null-for-absent
+ * wire encoding is mapped back to undefined. `changed` is NOT re-derived
+ * here (e.g. by diffing description against the caller's current one) — the
+ * caller (services/tasks/enrich.ts) does that check itself against the
+ * task's actual stored description, which this function has no access to. */
+export function toTaskEnrichment(wire: OpenAITaskEnrichmentWire): TaskEnrichment {
+  if (wire.description.length > 2000) {
+    console.warn(`[llm] openai: truncating over-long task enrichment description (${wire.description.length} chars)`);
+  }
+  return TaskEnrichmentSchema.parse({
+    changed: wire.changed,
+    description: truncate(wire.description, 2000),
+    reason: wire.reason === null ? undefined : truncate(wire.reason, 300),
+  });
 }

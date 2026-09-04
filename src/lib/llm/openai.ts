@@ -5,12 +5,22 @@ import { llmEnv } from "@/lib/env";
 import {
   EXTRACTION_SYSTEM_PROMPT,
   CONSOLIDATION_SYSTEM_PROMPT,
+  ENRICH_TASK_SYSTEM_PROMPT,
+  ENRICH_PROMPT_VERSION,
   PROMPT_VERSION,
   renderProjectProfile,
   renderExtractionUserContent,
   renderConsolidationUserContent,
+  renderTaskEnrichmentUserContent,
 } from "./prompt";
-import { OpenAIGenerationWireSchema, OpenAIConsolidationWireSchema, toActionItemGeneration, toActionItemConsolidation } from "./openai-schema";
+import {
+  OpenAIGenerationWireSchema,
+  OpenAIConsolidationWireSchema,
+  OpenAITaskEnrichmentWireSchema,
+  toActionItemGeneration,
+  toActionItemConsolidation,
+  toTaskEnrichment,
+} from "./openai-schema";
 import type {
   ActionItemContext,
   ActionItemGenerationResult,
@@ -19,6 +29,8 @@ import type {
   LLMProvider,
   LLMUsage,
   OpenActionItemSummary,
+  TaskEnrichmentContext,
+  TaskEnrichmentResult,
 } from "./types";
 
 export const OPENAI_MODEL = "gpt-5.6-luna";
@@ -48,6 +60,11 @@ const EXTRACTION_EFFORT = "low" as const;
 // on a different design (see the migration's own note on the reverted
 // find_similar_open_tasks). Buying quality here is nearly free.
 const CONSOLIDATION_EFFORT = "medium" as const;
+// A single-chunk, single-shot call with a small, well-bounded prompt and no
+// dedupe-style blast radius — the PM already decided this context is
+// relevant by linking it; the model's only job is deciding whether it
+// changes the description. Same rationale as EXTRACTION_EFFORT above.
+const ENRICH_EFFORT = "low" as const;
 
 let client: OpenAI | undefined;
 function getClient(): OpenAI {
@@ -164,6 +181,40 @@ export function createOpenAIProvider(openai: OpenAI): LLMProvider {
         response,
       };
     },
+
+    async enrichTaskDescription(context: TaskEnrichmentContext): Promise<TaskEnrichmentResult> {
+      const userContent = renderTaskEnrichmentUserContent(context);
+
+      const response = await openai.responses.parse({
+        model: MODEL,
+        instructions: ENRICH_TASK_SYSTEM_PROMPT,
+        input: [{ role: "user", content: userContent }],
+        text: { format: zodTextFormat(OpenAITaskEnrichmentWireSchema, "task_enrichment") },
+        reasoning: { effort: ENRICH_EFFORT },
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        store: false,
+        prompt_cache_key: `${ENRICH_PROMPT_VERSION}:enrich`,
+      });
+
+      if (response.status === "incomplete") {
+        throw new Error(`gpt-5.6-luna enrichment response incomplete: ${response.incomplete_details?.reason ?? "unknown reason"}`);
+      }
+      const refusal = findRefusalText(response.output);
+      if (refusal) {
+        throw new Error(`gpt-5.6-luna enrichment refused: ${refusal}`);
+      }
+      if (!response.output_parsed) {
+        throw new Error("Model did not return parseable structured output for task enrichment");
+      }
+
+      return {
+        enrichment: toTaskEnrichment(response.output_parsed),
+        usage: mapUsage(response.usage),
+        model: MODEL,
+        prompt: { instructions: ENRICH_TASK_SYSTEM_PROMPT, input: [{ role: "user", content: userContent }], reasoning: { effort: ENRICH_EFFORT }, model: MODEL },
+        response,
+      };
+    },
   };
 }
 
@@ -204,5 +255,9 @@ export const openaiProvider: LLMProvider = {
   consolidateActionItems(openActionItems, drafts) {
     lazyProvider ??= createOpenAIProvider(getClient());
     return lazyProvider.consolidateActionItems(openActionItems, drafts);
+  },
+  enrichTaskDescription(context) {
+    lazyProvider ??= createOpenAIProvider(getClient());
+    return lazyProvider.enrichTaskDescription(context);
   },
 };

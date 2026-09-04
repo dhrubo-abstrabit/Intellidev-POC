@@ -1,17 +1,21 @@
-import type { ActionItemContext, DraftForConsolidation, OpenActionItemSummary, RelatedContextChunk } from "./types";
+import type { ActionItemContext, DraftForConsolidation, OpenActionItemSummary, RelatedContextChunk, TaskEnrichmentContext } from "./types";
 
 /**
  * Bumped whenever the prompt TEXT changes in a way that makes runs
  * incomparable — llm_runs.prompt_version is the only mechanism this app has
  * for asking "did output quality change because of a prompt edit, or a
  * model swap?" v4: RELATED CONTEXT (retrieval-augmented extraction) added,
- * plus the relatedContextRefs citation channel.
+ * plus a relatedContextRefs citation channel. v5: the citation channel was
+ * removed — RELATED CONTEXT still informs drafting, but a chunk can no
+ * longer reach task_sources via model citation; enrichment is now a PM-
+ * initiated action (see src/services/tasks/enrich.ts) that never touches
+ * this prompt.
  *
  * Lives here, not in generate.ts, because it versions the prompt TEXT below
  * — keeping it in a different file from the text it describes is exactly
  * why bumping it is easy to forget.
  */
-export const PROMPT_VERSION = "action-items-v4";
+export const PROMPT_VERSION = "action-items-v5";
 
 export const EXTRACTION_SYSTEM_PROMPT = `You monitor software team activity (chat messages, task updates, file changes) for a single project and extract actionable signal for a daily digest: new action items, risks, blockers, status updates, and follow-ups a human should know about.
 
@@ -25,7 +29,6 @@ Rules:
 - RELATED CONTEXT is retrieved by semantic similarity from older activity and reference documents. It is a HINT, not ground truth: it may be stale, about a different issue that merely reads similarly, or irrelevant.
 - You may use RELATED CONTEXT to sharpen an item's description, priority, or ownerHint, or to recognize that a new event is a recurrence of something known. You must NEVER create an item supported only by RELATED CONTEXT — every item must be grounded in at least one NEW EVENT.
 - sourceEventIds must contain only ids from NEW EVENTS. Never put a RELATED CONTEXT label there.
-- If a RELATED CONTEXT excerpt materially informed an item (sharpened its description, priority, or confirmed a recurrence), cite its label — e.g. "R2" — in relatedContextRefs. Only cite labels shown to you; never invent one. Leave relatedContextRefs empty if nothing in RELATED CONTEXT was actually used.
 - If RELATED CONTEXT contradicts NEW EVENTS, trust NEW EVENTS.`;
 
 export function renderOpenItems(openActionItems: OpenActionItemSummary[]): string {
@@ -156,4 +159,34 @@ export function renderDraftsForConsolidation(drafts: DraftForConsolidation[]): s
 
 export function renderConsolidationUserContent(openActionItems: OpenActionItemSummary[], drafts: DraftForConsolidation[]): string {
   return `OPEN ITEMS:\n${renderOpenItems(openActionItems)}\n\nDRAFT ITEMS (${drafts.length}):\n${renderDraftsForConsolidation(drafts)}`;
+}
+
+/** Own version constant, separate from PROMPT_VERSION above — this versions
+ * a different prompt's TEXT (see that constant's own doc comment on why
+ * this file keeps versions next to the text they describe). Bump whenever
+ * ENRICH_TASK_SYSTEM_PROMPT changes in a way that makes runs incomparable. */
+export const ENRICH_PROMPT_VERSION = "enrich-task-v1";
+
+export const ENRICH_TASK_SYSTEM_PROMPT = `A project manager has linked a new piece of context to an existing tracked task, because they judged it relevant. Decide whether the task's description should change as a result.
+
+Rules:
+- Never change the title — you are not given it to change, only asked to refine the description.
+- Only use facts actually present in the task's current description or the new context below. Never invent or infer beyond what's written.
+- Refine and fold in, don't replace wholesale — preserve everything in the current description that the new context doesn't contradict or extend.
+- If the new context is tangential, already reflected, or doesn't add anything worth keeping, set changed to false and return the current description unchanged, verbatim.
+- Never mention labels, ids, or where the context came from in the prose — write as if you always knew this.
+- reason is a short (one sentence) note on what changed, or why nothing did.`;
+
+export function renderTaskEnrichmentUserContent(context: TaskEnrichmentContext): string {
+  const { project, task, newContext } = context;
+  const date = newContext.occurredAt.slice(0, 10);
+  const label = newContext.title ? `${newContext.title} — ` : "";
+  return `Project: ${project.name}
+
+TASK: ${task.title} [${task.kind}]
+CURRENT DESCRIPTION:
+${task.description ?? "(none)"}
+
+NEW CONTEXT (${newContext.sourceKind}, ${date}):
+${label}${newContext.content}`;
 }

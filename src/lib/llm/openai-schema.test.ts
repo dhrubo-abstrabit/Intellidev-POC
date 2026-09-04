@@ -3,8 +3,10 @@ import { z } from "zod";
 import {
   OpenAIGenerationWireSchema,
   OpenAIConsolidationWireSchema,
+  OpenAITaskEnrichmentWireSchema,
   toActionItemGeneration,
   toActionItemConsolidation,
+  toTaskEnrichment,
 } from "./openai-schema";
 
 /** Recursively asserts every object node in a JSON Schema is genuinely
@@ -43,6 +45,10 @@ describe("wire schema strict-mode conformance", () => {
   it("OpenAIConsolidationWireSchema is fully strict-conformant", () => {
     assertStrictConformant(z.toJSONSchema(OpenAIConsolidationWireSchema));
   });
+
+  it("OpenAITaskEnrichmentWireSchema is fully strict-conformant", () => {
+    assertStrictConformant(z.toJSONSchema(OpenAITaskEnrichmentWireSchema));
+  });
 });
 
 const baseDraft = {
@@ -53,7 +59,6 @@ const baseDraft = {
   confidence: 0.8,
   ownerHint: null,
   sourceEventIds: ["e1"],
-  relatedContextRefs: ["R1"],
 };
 
 describe("toActionItemGeneration", () => {
@@ -83,10 +88,9 @@ describe("toActionItemGeneration", () => {
     warnSpy.mockRestore();
   });
 
-  it("round-trips sourceEventIds and relatedContextRefs unchanged", () => {
+  it("round-trips sourceEventIds unchanged", () => {
     const result = toActionItemGeneration({ items: [baseDraft] });
     expect(result.items[0].sourceEventIds).toEqual(["e1"]);
-    expect(result.items[0].relatedContextRefs).toEqual(["R1"]);
   });
 
   it("output passes ActionItemGenerationSchema (implicitly, since toActionItemGeneration parses through it)", () => {
@@ -124,5 +128,31 @@ describe("toActionItemConsolidation", () => {
     expect(result.groups[0].matchesOpenItemId).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe("toTaskEnrichment", () => {
+  it("maps null reason to undefined", () => {
+    const result = toTaskEnrichment({ changed: true, description: "Updated description.", reason: null });
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("passes a non-null reason through", () => {
+    const result = toTaskEnrichment({ changed: true, description: "Updated description.", reason: "Added a deadline." });
+    expect(result.reason).toBe("Added a deadline.");
+  });
+
+  it("truncates an over-long description to 2000 chars and warns", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const longDescription = "x".repeat(2500);
+    const result = toTaskEnrichment({ changed: true, description: longDescription, reason: null });
+    expect(result.description.length).toBe(2000);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("truncating over-long"));
+    warnSpy.mockRestore();
+  });
+
+  it("passes changed:false through unchanged", () => {
+    const result = toTaskEnrichment({ changed: false, description: "Same as before.", reason: "Nothing new." });
+    expect(result.changed).toBe(false);
   });
 });
