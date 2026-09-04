@@ -41,9 +41,13 @@ interface Props {
   invites: PendingInvite[];
   /** Empty when the viewer lacks member.invite — the whole panel hides. */
   roles: InviteRole[];
+  /** Replaces the default blurb where the scope needs explaining — a tenant
+   * invitation grants a roster row and nothing beneath it, which is not
+   * obvious and looks broken if you expected otherwise. */
+  note?: string;
 }
 
-export function InvitationsPanel({ level, scopeId, invites, roles }: Props) {
+export function InvitationsPanel({ level, scopeId, invites, roles, note }: Props) {
   const canInvite = roles.length > 0;
   const [pendingOp, startTransition] = useTransition();
 
@@ -72,9 +76,10 @@ export function InvitationsPanel({ level, scopeId, invites, roles }: Props) {
       <CardHeader>
         <CardTitle>Invitations</CardTitle>
         <CardDescription>
-          {canInvite
-            ? "Invitations expire after 7 days and can only be used once."
-            : "Pending invitations. Only people who can invite may send or revoke these."}
+          {note ??
+            (canInvite
+              ? "Invitations expire after 7 days and can only be used once."
+              : "Pending invitations. Only people who can invite may send or revoke these.")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

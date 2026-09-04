@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
-import { requirePermission, spaceScope, workspaceScope, type ScopeRef } from "@/lib/authz";
+import { requirePermission, spaceScope, tenantScope, workspaceScope, type ScopeRef } from "@/lib/authz";
 import { appUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 import { generateInviteToken, hashInviteToken, inviteExpiryFromNow } from "./tokens";
@@ -27,7 +27,13 @@ const inviteSchema = z.object({
 /**
  * Which scopes this app can invite into.
  *
- * Project-scoped invitations are deliberately NOT offered. `project_members`
+ * TENANT exists for one reason that nothing else covers: a billing admin. They
+ * need a tenant_members row with role = billing_admin and NO access to any
+ * client work, and every other invite scope necessarily grants membership
+ * somewhere beneath. Without this, onboarding one meant inviting them into a
+ * workspace they had no business in and stripping it afterwards.
+ *
+ * PROJECT-scoped invitations are deliberately NOT offered. `project_members`
  * has an FK to `space_members`, so a project invite must also carry a space
  * role or accept_invitation() throws — meaning the form would have to collect
  * two roles to express "put them on this one project". Since anyone on a
@@ -35,9 +41,10 @@ const inviteSchema = z.object({
  * invite to the space, then set a per-project override on the roster. Same end
  * state, one decision at a time.
  */
-export type InviteScopeLevel = "workspace" | "space";
+export type InviteScopeLevel = "tenant" | "workspace" | "space";
 
 function scopeRefFor(level: InviteScopeLevel, id: string): ScopeRef {
+  if (level === "tenant") return tenantScope(id);
   return level === "workspace" ? workspaceScope(id) : spaceScope(id);
 }
 
@@ -93,7 +100,11 @@ export async function createInvitation(
   let workspaceId: string | null = null;
   let clientSpaceId: string | null = null;
 
-  if (level === "workspace") {
+  if (level === "tenant") {
+    // Nothing below is named, so the invitation grants a roster row and
+    // nothing else — see the InviteScopeLevel comment.
+    tenantId = scopeId;
+  } else if (level === "workspace") {
     const { data } = await supabase.from("workspaces").select("id, tenant_id").eq("id", scopeId).maybeSingle();
     if (!data) return { error: "Workspace not found." };
     tenantId = data.tenant_id;
@@ -118,22 +129,18 @@ export async function createInvitation(
     workspace_id: workspaceId,
     client_space_id: clientSpaceId,
     email,
-    // A SPACE invitation also grants workspace `member`, and it has to.
-    //
-    // Every route in this app is /w/:workspaceId/…, and workspaces_select
-    // requires workspace.read — which only workspace roles and tenant owners
-    // hold. Without this, accepting a space invitation produced exactly what
-    // it granted (tenant + space membership, verified in the database) and
-    // still left the person on a bare dashboard with no navigable path to the
-    // space they had just been given access to.
-    //
-    // `member` is the lightest role that fixes it: workspace.read, member.read
-    // and contact.read, all non-cascading, and NO data access — a space viewer
-    // invited this way still cannot read anything they could not read before.
-    // The alternative was teaching workspaces_select to accept "can see a
-    // client space inside it", which is a resolver change to express something
-    // the grid can already say.
-    workspace_role: level === "workspace" ? role : "member",
+    // TENANT: grants a roster row and nothing beneath. That is the point of
+    // the scope — a billing admin needs no client access.
+    tenant_role: level === "tenant" ? role : null,
+    // SPACE: also grants workspace `member`, and it has to. Every route is
+    // /w/:workspaceId/…, and workspaces_select requires workspace.read, which
+    // only workspace roles and tenant owners hold. Without it, accepting a
+    // space invitation produced exactly what it granted (tenant + space
+    // membership, verified in the database) and still left the person on a
+    // bare dashboard with no navigable path to the space. `member` is the
+    // lightest role that fixes it: workspace.read, member.read, contact.read,
+    // all non-cascading, NO data access.
+    workspace_role: level === "tenant" ? null : level === "workspace" ? role : "member",
     space_role: level === "space" ? role : null,
     token_hash: hashInviteToken(token),
     expires_at: expiresAt,
@@ -230,7 +237,7 @@ export async function resendInvitation(
   const supabase = await createClient();
   const { data: existing } = await supabase
     .from("invitations")
-    .select("id, email, tenant_id, workspace_id, client_space_id, workspace_role, space_role")
+    .select("id, email, tenant_id, workspace_id, client_space_id, tenant_role, workspace_role, space_role")
     .eq("id", invitationId)
     .is("accepted_at", null)
     .is("revoked_at", null)
@@ -256,6 +263,7 @@ export async function resendInvitation(
     workspace_id: existing.workspace_id,
     client_space_id: existing.client_space_id,
     email: existing.email,
+    tenant_role: existing.tenant_role,
     workspace_role: existing.workspace_role,
     space_role: existing.space_role,
     token_hash: hashInviteToken(token),
@@ -294,12 +302,15 @@ export async function resendInvitation(
 type Client = Awaited<ReturnType<typeof createClient>>;
 
 async function scopeDisplayName(supabase: Client, level: InviteScopeLevel, scopeId: string): Promise<string> {
-  const table = level === "workspace" ? "workspaces" : "client_spaces";
+  const table = level === "tenant" ? "tenants" : level === "workspace" ? "workspaces" : "client_spaces";
   const { data } = await supabase.from(table).select("name").eq("id", scopeId).maybeSingle();
-  return data?.name ?? "the workspace";
+  return data?.name ?? "the organisation";
 }
 
 function revalidatePathsFor(level: InviteScopeLevel, scopeId: string): void {
+  // The org and access screens are nested under /w/:id, whose id is not the
+  // scope id for tenant or space invitations — revalidating the layout is both
+  // simpler and correct for all three.
   if (level === "workspace") revalidatePath(`/w/${scopeId}/members`);
   else revalidatePath("/", "layout");
 }

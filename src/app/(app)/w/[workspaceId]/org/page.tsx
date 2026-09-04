@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { MembersView, type MemberRow, type AssignableRole } from "@/components/dashboard/members-view";
+import { InvitationsPanel, type PendingInvite, type InviteRole } from "@/components/dashboard/invitations-panel";
 import { changeTenantMemberRole, removeTenantMember } from "./actions";
 
 /**
@@ -42,7 +43,13 @@ export default async function OrgPage({ params }: { params: Promise<{ workspaceI
   const tenant = workspace?.tenants;
   if (!tenant) notFound();
 
-  const [{ data: memberRows }, { data: assignable }, { data: roleCatalog }, { data: subscription }] =
+  const [
+    { data: memberRows },
+    { data: assignable },
+    { data: roleCatalog },
+    { data: subscription },
+    { data: inviteRows },
+  ] =
     await Promise.all([
       supabase
         .from("tenant_members")
@@ -55,6 +62,7 @@ export default async function OrgPage({ params }: { params: Promise<{ workspaceI
       // Gated by billing.read, so an ordinary member simply gets null here and
       // the seat card does not render. No role check in this file.
       supabase.from("tenant_subscriptions").select("plan, seats, status").eq("tenant_id", tenant.id).maybeSingle(),
+      supabase.rpc("pending_invitations", { p_scope_level: "tenant", p_scope_id: tenant.id }),
     ]);
 
   if (!memberRows) notFound();
@@ -73,6 +81,16 @@ export default async function OrgPage({ params }: { params: Promise<{ workspaceI
     label: r.label,
     description: r.description,
   }));
+
+  const invites: PendingInvite[] = (inviteRows ?? []).map((row) => ({
+    id: row.id,
+    email: row.email,
+    roleLabel: row.role_label,
+    invitedBy: row.invited_by,
+    expiresAt: row.expires_at,
+    expired: row.expired,
+  }));
+  const inviteRoles: InviteRole[] = assignableRoles.map((r) => ({ key: r.key, label: r.label }));
 
   const used = members.length;
   const seats = subscription?.seats ?? null;
@@ -129,6 +147,13 @@ export default async function OrgPage({ params }: { params: Promise<{ workspaceI
         changeRoleAction={changeTenantMemberRole.bind(null, tenant.id)}
         removeAction={removeTenantMember.bind(null, tenant.id)}
         removeDescriptionTemplate="{email} loses access to EVERYTHING in this organisation — every workspace, every client space, every project. This frees their seat and cannot be undone."
+      />
+      <InvitationsPanel
+        level="tenant"
+        scopeId={tenant.id}
+        invites={invites}
+        roles={inviteRoles}
+        note="An organisation invitation grants a place on the roster and nothing else — no workspace, no client space, no project. Use it for a billing admin, or when someone's access will be granted separately."
       />
     </div>
   );
