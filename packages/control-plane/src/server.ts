@@ -658,7 +658,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     }
 
     try {
-      const redirectUri = callbackUrl(request.headers.host)
+      const redirectUri = callbackUrl(request.headers.host, opts.dispatch.publicUrl)
       const { authorizationUrl } = await oauth.begin(server, redirectUri)
       return { kind: 'oauth', authorizationUrl }
     } catch (error) {
@@ -1027,11 +1027,28 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 /**
  * Where the authorization server should send the human back.
  *
- * Built from the request's own Host header so it matches whatever port the control plane was
- * actually started on — an OAuth client is registered against an exact redirect URI, and a
- * hardcoded 4000 would silently break `PORT=4001`.
+ * FOUND BY CONNECTING SUPABASE ON THE DEPLOYED PLANE. The scheme was hardcoded to `http`, which
+ * is correct only for loopback: RFC 8252 lets a native client use plain HTTP on localhost, and
+ * every other redirect must be https. Registration was refused with `redirect_uris.0: URL must
+ * use https, be localhost, or use a custom scheme` — a message that never reached the panel,
+ * because a schema check ran first and complained about the shape of the error instead.
+ *
+ * The configured public URL is preferred over the Host header because it is the one address the
+ * deployment guarantees is reachable and correctly schemed. Behind a load balancer the request
+ * itself arrives as plain HTTP, so trusting the connection's scheme would reproduce this bug.
+ *
+ * The header remains the fallback for a developer who has not set one: it keeps the port the
+ * control plane actually started on, and a client registered against an exact redirect URI would
+ * otherwise break on `PORT=4001`.
  */
-function callbackUrl(host: string | undefined): string {
+export function callbackUrl(host: string | undefined, publicUrl: string | undefined): string {
+  if (publicUrl) {
+    try {
+      return new URL('/oauth/callback', publicUrl).toString()
+    } catch {
+      // A malformed value should not stop a local sign-in; fall through to the header.
+    }
+  }
   return `http://${host ?? '127.0.0.1:4000'}/oauth/callback`
 }
 

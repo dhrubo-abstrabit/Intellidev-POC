@@ -279,10 +279,25 @@ export class McpOAuth {
         },
       })
     } catch (error) {
+      /**
+       * Lead with what the server actually said.
+       *
+       * FOUND BY READING ONE. Supabase refused a registration with `redirect_uris.0: URL must
+       * use https, be localhost, or use a custom scheme` — the exact cause and cure — and the
+       * panel showed a schema complaint about the *shape* of the error instead, because the SDK
+       * validates the body against RFC 6749's `{error: string}` and a server that answers
+       * `{message: ...}` fails that check first.
+       *
+       * So the raw body is hoisted to the front. The parse failure is kept afterwards, since a
+       * server whose errors do not follow the spec is itself worth knowing about, but it is no
+       * longer the first thing a person reads.
+       */
+      const said = rawServerMessage(error)
       throw new Error(
         `dynamic client registration failed at ${opts.authorizationServerUrl}: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
-          `Servers without RFC 7591 need a pre-registered client, which this local path does not support yet.`,
+          `${said ?? (error instanceof Error ? error.message : String(error))}` +
+          (said ? ` (full response: ${error instanceof Error ? error.message : String(error)})` : '') +
+          `. Servers without RFC 7591 need a pre-registered client, which this path does not support yet.`,
       )
     }
 
@@ -341,4 +356,24 @@ function loopbackVariants(redirectUri: string): string[] {
 function isStale(oauth: { expiresAt?: string }): boolean {
   const expiresAt = oauth.expiresAt ? Date.parse(oauth.expiresAt) : 0
   return !expiresAt || expiresAt - Date.now() < 60_000
+}
+
+/**
+ * The server's own words, dug out of an SDK error that wrapped them.
+ *
+ * The useful sentence is usually inside a `Raw body: {...}` suffix, behind a schema complaint
+ * about a body that did not match RFC 6749. Returns undefined when there is nothing better to
+ * say, so the caller keeps the original message rather than replacing it with silence.
+ */
+function rawServerMessage(error: unknown): string | undefined {
+  const text = error instanceof Error ? error.message : String(error)
+  const raw = /Raw body:\s*(\{.*\})\s*$/s.exec(text)
+  if (!raw) return undefined
+  try {
+    const body = JSON.parse(raw[1]!) as Record<string, unknown>
+    const said = body['message'] ?? body['error_description'] ?? body['error']
+    return typeof said === 'string' ? said : undefined
+  } catch {
+    return undefined
+  }
 }
