@@ -21,7 +21,9 @@ import { ConfirmActionButton } from "@/components/dashboard/confirm-action-butto
 import { ConnectProviderButton } from "@/components/dashboard/connect-provider-button";
 import { IntegrationConfigForm } from "@/components/dashboard/integration-config-form";
 import { GoogleIntegrationConfigForm } from "@/components/dashboard/google-integration-config-form";
+import { SyncScheduleForm } from "@/components/dashboard/sync-schedule-form";
 import { getConfigSchema } from "@/lib/db/schemas/integration-config";
+import { RETIRED_GOOGLE_PROVIDERS, scheduleBadgeLabel } from "@/lib/sync/schedule";
 import { GOOGLE_CONFIG_SECTIONS } from "@/connectors/google/config";
 import {
   connectMock,
@@ -44,13 +46,14 @@ const STATUS_VARIANT: Record<
   disconnected: "outline",
 };
 
-/** Providers that merged into `google` and no longer have a connector
- * registered. Their enum values survive for historical rows — none can exist
- * yet on this freshly-rebuilt v2 schema, but a project_connectors row with
- * one of these providers would otherwise render a "connected" card that can
- * never sync again. Kept as a defensive check, matching the same guard the
- * pre-v2 design needed once real usage accumulates. */
-const RETIRED_GOOGLE_PROVIDERS = ["gmail", "google_drive", "google_chat"];
+// RETIRED_GOOGLE_PROVIDERS lives in @/lib/sync/schedule now (hoisted so
+// saveSyncSchedule can apply the same guard — it's a public POST endpoint,
+// not just this page render). Their enum values survive for historical rows —
+// none can exist yet on this freshly-rebuilt v2 schema, but a
+// project_connectors row with one of these providers would otherwise render a
+// "connected" card that can never sync again. Kept as a defensive check,
+// matching the same guard the pre-v2 design needed once real usage
+// accumulates.
 
 /** Compact per-service readout for a merged Google integration's card —
  * `null` in the config means that sub-service is switched off. */
@@ -97,7 +100,7 @@ export default async function IntegrationsPage({
   const { data: projectConnectorRows } = await supabase
     .from("project_connectors")
     .select(
-      "id, provider, config, sync_enabled, last_sync_succeeded_at, last_error, space_connections(status, external_account_label)",
+      "id, provider, config, sync_enabled, sync_interval_seconds, last_sync_succeeded_at, last_error, space_connections(status, external_account_label)",
     )
     .eq("project_id", projectId)
     .eq("enabled", true)
@@ -111,6 +114,7 @@ export default async function IntegrationsPage({
     lastSyncSucceededAt: row.last_sync_succeeded_at,
     lastError: row.last_error,
     syncEnabled: row.sync_enabled,
+    syncIntervalSeconds: row.sync_interval_seconds,
     config: row.config,
   }));
 
@@ -171,6 +175,21 @@ export default async function IntegrationsPage({
                           <CardDescription className="capitalize">
                             {integration.provider}
                           </CardDescription>
+                          {/* Always visible (unlike the schedule control
+                            itself, which lives inside the collapsed-by-
+                            default panel below) so the setting is
+                            discoverable without expanding the card — and a
+                            retired provider gets no badge, matching "Sync
+                            now" being hidden for the same reason: it can
+                            never sync again regardless of what's stored. */}
+                          {isRetired ? null : (
+                            <p
+                              className="text-xs text-muted-foreground"
+                              data-testid={`sync-schedule-badge-${integration.provider}`}
+                            >
+                              {scheduleBadgeLabel(integration.syncIntervalSeconds, integration.syncEnabled)}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge
@@ -263,6 +282,30 @@ export default async function IntegrationsPage({
                             {googleServiceSummary(config).join(" · ")}
                           </p>
                         ) : null}
+
+                        {/* A sibling of the config form below, never nested
+                          inside it — this posts to a separate Server Action
+                          (saveSyncSchedule) so a schedule change can never
+                          flow through the config form's scope-change /
+                          cursor-invalidation logic. Gated on !isRetired, NOT
+                          on `entry`: getConfigSchema only has an entry for
+                          `google`, so gating on `entry` would deny the
+                          schedule control to `slack`/`mock` — most
+                          connectors. Same remount-on-actual-change idiom as
+                          the config forms below: key on the saved values so a
+                          failed save (which doesn't change them) leaves
+                          state.error visible instead of resetting the form. */}
+                        {isRetired ? null : (
+                          <SyncScheduleForm
+                            key={`${integration.syncIntervalSeconds}-${integration.syncEnabled}`}
+                            workspaceId={workspaceId}
+                            projectId={projectId}
+                            integrationId={integration.id}
+                            provider={integration.provider}
+                            syncIntervalSeconds={integration.syncIntervalSeconds}
+                            syncEnabled={integration.syncEnabled}
+                          />
+                        )}
 
                         {/* Every config input is uncontrolled, seeded from the
                           saved config via `defaultValue` — React only applies
