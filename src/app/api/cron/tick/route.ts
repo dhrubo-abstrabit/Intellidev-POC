@@ -98,15 +98,24 @@ export async function GET(request: NextRequest) {
   for (const [clientSpaceId, group] of byClientSpace) {
     const timezone = timezoneByClientSpace.get(clientSpaceId) ?? "UTC";
     const batchDate = projectToday(timezone);
-    const batchId = await seedBatchForClientSpace(service, {
+    const { batchId, created } = await seedBatchForClientSpace(service, {
       clientSpaceId,
       batchDate,
       projectConnectorIds: group.projectConnectorIds,
     });
     batchByClientSpace.set(clientSpaceId, { batchId, batchDate });
-    await enqueueJob("/api/jobs/batch-timeout", { batchId }, { delaySeconds: BATCH_TIMEOUT_DELAY_SECONDS }).catch((err) => {
-      console.error(`[cron] failed to schedule batch timeout for client space ${clientSpaceId}:`, err);
-    });
+    // Only the tick that actually CREATES today's batch schedules its
+    // timeout backstop — every later tick this minute (this space still has
+    // connectors due) reuses the same row and must not re-enqueue. Before
+    // the tick ran every minute this was a non-issue (at most one tick/day
+    // per space); at 1440 ticks/day, gating on `created` is what keeps this
+    // at one delayed job per (space, day) instead of up to 1440 — see
+    // seedBatchForClientSpace's own doc comment.
+    if (created) {
+      await enqueueJob("/api/jobs/batch-timeout", { batchId }, { delaySeconds: BATCH_TIMEOUT_DELAY_SECONDS }).catch((err) => {
+        console.error(`[cron] failed to schedule batch timeout for client space ${clientSpaceId}:`, err);
+      });
+    }
   }
 
   const results = await Promise.allSettled(

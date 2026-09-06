@@ -423,7 +423,16 @@ export async function runSync(
             // would sit unprocessed until tomorrow's batch or its backlog
             // sweep. Safe to call more than once a day: triggerDailyExtraction
             // only ever picks up events with processed_at still null.
-            await triggerDailyExtraction(service, pc.client_space_id, effectiveBatchDate);
+            //
+            // Debounced (unlike every other triggerDailyExtraction call in
+            // this file): with the tick now running every minute instead of
+            // once a day, THIS is the branch a sub-daily-interval connector
+            // hits on nearly every sync once it's caught up for the day —
+            // ungated, that's up to ~1440 extraction rounds/day per client
+            // space, each sweeping up to 30 days of backlog. See
+            // triggerDailyExtraction's own doc comment for why debouncing
+            // here can't lose events, only delay them.
+            await triggerDailyExtraction(service, pc.client_space_id, effectiveBatchDate, { debounce: true });
           }
         } else if (eventsWritten > 0) {
           await triggerDailyExtraction(service, pc.client_space_id, effectiveBatchDate);
