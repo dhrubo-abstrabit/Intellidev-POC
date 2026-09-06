@@ -3,7 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { assertProjectScope } from "@/lib/scope";
+import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { parseScheduleFormData, secondsToLabel, RETIRED_GOOGLE_PROVIDERS } from "@/lib/sync/schedule";
 import { getConnector } from "@/connectors/registry";
 import { mockCredentials } from "@/connectors/mock";
 import { createConnectSession } from "@/lib/nango/sessions";
@@ -794,6 +796,7 @@ export async function saveIntegrationConfig(
   const previousConfig = (projectConnector.config ?? {}) as Record<string, unknown>;
   const scopeChanged = scopeFingerprint(entry, previousConfig) !== scopeFingerprint(entry, parsed.data);
 
+  const wasConfigured = isConfigScoped(entry, previousConfig);
   const nowConfigured = isConfigScoped(entry, parsed.data);
   const update: Database["public"]["Tables"]["project_connectors"]["Update"] = { config: parsed.data as Json };
   // Google connectors start with sync disabled straight out of connect (see
@@ -802,7 +805,15 @@ export async function saveIntegrationConfig(
   // is no `status` column on project_connectors to also clear here — a
   // connector's own health only ever comes from sync bookkeeping
   // (last_error/consecutive_failures), not from this save.
-  if (!projectConnector.sync_enabled && nowConfigured) {
+  //
+  // Gated on the UNSCOPED -> SCOPED transition specifically, not just
+  // "currently unscoped" — now that saveSyncSchedule (below) lets a user
+  // pause an already-scoped connector, `!wasConfigured` is what stops a
+  // later, unrelated config edit (tweaking the Gmail query, say) from
+  // silently re-enabling syncing on save, with no UI indication and no audit
+  // trail explaining why. A connector that was never configured still
+  // auto-enables the moment it first becomes scoped, exactly as before.
+  if (!projectConnector.sync_enabled && nowConfigured && !wasConfigured) {
     update.sync_enabled = true;
   }
 
@@ -869,4 +880,165 @@ export async function saveIntegrationConfig(
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
   return { message: "Configuration saved." };
+}
+
+export interface SaveSyncScheduleResult {
+  error?: string;
+  message?: string;
+}
+
+/**
+ * Saves a connector's sync cadence (project_connectors.sync_interval_seconds)
+ * and its sync_enabled pause toggle. Deliberately a SEPARATE action from
+ * saveIntegrationConfig above, not a shared code path: a schedule change must
+ * never flow through scopeFingerprint/pruneCursorOnScopeChange, which exists
+ * to invalidate a connector's resume cursor on a SCOPE change (different
+ * Drive folders, a different Gmail query) and would wrongly nuke it on a mere
+ * schedule edit.
+ *
+ * Unlike every other action in this file, the actual UPDATE below goes
+ * through the USER-SCOPED client, not the service client. assertProjectScope
+ * is membership-only by its own documented design (src/lib/scope.ts —
+ * "callers that need owner/admin rely on RLS write policies to enforce
+ * that"), so a service-client write here would have no role gate at all.
+ * Routing the write through RLS picks up project_connectors_write
+ * (manageable_project_ids()) plus the column grant that already exists for
+ * exactly this (supabase/migrations/20260901000800_connectors.sql: `grant
+ * update (config, enabled, sync_enabled, sync_interval_seconds) to
+ * authenticated`) — the defence the schema already provisioned for this UI,
+ * now actually used by it. This does tighten who can change a schedule
+ * relative to a config edit: a project member without a manageable role now
+ * gets an explicit permission error instead of a silent success.
+ */
+export async function saveSyncSchedule(
+  workspaceId: string,
+  projectId: string,
+  projectConnectorId: string,
+  _prev: SaveSyncScheduleResult,
+  formData: FormData,
+): Promise<SaveSyncScheduleResult> {
+  const user = await requireUser();
+  const scope = await assertProjectScope(workspaceId, projectId);
+
+  // Parsed before any DB round trip — a malformed submission doesn't deserve
+  // one. parseScheduleFormData is the SAME implementation the client uses for
+  // its own live validation message (src/lib/sync/schedule.ts), so the two
+  // can't disagree about what's valid.
+  const parsed = parseScheduleFormData(formData);
+  if (!parsed.ok) {
+    return { error: parsed.error };
+  }
+  // This form always renders the checkbox (unlike parseGoogleFieldsFromFormData's
+  // per-section checkboxes above), so absent unambiguously means unchecked —
+  // there's no "collapsed section never submitted" case here to worry about.
+  const syncEnabled = formData.get("syncEnabled") === "on";
+
+  const service = createServiceClient();
+  const { data: projectConnector } = await service
+    .from("project_connectors")
+    .select("id, provider, enabled, sync_interval_seconds, sync_enabled, client_space_id")
+    .eq("id", projectConnectorId)
+    .eq("project_id", projectId)
+    .eq("client_space_id", scope.clientSpaceId)
+    .maybeSingle();
+  if (!projectConnector) {
+    return { error: "Integration not found." };
+  }
+  // Both guards below are enforced here, not just in the page that renders
+  // (or hides) the schedule form — this action is a public POST endpoint
+  // reachable with a hand-crafted projectConnectorId, so the page's own
+  // guards aren't sufficient on their own.
+  if (!projectConnector.enabled) {
+    return { error: "This integration is disconnected. Reconnect it before setting a sync schedule." };
+  }
+  if (RETIRED_GOOGLE_PROVIDERS.includes(projectConnector.provider)) {
+    return { error: "This connector has moved — reconnect as Google to set a sync schedule." };
+  }
+
+  if (projectConnector.sync_interval_seconds === parsed.intervalSeconds && projectConnector.sync_enabled === syncEnabled) {
+    return { message: "Sync schedule unchanged." };
+  }
+
+  const supabase = await createClient();
+  const { data: updated, error: updateError } = await supabase
+    .from("project_connectors")
+    .update({ sync_interval_seconds: parsed.intervalSeconds, sync_enabled: syncEnabled })
+    .eq("id", projectConnector.id)
+    .select("id");
+
+  if (updateError) {
+    // Belt-and-braces: parseScheduleFormData already enforces the same
+    // 60-86400 range, so this should be unreachable — but it guarantees a
+    // raw Postgres constraint-violation string can never reach the UI.
+    if (updateError.code === "23514") {
+      return { error: "That sync interval isn't allowed — choose between 1 minute and 24 hours." };
+    }
+    if (updateError.code === "42501") {
+      return { error: "You don't have permission to change this project's sync schedule." };
+    }
+    return { error: "Could not save the sync schedule." };
+  }
+  if (!updated || updated.length === 0) {
+    // The row's existence was already proven by the service-client read
+    // above, so a silent 0-row update here is unambiguous: RLS's WRITE
+    // policy (not the SELECT one this page itself reads through) denied
+    // this specific caller.
+    return { error: "You don't have permission to change this project's sync schedule." };
+  }
+
+  // next_sync_at isn't in the `authenticated` column grant — it's the sync
+  // engine's own bookkeeping, not something a client should move directly —
+  // so adjusting it can only go through the service client. Best-effort in
+  // both branches: a failure here delays a sync, it does not lose the
+  // setting just saved above.
+  if (syncEnabled) {
+    const wasEnabled = projectConnector.sync_enabled;
+    if (wasEnabled) {
+      // Interval shortened while already enabled: pull next_sync_at EARLIER
+      // only if the new interval actually makes that sooner. Without this, a
+      // 24h -> 15min change would sit invisible for up to 24 hours, because
+      // run-sync.ts already stamped next_sync_at using the OLD interval.
+      const dueAt = new Date(Date.now() + parsed.intervalSeconds * 1000).toISOString();
+      const { error } = await service
+        .from("project_connectors")
+        .update({ next_sync_at: dueAt })
+        .eq("id", projectConnector.id)
+        .gt("next_sync_at", dueAt);
+      if (error) console.error(`[saveSyncSchedule] could not pull next_sync_at earlier for ${projectConnector.id}:`, error);
+    } else {
+      // Un-pausing: fire on the very next tick rather than waiting out
+      // whatever stale next_sync_at was left over from before the pause —
+      // "I turned it back on" should mean "sync now," not "sync whenever the
+      // old timer happens to catch up."
+      const { error } = await service
+        .from("project_connectors")
+        .update({ next_sync_at: new Date().toISOString() })
+        .eq("id", projectConnector.id);
+      if (error) console.error(`[saveSyncSchedule] could not reschedule next_sync_at for ${projectConnector.id}:`, error);
+    }
+  }
+
+  await service.from("audit_logs").insert({
+    tenant_id: scope.tenantId,
+    workspace_id: workspaceId,
+    client_space_id: projectConnector.client_space_id,
+    project_id: projectId,
+    actor_user_id: user.id,
+    actor_type: "user",
+    action: "integration.schedule_updated",
+    target_type: "project_connector",
+    target_id: projectConnector.id,
+    metadata: {
+      provider: projectConnector.provider,
+      syncIntervalSeconds: parsed.intervalSeconds,
+      previousSyncIntervalSeconds: projectConnector.sync_interval_seconds,
+      syncEnabled,
+      previousSyncEnabled: projectConnector.sync_enabled,
+    },
+  });
+
+  revalidatePath(`/w/${workspaceId}/p/${projectId}/integrations`);
+  return {
+    message: syncEnabled ? `Sync schedule saved — ${secondsToLabel(parsed.intervalSeconds)}.` : "Automatic syncing paused.",
+  };
 }
