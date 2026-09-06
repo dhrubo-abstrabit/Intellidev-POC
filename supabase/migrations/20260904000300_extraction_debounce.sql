@@ -1,0 +1,20 @@
+-- Debounces the "late arrival" extraction trigger in
+-- src/services/sync/batch.ts (the alreadySettled && eventsWritten > 0 branch
+-- in src/services/sync/run-sync.ts) now that the tick runs every minute
+-- instead of once a day (20260904000100_sync_tick_every_minute.sql). That
+-- branch exists for the occasional manual "Sync now" landing after the day's
+-- batch already fired — at a once-a-minute tick it becomes the ordinary case
+-- for any connector on a sub-daily schedule, and every call sweeps up to 30
+-- days of backlog (BACKFILL_DAY_CAP), so left ungated it would fire up to
+-- ~1440 extraction rounds/day per client space.
+--
+-- Lives on client_spaces, not sync_batches: triggerDailyExtraction enqueues
+-- work for MULTIPLE dates in one call (the backlog sweep), so the thing being
+-- rate-limited is per-space work, not per-day work. A column on sync_batches
+-- would reset at local midnight and miss exactly the cross-day case the sweep
+-- exists for.
+--
+-- Service-role-written only, same reasoning as project_connectors.next_sync_at
+-- (20260901000800_connectors.sql): this is the sync engine's own pacing
+-- bookkeeping, not something a client should be able to move.
+alter table public.client_spaces add column last_extraction_enqueued_at timestamptz;
