@@ -45,3 +45,6 @@ next-env.d.ts
 .nango-local
 .db-backups
 .codex
+
+# Playwright MCP screenshots/console logs from local manual verification
+.playwright-mcp/
