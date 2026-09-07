@@ -162,6 +162,14 @@ export const runs = runner.table(
     failureReason: text('failure_reason'),
     /** Container name locally, task ARN on Fargate. */
     handle: text('handle'),
+    /**
+     * The stage engine's own state, written by the container on every transition.
+     *
+     * Here rather than in the container because a run that parks for approval is *destroyed*
+     * while it waits. This is what the next container loads to continue at the stage after the
+     * one somebody approved.
+     */
+    engineState: jsonb('engine_state').$type<Record<string, unknown>>(),
   },
   (table) => [
     index('runs_task_idx').on(table.taskId),

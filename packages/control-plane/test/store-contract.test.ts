@@ -179,6 +179,40 @@ function contract(
         expect(after?.branch).toBe('feat/x')
       })
 
+      it('round-trips every patchable field, so none is silently dropped', async () => {
+        /**
+         * FOUND BY ADDING A FIELD. The Postgres `updateRun` writes an explicit allowlist while
+         * the in-memory one does `Object.assign`, so a new field round-trips in tests and
+         * vanishes in production — the worst shape of failure, because everything reports
+         * success. `engineState` was dropped exactly this way, and losing *that* means a resumed
+         * run repeats stages someone had already approved.
+         *
+         * Written as one patch of everything rather than a test per field: the next field added
+         * to RunRow should fail here without anyone remembering to extend this.
+         */
+        const task = await store.createTask(TASK, scope)
+        const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+
+        const patch = {
+          status: 'running' as const,
+          branch: 'feat/renamed',
+          seqHwm: 42,
+          records: [{ stage: 'code', status: 'passed' }] as never,
+          prUrl: 'https://example.test/pr/9',
+          failureReason: 'none, but it must survive',
+          handle: 'arn:aws:ecs:::task/round-trip',
+          engineState: { cursor: 3, status: 'parked', approvals: { code: 'approved' } },
+        }
+        await store.updateRun(run.id, patch)
+
+        const after = await store.getRun(run.id)
+        for (const [key, value] of Object.entries(patch)) {
+          expect(after?.[key as keyof typeof after], `${key} did not survive updateRun`).toEqual(
+            value,
+          )
+        }
+      })
+
       it('finds a run by its runtime handle', async () => {
         const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')

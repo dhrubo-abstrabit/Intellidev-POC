@@ -614,6 +614,9 @@ export class PostgresStore implements Store {
     if (patch.prUrl !== undefined) set['prUrl'] = patch.prUrl
     if (patch.failureReason !== undefined) set['failureReason'] = patch.failureReason
     if (patch.handle !== undefined) set['handle'] = patch.handle
+    // Silently dropped without this line, which is the worst possible failure for it: the run
+    // would look saved and resume from an older cursor, repeating stages someone had approved.
+    if (patch.engineState !== undefined) set['engineState'] = patch.engineState
 
     if (Object.keys(set).length === 0) {
       const existing = await this.getRun(id)
@@ -874,5 +877,6 @@ function toRun(row: typeof runs.$inferSelect): RunRow {
     ...(row.prUrl ? { prUrl: row.prUrl } : {}),
     ...(row.failureReason ? { failureReason: row.failureReason } : {}),
     ...(row.handle ? { handle: row.handle } : {}),
+    ...(row.engineState ? { engineState: row.engineState } : {}),
   }
 }

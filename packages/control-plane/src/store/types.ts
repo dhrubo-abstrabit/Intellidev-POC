@@ -88,6 +88,14 @@ export interface RunRow {
   failureReason?: string
   /** Runtime handle: container name locally, task ARN on Fargate. */
   handle?: string
+  /**
+   * The stage engine's state, as the container last wrote it.
+   *
+   * Opaque here on purpose: its shape belongs to the adapter, and the control plane's business
+   * with it is to store it, hand it back, and — when someone approves — record a decision inside
+   * it. Typing it here would put the engine's internals in two packages.
+   */
+  engineState?: Record<string, unknown>
 }
 
 export type Listener = (event: AgentEvent) => void
