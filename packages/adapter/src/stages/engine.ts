@@ -194,9 +194,7 @@ export class StageEngine {
     if (!stage.gate) {
       this.record(state, stage, visits, 'passed', startedAt, harness, null)
       this.exitStage(stage, visits, 'passed', startedAt)
-      state.cursor++
-      await this.deps.store.save(state)
-      return null
+      return await this.advance(stage, state)
     }
 
     const gate = await evaluateGate({
@@ -212,9 +210,7 @@ export class StageEngine {
     if (gate.passed) {
       this.record(state, stage, visits, 'passed', startedAt, harness, true, gate.detail)
       this.exitStage(stage, visits, 'passed', startedAt)
-      state.cursor++
-      await this.deps.store.save(state)
-      return null
+      return await this.advance(stage, state)
     }
 
     // A human gate is not a failure — it is a pause with a decision outstanding.
@@ -295,6 +291,55 @@ export class StageEngine {
       default:
         throw new Error(`builtin stage "${stage.id}" has no action`)
     }
+  }
+
+  /**
+   * Move past a stage that succeeded — or stop, if somebody has to look at it first.
+   *
+   * The cursor advances either way. That is deliberate: the stage *did* succeed, and a resumed
+   * run should continue at the next one rather than repeat work that was already approved. It
+   * also means nothing can re-ask for a decision that was already given, because the stage is
+   * behind the cursor.
+   *
+   * Approval is not enforced here, and cannot be. A container is the thing being controlled, so
+   * a check inside it would be advice rather than a boundary — the control plane refuses to
+   * resume a parked run until a decision is recorded, which is where the authenticated caller
+   * and the audit trail already are.
+   *
+   * `parked` rather than a new status because it is exactly what the word already means here: a
+   * non-terminal stop with a decision outstanding. The reconciler, `settle`, and the product
+   * status projection all understand it, and adding a synonym would mean teaching them twice.
+   */
+  private async advance(stage: StageDefinition, state: RunState): Promise<RunResult | null> {
+    state.cursor++
+
+    if (!stage.requiresApproval || state.approvals?.[stage.id] === 'approved') {
+      await this.deps.store.save(state)
+      return null
+    }
+
+    state.status = 'parked'
+    await this.deps.store.save(state)
+    /**
+     * Two events, because they say different things.
+     *
+     * `approval.requested` is what a UI listens for to put a decision in front of someone.
+     * `run.finished` is what the control plane settles on — the container is about to exit, and
+     * a run that stops without saying so looks like a crash to the reconciler.
+     */
+    this.deps.bus.emit({
+      type: 'approval.requested',
+      data: {
+        approvalId: `${state.runId}:${stage.id}`,
+        action: `approve the ${stage.id} stage`,
+        detail: `${stage.id} finished and needs approval before the run continues`,
+      },
+    })
+    this.deps.bus.emit({
+      type: 'run.finished',
+      data: { outcome: 'parked', reason: `awaiting approval after "${stage.id}"` },
+    })
+    return { outcome: 'parked', state }
   }
 
   /**

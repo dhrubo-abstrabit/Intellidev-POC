@@ -296,7 +296,9 @@ export class McpOAuth {
       throw new Error(
         `dynamic client registration failed at ${opts.authorizationServerUrl}: ` +
           `${said ?? (error instanceof Error ? error.message : String(error))}` +
-          (said ? ` (full response: ${error instanceof Error ? error.message : String(error)})` : '') +
+          (said
+            ? ` (full response: ${error instanceof Error ? error.message : String(error)})`
+            : '') +
           `. Servers without RFC 7591 need a pre-registered client, which this path does not support yet.`,
       )
     }

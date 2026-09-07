@@ -69,6 +69,23 @@ export const StageDefinition = z
     action: BuiltinAction.optional(),
     /** Skipped stages stay in the template so the UI can show them greyed. */
     enabled: z.boolean().default(true),
+    /**
+     * Stop after this stage and wait for a person.
+     *
+     * Separate from `gate` rather than expressed as one. A gate decides whether the stage
+     * *succeeded* — tests passed, a predicate held — and a stage may need both: the tests must
+     * pass **and** somebody must look at the diff. Folding approval into `gate` would make those
+     * mutually exclusive, since a stage has one gate.
+     *
+     * The order is therefore: run the stage, evaluate its gate, and only if that passes ask for
+     * approval. Approving something that failed its own tests is not a decision anyone should be
+     * offered.
+     *
+     * What "stop" means is the reason this exists at all: the container exits and the run is
+     * parked, so a decision that takes a day costs nothing. Waiting inside a running container
+     * would bill by the second for a process doing nothing.
+     */
+    requiresApproval: z.boolean().default(false),
   })
   .superRefine((stage, ctx) => {
     if (stage.kind === 'builtin' && !stage.action) {

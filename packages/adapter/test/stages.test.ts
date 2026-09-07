@@ -878,3 +878,103 @@ describe('what pr.opened says', () => {
     expect((opened?.data as { head: string }).head).not.toBe('pr')
   })
 })
+
+describe('a stage that needs approval', () => {
+  /**
+   * The point is that waiting costs nothing. The container exits and the run parks, so a decision
+   * that takes a day bills for nothing — as opposed to a container idling for hours holding state
+   * it could have written down.
+   */
+  const template = {
+    name: 't',
+    stages: [
+      {
+        id: 'code',
+        kind: 'agent',
+        promptFile: 'p.md',
+        tools: { mode: 'full' },
+        requiresApproval: true,
+      },
+      { id: 'pr', kind: 'builtin', action: 'github.open_pr' },
+    ],
+  } as const
+
+  it('parks after the stage rather than before it', async () => {
+    const { engine, events } = harness({ template })
+    const { outcome, state } = await engine.run()
+
+    expect(outcome).toBe('parked')
+    // Passed, not skipped: the stage did its work. Only the decision is outstanding.
+    expect(state.records.map((r) => `${r.stage}:${r.status}`)).toEqual(['code:passed'])
+    // And the cursor is past it, so resuming continues at `pr` rather than redoing `code`.
+    expect(state.cursor).toBe(1)
+    expect(events.some((e) => e.type === 'approval.requested')).toBe(true)
+    // The reconciler needs to hear that the container meant to stop; otherwise it looks crashed.
+    expect(events.at(-1)).toMatchObject({ type: 'run.finished', data: { outcome: 'parked' } })
+  })
+
+  it('does not run the next stage while parked', async () => {
+    // The whole flow rests on this: an approval that has not happened must not let a PR open.
+    const { engine, events } = harness({ template })
+    await engine.run()
+    expect(events.some((e) => e.type === 'pr.opened')).toBe(false)
+  })
+
+  it('continues from the next stage once the decision is recorded', async () => {
+    /**
+     * Resume is a *new container* loading the state the old one wrote. Simulated the same way:
+     * a second engine over the same store, with the decision recorded and the status returned to
+     * running — which is exactly what the control plane does when someone approves.
+     */
+    const store = new MemoryStateStore()
+    const first = harness({ template, store })
+    await first.engine.run()
+
+    const parked = await store.load()
+    expect(parked?.status).toBe('parked')
+    await store.save({
+      ...parked!,
+      status: 'running',
+      approvals: { code: 'approved' },
+    })
+
+    const second = harness({ template, store })
+    const { outcome, events } = { ...(await second.engine.run()), events: second.events }
+
+    expect(outcome).toBe('succeeded')
+    // `pr` ran; `code` did not run again.
+    expect(events.some((e) => e.type === 'pr.opened')).toBe(true)
+    expect(events.filter((e) => e.type === 'stage.entered')).toHaveLength(1)
+  })
+
+  it('parks only once, even if the same stage is somehow revisited', async () => {
+    // A recorded approval means the question is answered. Asking again would strand a run that
+    // someone has already released.
+    const store = new MemoryStateStore()
+    await store.save({
+      runId: 'run_1',
+      templateName: 't',
+      cursor: 0,
+      gateFailures: {},
+      visits: {},
+      records: [],
+      status: 'running',
+      resumeTokens: {},
+      pendingSteers: [],
+      approvals: { code: 'approved' },
+      totalStageRuns: 0,
+    })
+    const { engine } = harness({ template, store })
+    expect((await engine.run()).outcome).toBe('succeeded')
+  })
+
+  it('leaves a stage without the flag alone', async () => {
+    const { engine } = harness({
+      template: {
+        name: 't',
+        stages: [{ id: 'code', kind: 'agent', promptFile: 'p.md', tools: { mode: 'full' } }],
+      },
+    })
+    expect((await engine.run()).outcome).toBe('succeeded')
+  })
+})

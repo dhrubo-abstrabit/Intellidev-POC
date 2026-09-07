@@ -67,6 +67,17 @@ export interface RunState {
   resumeTokens: Partial<Record<StageId, string>>
   /** Steers that arrived while a non-steerable harness was mid-stage. */
   pendingSteers: string[]
+  /**
+   * Approval decisions already made, by stage.
+   *
+   * Without this a resumed run re-reaches the same stage, asks for approval again, and parks —
+   * for ever. The decision has to live in the state the next container loads, because the
+   * container that asked for it is gone by the time anyone answers.
+   *
+   * `rejected` is recorded rather than deleted so a run cannot be resumed into pretending the
+   * question was never asked.
+   */
+  approvals?: Partial<Record<StageId, 'approved' | 'rejected'>>
   totalStageRuns: number
   failureReason?: string
 }
