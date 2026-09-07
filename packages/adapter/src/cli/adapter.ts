@@ -221,7 +221,24 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     for (const question of result.questions) io.stdout(`  - ${question}\n`)
   }
 
-  return result.outcome === 'succeeded' ? 0 : 1
+  return exitCodeFor(result.outcome)
+}
+
+/**
+ * What the container's exit code says about a run's outcome.
+ *
+ * Extracted so it can be asserted directly: it was one expression inside a function that first
+ * fetches a spec, mounts a bundle and starts a harness, so the one line that decides how every
+ * run is *reported* had no test at all.
+ *
+ * A parked run exits 0, because parking is what it was asked to do. The container is *meant* to
+ * stop after a stage that needs approval — that is how the wait costs nothing. Exiting 1 made
+ * ECS report `EssentialContainerExited` with a non-zero code, the reconciler wrote "adapter
+ * exited 1" over the run, and a pipeline that had done exactly what it was configured to do was
+ * displayed as a failure. Every stage had passed.
+ */
+export function exitCodeFor(outcome: string): 0 | 1 {
+  return outcome === 'succeeded' || outcome === 'parked' ? 0 : 1
 }
 
 interface Args {

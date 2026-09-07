@@ -884,6 +884,22 @@ export async function settle(
     // typically the reconciler's "task is gone", which says nothing useful.
     return false
   }
+  /**
+   * A parked run is already decided, even though `parked` is not terminal.
+   *
+   * FOUND ON A RUN THAT WORKED. Parking stops the container on purpose — that is how waiting
+   * for an approval costs nothing — so the reconciler sees `EssentialContainerExited` and
+   * settles a run that had passed every stage. It wrote "adapter exited 1" over `parked`, and
+   * a pipeline doing exactly what it was configured to do was displayed as a failure.
+   *
+   * Making the adapter exit 0 was not enough on its own, and would have been worse: the
+   * reconciler would then have read a clean exit as `succeeded`, marked the task `in_review`,
+   * and lost the approval nobody had given yet.
+   *
+   * So a stopped container cannot decide a parked run at all. The only things that may are the
+   * decision endpoint and the resume that follows it.
+   */
+  if (existing?.status === 'parked') return false
   const succeeded = outcome === 'succeeded'
   await store.updateRun(runId, {
     status: succeeded ? 'succeeded' : outcome === 'parked' ? 'parked' : 'failed',

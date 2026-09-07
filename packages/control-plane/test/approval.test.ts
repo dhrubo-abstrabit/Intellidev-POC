@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApprovalRefused, decideRun } from '../src/dispatch.js'
+import { ApprovalRefused, decideRun, settle } from '../src/dispatch.js'
 import { InMemoryStore } from '../src/store/memory.js'
 import { allowTestRepo, TEST_SCOPE, TEST_REPO_URL } from './fixtures.js'
 import type { Store } from '../src/store/types.js'
@@ -203,5 +203,99 @@ describe('stages pinned to one task', () => {
 
     // Back to following: absent means the same thing it meant before anyone edited.
     expect((await store.getTask(task.id))?.stages).toBeUndefined()
+  })
+})
+
+describe('a stopped container cannot decide a parked run', () => {
+  /**
+   * FOUND ON A RUN THAT WORKED. A pipeline gated on `code` ran design, branch and code, changed
+   * a file, and parked — and the UI showed "Essential container in task exited · adapter exited
+   * 1". Every stage had passed.
+   *
+   * Parking stops the container on purpose: that is how waiting for a person costs nothing. So
+   * ECS reports `EssentialContainerExited`, the reconciler treats a stopped task as a finished
+   * run, and `parked` is not terminal — so it was overwritten.
+   *
+   * Both directions are asserted. Making the adapter exit 0 fixed the message and made the
+   * outcome worse: a clean exit reads as `succeeded`, which would mark the task `in_review` and
+   * silently grant the approval nobody had given.
+   */
+  it('does not let a failed container exit overwrite parked', async () => {
+    const store = new InMemoryStore()
+    const { runId, task } = await parkedRun(store)
+
+    const settled = await settle(store, runId, task.id, 'failed', [], undefined, 'adapter exited 1')
+
+    expect(settled).toBe(false)
+    const run = await store.getRun(runId)
+    expect(run?.status).toBe('parked')
+    // And no reason is written either: a parked run carrying a failure message is what made a
+    // working pipeline look broken.
+    expect(run?.failureReason).toBeUndefined()
+  })
+
+  it('does not let a clean container exit mark parked as succeeded', async () => {
+    const store = new InMemoryStore()
+    const { runId, task } = await parkedRun(store)
+
+    const settled = await settle(store, runId, task.id, 'succeeded', [])
+
+    expect(settled).toBe(false)
+    expect((await store.getRun(runId))?.status).toBe('parked')
+    // The task must not advance. `in_review` here would mean the approval had been granted by a
+    // container stopping, which is the opposite of what a gate is for.
+    expect((await store.getTask(task.id))?.status).toBe('running')
+  })
+
+  it('still lets the engine park a running run', async () => {
+    // The guard must not block the transition that creates the parked state in the first place.
+    const store = new InMemoryStore()
+    await allowTestRepo(store)
+    const task = await store.createTask(
+      {
+        title: 't',
+        description: 'd',
+        acceptanceCriteria: ['a'],
+        harness: 'claude-code',
+        repoUrl: TEST_REPO_URL,
+        baseBranch: 'main',
+        mcpServerIds: [],
+      },
+      TEST_SCOPE,
+    )
+    await store.setTaskStatus(task.id, 'dispatched')
+    await store.setTaskStatus(task.id, 'running')
+    const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+
+    expect(await settle(store, run.id, task.id, 'parked', [])).toBe(true)
+    expect((await store.getRun(run.id))?.status).toBe('parked')
+  })
+
+  it('still settles a run that is merely running when its container dies', async () => {
+    // The reconciler's actual job. Declining for `parked` must not decline for everything.
+    const store = new InMemoryStore()
+    await allowTestRepo(store)
+    const task = await store.createTask(
+      {
+        title: 't',
+        description: 'd',
+        acceptanceCriteria: ['a'],
+        harness: 'claude-code',
+        repoUrl: TEST_REPO_URL,
+        baseBranch: 'main',
+        mcpServerIds: [],
+      },
+      TEST_SCOPE,
+    )
+    await store.setTaskStatus(task.id, 'dispatched')
+    await store.setTaskStatus(task.id, 'running')
+    const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+
+    expect(await settle(store, run.id, task.id, 'failed', [], undefined, 'task vanished')).toBe(
+      true,
+    )
+    const settledRun = await store.getRun(run.id)
+    expect(settledRun?.status).toBe('failed')
+    expect(settledRun?.failureReason).toBe('task vanished')
   })
 })

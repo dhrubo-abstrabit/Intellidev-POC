@@ -1572,11 +1572,29 @@
         await loadTasks()
         const { task, runs } = await (await fetch(`/api/tasks/${id}`)).json()
         renderDetail(task, runs)
-        if (runs[0]) follow(runs[0].id)
+        const current = latestRun(runs)
+        if (current) follow(current.id)
+      }
+
+      /**
+       * The run a task is on now, which is the newest one.
+       *
+       * FOUND AFTER A RE-DISPATCH. `runs` comes back oldest-first, and this took `runs[0]` — so
+       * dispatching again left the pane streaming the *first* run: the status chip said RUNNING
+       * while the banner underneath showed a failure from an earlier attempt and the live log
+       * was pinned to a container that had stopped days ago.
+       *
+       * Sorted here rather than by changing the query, because "oldest first" is right for a
+       * history and this is the only place that wants the opposite.
+       */
+      function latestRun(runs) {
+        return [...(runs ?? [])]
+          .sort((a, b) => String(a.startedAt ?? '').localeCompare(String(b.startedAt ?? '')))
+          .at(-1)
       }
 
       function renderDetail(task, runs) {
-        const run = runs[0]
+        const run = latestRun(runs)
         $('detail').innerHTML = `
           <div class="row" style="justify-content: space-between; align-items: flex-start">
             <div>
