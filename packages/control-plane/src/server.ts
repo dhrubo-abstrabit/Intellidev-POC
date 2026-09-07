@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import Fastify, { type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import { HarnessId, StageTemplate, WELL_KNOWN_STAGE_IDS } from '@intellidev/shared'
 import { z } from 'zod'
 import {
@@ -29,7 +29,11 @@ import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
 import type { ProjectAccessChecker } from './auth/access.js'
 import { McpOAuth } from './mcp/oauth.js'
-import { ensureSeededStageTemplates, resolveStages } from './stages/resolve.js'
+import {
+  ensureSeededStageTemplates,
+  resolveStages,
+  upgradeLegacyPromptFiles,
+} from './stages/resolve.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpStore } from './mcp/store.js'
 import { toPublic, type McpAuthKind } from './mcp/types.js'
@@ -174,6 +178,35 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   const store = opts.store ?? new InMemoryStore()
   const tokens = opts.tokens ?? new RunTokenRegistry()
   const app = Fastify({ logger: false })
+
+  /**
+   * What an unhandled error tells the browser.
+   *
+   * Fastify's default is `error.message`, and a driver's message is the whole failing statement
+   * with every parameter interpolated. Saving a template returned a 500 whose body was the
+   * INSERT and all five stages — which is both unreadable as an error and a leak: the same path
+   * carries prompts, and a different table's parameters would carry worse.
+   *
+   * A unique violation is the one that reaches people, so it gets a real answer rather than
+   * being flattened into "something went wrong". The rest are logged whole and reported as a
+   * request id, because the detail belongs in the log and not in a response.
+   */
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    // Fastify's own errors (validation, 404, payload limits) already carry a safe message and a
+    // status; passing them through the generic path would turn a helpful 400 into a blank 500.
+    if (typeof error.statusCode === 'number' && error.statusCode < 500) {
+      return reply.code(error.statusCode).send({ error: error.message })
+    }
+
+    if (pgErrorCode(error) === UNIQUE_VIOLATION) {
+      return reply.code(409).send({
+        error: 'that name is already taken here — open it and edit it, or choose another',
+      })
+    }
+
+    console.error(`[api] ${request.method} ${request.url} failed`, error)
+    return reply.code(500).send({ error: 'something went wrong on our side' })
+  })
   /**
    * The space seats belong to.
    *
@@ -509,6 +542,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       ),
     }).catch(() => undefined)
 
+    /**
+     * Templates from before prompts lived in the database are brought forward here.
+     *
+     * Same reason as the seeding above: the screen has to open on something a person can edit,
+     * and a stage whose prompt is a path into the image is not that. Swallowed for the same
+     * reason too — a failure to upgrade an old row must not stop the list from loading.
+     */
+    await upgradeLegacyPromptFiles({ store, scope: opts.scope }).catch(() => undefined)
+
     const templates = await store.listStageTemplates(opts.scope)
     const resolved = await resolveStages({
       store,
@@ -518,7 +560,11 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return {
       templates,
       /** What a new task picks up today, and which level decided it. */
-      effective: { source: resolved.source, name: resolved.template.name, stages: resolved.template.stages },
+      effective: {
+        source: resolved.source,
+        name: resolved.template.name,
+        stages: resolved.template.stages,
+      },
       /** The stage ids the UI offers first. Not a constraint — any slug is valid. */
       wellKnown: WELL_KNOWN_STAGE_IDS,
     }
@@ -1327,3 +1373,22 @@ function escapeHtml(text: string): string {
 }
 
 export type { Store }
+
+/** Postgres' code for "a unique index rejected this row". */
+const UNIQUE_VIOLATION = '23505'
+
+/**
+ * The driver's error code, wherever in the chain it ended up.
+ *
+ * Drizzle wraps what `pg` throws, and how deeply depends on whether the statement ran inside a
+ * transaction — so reading `error.code` off the top finds nothing for exactly the writes that
+ * need it most. Walking the chain is what makes this hold for both.
+ */
+function pgErrorCode(error: unknown): string | undefined {
+  for (let cur: unknown = error, depth = 0; cur && depth < 5; depth++) {
+    const code = (cur as { code?: unknown }).code
+    if (typeof code === 'string') return code
+    cur = (cur as { cause?: unknown }).cause
+  }
+  return undefined
+}
