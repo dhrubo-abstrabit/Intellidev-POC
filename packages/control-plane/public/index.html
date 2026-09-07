@@ -502,6 +502,24 @@
         </div>
 
         <h2 style="margin-top: 22px">
+          Stages
+          <button id="addStage" class="secondary" style="float: right; padding: 4px 10px">
+            Add stage
+          </button>
+        </h2>
+        <!--
+          What a new task will run, and why. The source matters as much as the list: "the space
+          decided this" and "this project overrode it" look identical from the stages alone.
+        -->
+        <p class="hint" id="stagesSource"></p>
+        <div id="stageList"></div>
+        <div class="row" style="margin-top: 10px">
+          <input id="stageTemplateName" placeholder="template name" style="flex: 1" />
+          <button type="button" id="saveStages">Save as project default</button>
+        </div>
+        <p class="hint" id="stagesStatus"></p>
+
+        <h2 style="margin-top: 22px">
           MCP servers
           <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">
             Add
@@ -1303,6 +1321,226 @@
         }
       }
 
+      // --- stages --------------------------------------------------------------
+      /**
+       * The stage editor.
+       *
+       * Held as an array in `state.stages` and written whole, which mirrors how a template is
+       * stored: the order *is* the array, so a move is a splice rather than a renumbering that
+       * could disagree with itself.
+       */
+      state.stages = []
+      state.stageSource = null
+
+      async function loadStages() {
+        const res = await fetch('/api/stage-templates')
+        if (!res.ok) return
+        const body = await res.json()
+        state.stages = body.effective.stages.map((s) => ({ ...s }))
+        state.stageSource = body.effective.source
+        state.wellKnownStages = body.wellKnown ?? []
+        $('stageTemplateName').value =
+          body.effective.source === 'built-in' ? '' : body.effective.name
+        renderStages()
+      }
+
+      /** Where the stages a new task runs came from, in words rather than a field name. */
+      const SOURCE_WORDS = {
+        'built-in': 'the built-in default — nothing has been configured yet',
+        'space-default': 'this client space, shared by every project in it',
+        'project-default': 'this project',
+        'task-template': 'a template chosen per task',
+        'task-inline': 'stages pinned to one task',
+      }
+
+      function renderStages() {
+        $('stagesSource').textContent = state.stageSource
+          ? `A new task runs ${SOURCE_WORDS[state.stageSource] ?? state.stageSource}.`
+          : ''
+
+        if (state.stages.length === 0) {
+          $('stageList').innerHTML = '<p class="empty">No stages. A run would do nothing.</p>'
+          return
+        }
+
+        $('stageList').innerHTML = state.stages
+          .map(
+            (stage, i) => `
+            <div class="srv" data-stage-row="${i}">
+              <div class="row" style="gap: 6px; align-items: center">
+                <span class="hint" style="width: 1.5em">${i + 1}</span>
+                <input data-stage-id="${i}" value="${escapeAttr(stage.id)}" style="flex: 1" />
+                <select data-stage-kind="${i}">
+                  <option value="agent" ${stage.kind === 'agent' ? 'selected' : ''}>agent</option>
+                  <option value="builtin" ${stage.kind === 'builtin' ? 'selected' : ''}>builtin</option>
+                </select>
+                <button type="button" class="secondary" data-stage-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" class="secondary" data-stage-down="${i}" ${i === state.stages.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" class="secondary" data-stage-remove="${i}">×</button>
+              </div>
+              ${
+                stage.kind === 'builtin'
+                  ? `<div class="row" style="margin-top: 6px">
+                       <select data-stage-action="${i}" style="flex: 1">
+                         ${['git.create_branch', 'git.commit', 'github.open_pr']
+                           .map(
+                             (a) =>
+                               `<option value="${a}" ${stage.action === a ? 'selected' : ''}>${a}</option>`,
+                           )
+                           .join('')}
+                       </select>
+                     </div>`
+                  : `<div class="row" style="margin-top: 6px; gap: 6px">
+                       <select data-stage-tools="${i}">
+                         ${['none', 'read_only', 'full']
+                           .map(
+                             (m) =>
+                               `<option value="${m}" ${(stage.tools?.mode ?? 'none') === m ? 'selected' : ''}>tools: ${m}</option>`,
+                           )
+                           .join('')}
+                       </select>
+                     </div>
+                     <textarea data-stage-prompt="${i}" rows="2" style="margin-top: 6px; width: 100%"
+                       placeholder="what this stage should do">${escapeHtmlText(stage.prompt ?? '')}</textarea>`
+              }
+              <label class="hint" style="display: block; margin-top: 6px">
+                <input type="checkbox" data-stage-approval="${i}" ${stage.requiresApproval ? 'checked' : ''} />
+                Needs approval — the run stops here until someone approves, costing nothing while it waits
+              </label>
+            </div>`,
+          )
+          .join('')
+
+        bindStageInputs()
+      }
+
+      /**
+       * Every control writes straight into `state.stages`.
+       *
+       * Re-rendering on each keystroke would move the caret and lose focus, so only the controls
+       * that change a stage's *shape* — its kind, or its position — redraw.
+       */
+      function bindStageInputs() {
+        const at = (el, attr) => state.stages[Number(el.dataset[attr])]
+
+        $('stageList')
+          .querySelectorAll('[data-stage-id]')
+          .forEach((el) => (el.oninput = () => (at(el, 'stageId').id = el.value.trim())))
+        $('stageList')
+          .querySelectorAll('[data-stage-prompt]')
+          .forEach((el) => (el.oninput = () => (at(el, 'stagePrompt').prompt = el.value)))
+        $('stageList')
+          .querySelectorAll('[data-stage-tools]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                at(el, 'stageTools').tools = { mode: el.value, allow: [], deny: [] }
+              }),
+          )
+        $('stageList')
+          .querySelectorAll('[data-stage-action]')
+          .forEach((el) => (el.onchange = () => (at(el, 'stageAction').action = el.value)))
+        $('stageList')
+          .querySelectorAll('[data-stage-approval]')
+          .forEach(
+            (el) => (el.onchange = () => (at(el, 'stageApproval').requiresApproval = el.checked)),
+          )
+
+        $('stageList')
+          .querySelectorAll('[data-stage-kind]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                const stage = at(el, 'stageKind')
+                stage.kind = el.value
+                // The two kinds carry different fields, and leaving the other behind produces a
+                // template the schema rejects on save with a message about a field nobody set.
+                if (stage.kind === 'builtin') {
+                  delete stage.prompt
+                  delete stage.tools
+                  stage.action = stage.action ?? 'git.commit'
+                } else {
+                  delete stage.action
+                  stage.tools = stage.tools ?? { mode: 'none', allow: [], deny: [] }
+                }
+                renderStages()
+              }),
+          )
+
+        const move = (from, to) => {
+          const [moved] = state.stages.splice(from, 1)
+          state.stages.splice(to, 0, moved)
+          renderStages()
+        }
+        $('stageList')
+          .querySelectorAll('[data-stage-up]')
+          .forEach(
+            (el) =>
+              (el.onclick = () => move(Number(el.dataset.stageUp), Number(el.dataset.stageUp) - 1)),
+          )
+        $('stageList')
+          .querySelectorAll('[data-stage-down]')
+          .forEach(
+            (el) =>
+              (el.onclick = () =>
+                move(Number(el.dataset.stageDown), Number(el.dataset.stageDown) + 1)),
+          )
+        $('stageList')
+          .querySelectorAll('[data-stage-remove]')
+          .forEach(
+            (el) =>
+              (el.onclick = () => {
+                state.stages.splice(Number(el.dataset.stageRemove), 1)
+                renderStages()
+              }),
+          )
+      }
+
+      $('addStage').onclick = () => {
+        state.stages.push({
+          id: `stage-${state.stages.length + 1}`,
+          kind: 'agent',
+          prompt: '',
+          tools: { mode: 'read_only', allow: [], deny: [] },
+          requiresApproval: false,
+        })
+        renderStages()
+      }
+
+      $('saveStages').onclick = async () => {
+        const name = $('stageTemplateName').value.trim()
+        if (!name) {
+          $('stagesStatus').textContent = 'give the template a name first'
+          return
+        }
+        $('saveStages').disabled = true
+        const res = await fetch('/api/stage-templates', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            stages: state.stages,
+            // Saving from this screen sets the project's default, which is what the button says.
+            // Space-level templates are a deliberate act, not a side effect of editing here.
+            scope: 'project',
+            isDefault: true,
+          }),
+        })
+        $('saveStages').disabled = false
+        const body = await res.json().catch(() => ({}))
+        $('stagesStatus').textContent = res.ok
+          ? 'saved — new tasks in this project will run these stages'
+          : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
+        if (res.ok) await loadStages()
+      }
+
+      function escapeAttr(value) {
+        return String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;')
+      }
+      function escapeHtmlText(value) {
+        return String(value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
+
       // --- live stream ---------------------------------------------------------
       /**
        * Server-sent events read over `fetch`, not through `EventSource`.
@@ -1382,8 +1620,56 @@
         state.stream = null
       }
 
+      /**
+       * A run that stopped for approval.
+       *
+       * Rendered from the event rather than by polling: `approval.requested` arrives on the same
+       * stream everything else does, and the container has already exited by the time it lands —
+       * which is the point. Nothing is running while this sits on screen.
+       */
+      function renderApproval(event) {
+        const box = document.createElement('div')
+        box.className = 'card'
+        box.style.marginTop = '10px'
+        box.innerHTML = `
+          <div class="name">Waiting for approval</div>
+          <p class="hint">${escapeHtmlText(event.data.detail ?? event.data.action ?? '')}</p>
+          <div class="row" style="margin-top: 8px">
+            <button type="button" id="approveRun">Approve and continue</button>
+            <button type="button" id="rejectRun" class="secondary">Reject</button>
+          </div>
+          <p class="hint" id="approvalStatus"></p>`
+        $('detail').append(box)
+
+        const decide = async (decision) => {
+          $('approveRun').disabled = true
+          $('rejectRun').disabled = true
+          const res = await fetch(`/api/runs/${state.run}/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ decision }),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            $('approvalStatus').textContent = body.error ?? 'could not record that'
+            $('approveRun').disabled = false
+            $('rejectRun').disabled = false
+            return
+          }
+          $('approvalStatus').textContent =
+            decision === 'approved' ? 'approved — resuming…' : 'rejected'
+          // Approving starts a new container for the same run, so the stream is re-followed
+          // rather than the page reloaded: the events continue where they left off.
+          if (decision === 'approved') follow(state.run)
+          await loadTasks()
+        }
+        $('approveRun').onclick = () => void decide('approved')
+        $('rejectRun').onclick = () => void decide('rejected')
+      }
+
       const stageEls = new Map()
       function render(event) {
+        if (event.type === 'approval.requested') renderApproval(event)
         if (event.type === 'stage.entered') markStage(event.stage, 'active')
         if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
         const line = describe(event)
@@ -1513,6 +1799,7 @@
 
       await loadSeats()
       await loadServers()
+      await loadStages()
       await loadTasks()
     </script>
   </body>

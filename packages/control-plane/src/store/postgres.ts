@@ -20,6 +20,7 @@ import {
   type Store,
   type TaskRow,
   type StageTemplateRow,
+  type StageTemplateInput,
 } from './types.js'
 import {
   productTasks,
@@ -401,7 +402,7 @@ export class PostgresStore implements Store {
    * "make this the default" is a single call that cannot half-happen.
    */
   async saveStageTemplate(
-    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+    input: StageTemplateInput,
   ): Promise<StageTemplateRow> {
     return await this.db.transaction(async (tx) => {
       if (input.isDefault) {

@@ -63,3 +63,40 @@ describe('the sign-in popup', () => {
     expect(page).toContain('rel="noopener noreferrer"')
   })
 })
+
+describe('the stage editor', () => {
+  it('never renders a stage id or prompt without escaping it', () => {
+    /**
+     * Stage ids and prompts are written by people and rendered back into HTML. The id is
+     * constrained to a slug by the schema, but the prompt is free text and the editor shows it
+     * before anything has validated it — so the escaping has to be in the page, not assumed
+     * from the server.
+     */
+    expect(page).toContain('function escapeAttr')
+    expect(page).toContain('function escapeHtmlText')
+    expect(page).toContain('escapeAttr(stage.id)')
+    expect(page).toContain('escapeHtmlText(stage.prompt')
+  })
+
+  it('offers the approval flag on every stage', () => {
+    // The whole feature, from the person's side: a checkbox that stops the run and costs nothing
+    // while it waits.
+    expect(page).toContain('data-stage-approval')
+    expect(page).toContain('requiresApproval')
+  })
+
+  it('says where the current stages came from', () => {
+    // "The space decided this" and "this project overrode it" look identical from the stage list
+    // alone, and that is exactly the question someone editing them has.
+    expect(page).toContain('space-default')
+    expect(page).toContain('project-default')
+    expect(page).toContain('built-in')
+  })
+
+  it('decides a parked run through the api rather than by reloading', () => {
+    // Approving starts a new container for the same run, so the stream is re-followed and the
+    // events continue where they stopped.
+    expect(page).toContain('/decision')
+    expect(page).toContain('follow(state.run)')
+  })
+})

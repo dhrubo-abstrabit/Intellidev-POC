@@ -16,6 +16,7 @@ import {
   type RunRow,
   type Store,
   type TaskRow,
+  type StageTemplateInput,
 } from './types.js'
 
 interface Subscription {
@@ -113,7 +114,7 @@ export class InMemoryStore implements Store {
   }
 
   async saveStageTemplate(
-    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+    input: StageTemplateInput,
   ): Promise<StageTemplateRow> {
     const id = input.id ?? randomUUID()
     const now = new Date().toISOString()

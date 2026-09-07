@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
-import { HarnessId } from '@intellidev/shared'
+import { HarnessId, StageTemplate, WELL_KNOWN_STAGE_IDS } from '@intellidev/shared'
 import { z } from 'zod'
 import {
   ApprovalRefused,
+  builtInStageTemplate,
   decideRun,
   dispatchTask,
   DispatchRefused,
@@ -28,6 +29,7 @@ import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
 import type { ProjectAccessChecker } from './auth/access.js'
 import { McpOAuth } from './mcp/oauth.js'
+import { resolveStages } from './stages/resolve.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpStore } from './mcp/store.js'
 import { toPublic, type McpAuthKind } from './mcp/types.js'
@@ -469,6 +471,90 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // can cover a whole organisation, so being able to reach a repository says nothing about
   // whether this project should. That gap is what this list closes, and why `task_specs.repo_id`
   // is a foreign key into it rather than free text.
+
+  // --- stage templates -----------------------------------------------------
+
+  /**
+   * The templates this project can run, both scopes at once.
+   *
+   * `resolved` comes back alongside because the list alone does not answer the question people
+   * actually have — "what will a new task run?" — and working it out from four nullable fields
+   * in a UI would reimplement resolution in a second place, where it would drift.
+   */
+  app.get('/api/stage-templates', async () => {
+    const templates = await store.listStageTemplates(opts.scope)
+    const resolved = await resolveStages({
+      store,
+      scope: opts.scope,
+      builtIn: builtInStageTemplate('https://github.com/placeholder/placeholder.git'),
+    })
+    return {
+      templates,
+      /** What a new task picks up today, and which level decided it. */
+      effective: { source: resolved.source, name: resolved.template.name, stages: resolved.template.stages },
+      /** The stage ids the UI offers first. Not a constraint — any slug is valid. */
+      wellKnown: WELL_KNOWN_STAGE_IDS,
+    }
+  })
+
+  app.post('/api/stage-templates', async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      id?: string
+      name?: string
+      description?: string
+      stages?: unknown
+      isDefault?: boolean
+      scope?: 'project' | 'space'
+    }
+    if (!body.name?.trim()) return reply.code(400).send({ error: 'a template needs a name' })
+
+    /**
+     * Parsed before it is stored, not when it is run.
+     *
+     * A template saved broken would be accepted here and fail at dispatch — or worse, at stage
+     * one inside a container. The same schema the engine uses is the one that guards the write.
+     */
+    let stages
+    try {
+      stages = StageTemplate.parse({ name: body.name, stages: body.stages }).stages
+    } catch (error) {
+      return reply.code(400).send({
+        error: 'those stages would not run',
+        detail: error instanceof Error ? error.message : String(error),
+      })
+    }
+
+    // Space scope is the deliberate choice, so a project cannot change what every other project
+    // in the space inherits by accident.
+    const projectId = body.scope === 'space' ? undefined : opts.scope.projectId
+
+    const saved = await store.saveStageTemplate({
+      ...(body.id ? { id: body.id } : {}),
+      clientSpaceId: opts.scope.clientSpaceId,
+      ...(projectId ? { projectId } : {}),
+      name: body.name.trim(),
+      ...(body.description ? { description: body.description } : {}),
+      stages,
+      isDefault: body.isDefault ?? false,
+    })
+    return reply.code(201).send({ template: saved })
+  })
+
+  app.delete<{ Params: { id: string } }>('/api/stage-templates/:id', async (request, reply) => {
+    const existing = await store.getStageTemplate(request.params.id)
+    /**
+     * Checked before deleting, because dispatch runs as the service role and RLS does not
+     * constrain it. Without this, an id from another space would be deleted by anyone who could
+     * guess it.
+     */
+    if (!existing || existing.clientSpaceId !== opts.scope.clientSpaceId) {
+      return reply.code(404).send({ error: 'no such template' })
+    }
+    if (existing.projectId && existing.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such template' })
+    }
+    return { deleted: await store.deleteStageTemplate(request.params.id) }
+  })
 
   app.get('/api/repos', async () => ({ repos: await store.listProjectRepos(opts.scope) }))
 

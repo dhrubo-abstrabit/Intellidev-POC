@@ -68,6 +68,21 @@ export interface StageTemplateRow {
   updatedAt: string
 }
 
+/**
+ * A template on the way in.
+ *
+ * `id` optional because the same call creates and replaces: a UI editing a template has one, a
+ * UI creating one does not, and two methods for that would differ only in whether the caller
+ * remembered which case they were in.
+ *
+ * Written as its own type rather than `Omit<…> & { id?: string }`, which does not do what it
+ * looks like — the Omit still requires `id`, and the intersection cannot take it back.
+ */
+export type StageTemplateInput = Omit<
+  StageTemplateRow,
+  'id' | 'createdAt' | 'updatedAt'
+> & { id?: string }
+
 export interface ProjectRepoRow {
   id: string
   projectId: string
@@ -194,7 +209,7 @@ export interface Store {
    * caller that forgot would get a constraint error instead of the obvious behaviour.
    */
   saveStageTemplate(
-    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+    input: StageTemplateInput,
   ): Promise<StageTemplateRow>
   deleteStageTemplate(id: string): Promise<boolean>
   /**
