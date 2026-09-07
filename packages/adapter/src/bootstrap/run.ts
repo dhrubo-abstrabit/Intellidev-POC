@@ -645,10 +645,9 @@ async function loadPrompts(
      */
     const body = stageDef.prompt
       ? stageDef.prompt
-      : await readFile(
-          join(bundleRoot, stageDef.promptFile!.replace(/^\.\//, '')),
-          'utf8',
-        ).catch(() => `You are working on the "${stageDef.id}" stage of this task.`)
+      : await readFile(join(bundleRoot, stageDef.promptFile!.replace(/^\.\//, '')), 'utf8').catch(
+          () => `You are working on the "${stageDef.id}" stage of this task.`,
+        )
 
     prompts[stageDef.id] = [
       body.trim(),

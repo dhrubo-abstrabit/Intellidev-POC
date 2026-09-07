@@ -100,6 +100,21 @@ export interface TaskRow {
    * a reference and never a credential.
    */
   mcpServerIds: string[]
+  /**
+   * A saved template this task follows, if it chose one.
+   *
+   * Following means later edits to that template apply. A task that wanted the stages frozen
+   * carries `stages` instead.
+   */
+  stageTemplateId?: string
+  /**
+   * Stages pinned to this task, overriding every template.
+   *
+   * Typed loosely because it is validated at dispatch, not here: an array read from JSONB has
+   * whatever shape the writer gave it, and pretending otherwise in the row type would move the
+   * lie rather than remove it.
+   */
+  stages?: unknown[]
 }
 
 export interface RunRow {

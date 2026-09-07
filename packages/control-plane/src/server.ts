@@ -852,6 +852,56 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     brokered((runId, body) => broker.seat(runId, String(body['harness'] ?? ''))),
   )
   /**
+   * The stage engine's own state, read and written by the run that owns it.
+   *
+   * This is what lets a run park for approval and cost nothing while it waits: the container
+   * writes its cursor here and exits, and the container that resumes reads it back. Keeping it
+   * inside the container instead would mean either losing it on exit or holding the container
+   * open for however long a decision takes.
+   *
+   * Authenticated as every other `/internal` route is — by the run's own bearer, resolved to a
+   * run id. The id in the path is checked against it rather than trusted, so a run cannot read
+   * or overwrite another run's progress.
+   */
+  app.get<{ Params: { id: string } }>('/internal/runs/:id/state', async (request, reply) => {
+    let runId: string
+    try {
+      runId = await broker.authenticate(String(request.headers['authorization'] ?? ''))
+    } catch (error) {
+      const status = error instanceof CredentialRefused ? error.status : 500
+      return reply.code(status).send({ error: 'not this run' })
+    }
+    if (runId !== request.params.id) return reply.code(403).send({ error: 'not this run' })
+
+    const run = await store.getRun(runId)
+    // 404 rather than a null body: a run's first load is always a miss, and the store treats
+    // that as "start clean" — an empty 200 would be indistinguishable from a corrupted save.
+    if (!run?.engineState) return reply.code(404).send({ error: 'no state yet' })
+    return { state: run.engineState }
+  })
+
+  app.put<{ Params: { id: string } }>('/internal/runs/:id/state', async (request, reply) => {
+    let runId: string
+    try {
+      runId = await broker.authenticate(String(request.headers['authorization'] ?? ''))
+    } catch (error) {
+      const status = error instanceof CredentialRefused ? error.status : 500
+      return reply.code(status).send({ error: 'not this run' })
+    }
+    if (runId !== request.params.id) return reply.code(403).send({ error: 'not this run' })
+
+    const state = (request.body as { state?: unknown } | undefined)?.state
+    // An object, not merely truthy: storing a string or an array here would be accepted by JSONB
+    // and fail much later, when a resumed run tried to read a cursor off it.
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+      return reply.code(400).send({ error: 'state must be an object' })
+    }
+
+    await store.updateRun(runId, { engineState: state as Record<string, unknown> })
+    return reply.code(204).send()
+  })
+
+  /**
    * A credential a run's harness rotated for itself, handed back.
    *
    * Refreshing centrally removes the *reason* a harness would rotate, not its ability — codex

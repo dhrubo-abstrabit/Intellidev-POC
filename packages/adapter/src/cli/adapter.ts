@@ -12,6 +12,8 @@ import {
   UrlSpecProvider,
 } from '../bootstrap/providers.js'
 import { ControlPlaneProvider } from '../credentials/control-plane.js'
+import { ControlPlaneStateStore } from '../stages/control-plane-state.js'
+import { FileStateStore } from '../stages/state.js'
 import { materialiseBundle } from '../bootstrap/bundle.js'
 import { WebSocketEventSink } from '../bootstrap/ws-sink.js'
 import type { EventReplaySource } from '../bootstrap/run.js'
@@ -144,9 +146,33 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
     `credentials → ${runToken && spec.controlPlaneUrl ? 'control-plane broker' : 'local environment'}\n`,
   )
 
+  /**
+   * Where the stage engine keeps its progress.
+   *
+   * Through the control plane when there is one, because a run that parks for approval is
+   * destroyed while it waits — a file inside the container goes with it, and the container that
+   * resumes would start from the top and repeat work somebody had already approved.
+   *
+   * The file store stays as the mirror rather than being replaced: nothing reads it in the
+   * normal path, but a run whose control plane went unreachable still leaves its state on disk
+   * for a person to look at.
+   */
+  const stateStore =
+    runToken && spec.controlPlaneUrl
+      ? new ControlPlaneStateStore({
+          baseUrl: spec.controlPlaneUrl,
+          runId: spec.runId,
+          runAuth: runToken,
+          mirror: new FileStateStore(join(runtimeDir, 'state.json')),
+          onDiagnostic: (message) => io.stderr(`${message}\n`),
+        })
+      : undefined
+  io.stderr(`run state → ${stateStore ? 'control plane' : 'local file'}\n`)
+
   const result = await runAdapter({
     spec,
     credentials,
+    ...(stateStore ? { store: stateStore } : {}),
     sink: multiSink(
       consoleSink({ ...(args.verbose ? { verbose: true } : {}) }),
       fileSink(eventLog),

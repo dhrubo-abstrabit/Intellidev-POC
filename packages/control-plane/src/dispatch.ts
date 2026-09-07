@@ -20,6 +20,7 @@ import { FargateRunner } from './runner/fargate.js'
 import { ArtifactStore } from './aws/artifacts.js'
 import type { RunTokenRegistry } from './runs/tokens.js'
 import { preflightRepo } from './runs/preflight.js'
+import { resolveStages } from './stages/resolve.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpStore } from './mcp/store.js'
@@ -131,6 +132,46 @@ export function runtimeDirPrefix(runId: string): string {
   return `idv-${runId.slice(0, 8)}-`
 }
 
+/**
+ * The stages a task runs when nothing has been configured.
+ *
+ * A function of the repository rather than a constant, which is why it is not simply exported
+ * from `shared`: a `file://` origin has no GitHub to open a pull request against, so the `pr`
+ * stage is present or absent depending on where the code lives. The shipped
+ * `DEFAULT_STAGE_TEMPLATE` assumes a pnpm project and gates accordingly, which a demo repository
+ * rarely satisfies.
+ *
+ * This is the last resort in the resolution order, so it is also what every space ran before
+ * templates existed — and it must keep behaving identically for one that configures nothing.
+ */
+export function builtInStageTemplate(repoUrl: string): StageTemplate {
+  return StageTemplate.parse({
+    name: 'built-in',
+    stages: [
+      {
+        id: 'design',
+        kind: 'agent',
+        promptFile: 'prompts/design.md',
+        tools: { mode: 'read_only' },
+      },
+      { id: 'branch', kind: 'builtin', action: 'git.create_branch' },
+      { id: 'code', kind: 'agent', promptFile: 'prompts/code.md', tools: { mode: 'full' } },
+      // The commit stage is what makes the run's work outlive the container, so it is not
+      // optional.
+      { id: 'commit', kind: 'builtin', action: 'git.commit' },
+      /*
+       * Pushes and opens a pull request — and pushing is the point. Without it a run commits
+       * into a worktree whose mirror is the container's own ephemeral storage, so a "succeeded"
+       * run leaves nothing behind at all. That was true of every Fargate run until it was fixed:
+       * the commit sha was real and unreachable.
+       */
+      ...(hasRemoteOrigin(repoUrl)
+        ? [{ id: 'pr', kind: 'builtin', action: 'github.open_pr' }]
+        : []),
+    ],
+  })
+}
+
 /** A dispatch refused before anything was created. Becomes a 400, not a failed run. */
 export class DispatchRefused extends Error {}
 
@@ -178,7 +219,31 @@ export async function dispatchTask(args: {
   // directory and this is a credential.
   // Seats are space-scoped, and the task carries the space it belongs to.
   const seat = await accounts.material({ clientSpaceId: task.clientSpaceId }, task.harness)
-  const spec = buildRunSpec({ task, run: run.id, branch, config, servers })
+  /**
+   * Which stages this run executes, decided before anything is spent.
+   *
+   * Resolved here rather than in the container so a misconfigured template refuses the dispatch
+   * instead of costing a container to discover — and so the answer is recorded against the run
+   * while the reason is still known.
+   */
+  const stages = await resolveStages({
+    store,
+    scope: { projectId: task.projectId, clientSpaceId: task.clientSpaceId },
+    task: {
+      ...(task.stages ? { stages: task.stages } : {}),
+      stageTemplateId: task.stageTemplateId,
+    },
+    builtIn: builtInStageTemplate(task.repoUrl),
+  })
+
+  const spec = buildRunSpec({
+    task,
+    run: run.id,
+    branch,
+    config,
+    servers,
+    stageTemplate: stages.template,
+  })
 
   // Deliberately not awaited: dispatch returns 202 and the UI follows the event stream.
   // A dispatch that blocked until the run finished would make the request time out long
@@ -747,34 +812,17 @@ function buildRunSpec(args: {
   branch: string
   config: DispatchConfig
   servers: readonly ResolvedMcpServer[]
+  /**
+   * The stages this run will execute, already resolved.
+   *
+   * Passed in rather than chosen here: which stages run is a question about the task, the
+   * project and the space, and answering it needs the store. `buildRunSpec` stays a pure
+   * function of what it is given, which is what lets it be asserted without a database.
+   */
+  stageTemplate: StageTemplate
 }): RunSpec {
   const { task, run, branch, config, servers } = args
-
-  // A single-gate template for the local path: the default template's gates assume a pnpm
-  // project, and a demo repo rarely is one.
-  const template = StageTemplate.parse({
-    name: 'local',
-    stages: [
-      {
-        id: 'design',
-        kind: 'agent',
-        promptFile: 'prompts/design.md',
-        tools: { mode: 'read_only' },
-      },
-      { id: 'branch', kind: 'builtin', action: 'git.create_branch' },
-      { id: 'code', kind: 'agent', promptFile: 'prompts/code.md', tools: { mode: 'full' } },
-      // No `pr` stage: a `file://` origin has no GitHub to open one against. The commit
-      // stage is what makes the run's work outlive the container, so it is not optional.
-      { id: 'commit', kind: 'builtin', action: 'git.commit' },
-      // Pushes and opens a pull request — and pushing is the point. Without it a run
-      // commits into a worktree whose mirror is the container's own ephemeral storage, so
-      // a "succeeded" run leaves nothing behind at all. That was true of every Fargate run
-      // until now: the commit sha was real and unreachable.
-      ...(hasRemoteOrigin(task.repoUrl)
-        ? [{ id: 'pr' as const, kind: 'builtin' as const, action: 'github.open_pr' as const }]
-        : []),
-    ],
-  })
+  const template = args.stageTemplate
 
   return RunSpec.parse({
     runId: run,

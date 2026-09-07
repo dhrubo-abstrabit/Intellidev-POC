@@ -24,6 +24,9 @@ import type { ProjectScope, StageTemplateRow, Store } from '../store/types.js'
 export type StageSource =
   'task-inline' | 'task-template' | 'project-default' | 'space-default' | 'built-in'
 
+/** The two scopes a template can belong to. */
+export type StageScope = Pick<ProjectScope, 'projectId' | 'clientSpaceId'>
+
 export interface ResolvedStages {
   template: StageTemplate
   source: StageSource
@@ -32,8 +35,25 @@ export interface ResolvedStages {
 }
 
 export interface ResolveStagesInput {
-  store: Pick<Store, 'getStageTemplate' | 'listStageTemplates'>
-  scope: ProjectScope
+  /**
+   * Narrowed so a caller need not hold a whole `Store`.
+   *
+   * `listStageTemplates` is retyped to take the narrower scope: the Postgres and in-memory
+   * implementations read only the two ids, and requiring a `workspaceId` here would push the
+   * same invented value back onto every caller.
+   */
+  store: {
+    getStageTemplate: Store['getStageTemplate']
+    listStageTemplates(scope: StageScope): Promise<Awaited<ReturnType<Store['listStageTemplates']>>>
+  }
+  /**
+   * Space and project only.
+   *
+   * Narrower than `ProjectScope` because that is all resolution reads, and the alternative was a
+   * caller inventing an empty `workspaceId` to satisfy a field nothing here looks at — a lie in
+   * the type to keep a signature happy.
+   */
+  scope: StageScope
   /** What the task itself says, if anything. */
   task?: {
     stages?: unknown
@@ -115,7 +135,7 @@ export async function resolveStages(input: ResolveStagesInput): Promise<Resolved
  * not constrain. A task id pointing at another space's template would otherwise run that space's
  * stages — the one place where "the database will catch it" is not true.
  */
-function belongsTo(template: StageTemplateRow, scope: ProjectScope): boolean {
+function belongsTo(template: StageTemplateRow, scope: StageScope): boolean {
   if (template.clientSpaceId !== scope.clientSpaceId) return false
   return template.projectId === undefined || template.projectId === scope.projectId
 }
