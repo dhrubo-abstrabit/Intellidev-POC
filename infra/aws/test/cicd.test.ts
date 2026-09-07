@@ -12,17 +12,41 @@ function cicd(repo: string = REPO): Template {
   return Template.fromStack(stack)
 }
 
+/**
+ * The deploy role's trust conditions.
+ *
+ * Selected by name rather than by position: creating the OIDC provider through CloudFormation
+ * brings a custom resource with its own role, and `roles[0]` then silently asserted against a
+ * lambda's trust policy instead of the one that matters.
+ */
 function trust(repo: string = REPO): Record<string, Record<string, string>> {
-  const roles = Object.values(cicd(repo).findResources('AWS::IAM::Role'))
-  return roles[0]?.Properties?.AssumeRolePolicyDocument?.Statement?.[0]?.Condition ?? {}
+  const role = Object.values(cicd(repo).findResources('AWS::IAM::Role')).find((r) =>
+    String(r.Properties?.RoleName ?? '').includes('github-deploy'),
+  )
+  if (!role) throw new Error('no github-deploy role in the template')
+  return role.Properties?.AssumeRolePolicyDocument?.Statement?.[0]?.Condition ?? {}
 }
 
+/**
+ * The deploy role's own policy statements, and only those.
+ *
+ * Creating the OIDC provider through CloudFormation brings a custom resource whose lambda role
+ * legitimately holds `iam:CreateOpenIDConnectProvider`. Reading every policy in the stack would
+ * therefore have the privilege assertions below describe that lambda rather than the identity
+ * GitHub assumes — passing or failing for reasons unrelated to what they claim.
+ */
 function statements(
   repo: string = REPO,
 ): Array<{ Sid?: string; Action?: unknown; Resource?: unknown }> {
-  return Object.values(cicd(repo).findResources('AWS::IAM::Policy')).flatMap(
-    (p) => p.Properties?.PolicyDocument?.Statement ?? [],
-  )
+  const template = cicd(repo)
+  const roleId = Object.entries(template.findResources('AWS::IAM::Role')).find(([, r]) =>
+    String(r.Properties?.RoleName ?? '').includes('github-deploy'),
+  )?.[0]
+  if (!roleId) throw new Error('no github-deploy role in the template')
+
+  return Object.values(template.findResources('AWS::IAM::Policy'))
+    .filter((p) => JSON.stringify(p.Properties?.Roles ?? []).includes(roleId))
+    .flatMap((p) => p.Properties?.PolicyDocument?.Statement ?? [])
 }
 
 /**
@@ -92,6 +116,40 @@ describe('the deploy role', () => {
     // are not its business.
     const ssm = statements().find((s) => s.Sid === 'RecordImageDigests')
     expect(JSON.stringify(ssm?.Resource)).toContain('parameter/intellidev/dev/')
+  })
+
+  it('creates the OIDC provider rather than requiring one to exist', () => {
+    /**
+     * FOUND BY TRYING TO DEPLOY IT. The first version imported the provider, which made it a
+     * manual prerequisite — and creating one by hand needs `iam:CreateOpenIDConnectProvider`,
+     * which the deploy identity does not have. The stack could not be stood up at all without
+     * an administrator running a command nobody would remember later.
+     *
+     * Through CloudFormation the account's own execution role creates it, so the stack is
+     * self-sufficient.
+     */
+    const resources = cicd().toJSON().Resources as Record<string, { Type: string }>
+    const kinds = Object.values(resources).map((r) => r.Type)
+    expect(kinds.some((t) => t.includes('OpenIdConnectProvider') || t.includes('Custom::'))).toBe(
+      true,
+    )
+  })
+
+  it('adopts an existing provider when told, since an account may hold only one', () => {
+    // A shared account already has one, and a second would fail the whole stack.
+    const arn = `arn:aws:iam::${ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`
+    const { cicd: stack } = buildApp({
+      env: 'dev',
+      ambientAccount: ACCOUNT,
+      githubRepo: REPO,
+      context: { oidcProviderArn: arn },
+    })
+    const resources = Template.fromStack(stack!).toJSON().Resources as Record<
+      string,
+      { Type: string }
+    >
+    // Nothing creating a provider: the role trusts the one that is already there.
+    expect(Object.values(resources).some((r) => r.Type.includes('OpenIdConnect'))).toBe(false)
   })
 
   it('is absent unless a repository is named', () => {

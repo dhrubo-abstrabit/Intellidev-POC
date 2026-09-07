@@ -22,6 +22,14 @@ export interface BuildAppOverrides {
   readonly ambientAccount?: string | undefined
   /** Overrides `-c githubRepo=`. Tests pass this; the CLI does not. */
   readonly githubRepo?: unknown
+  /**
+   * Extra context, for values read with `tryGetContext` rather than taken as an override.
+   *
+   * Tests only. A `-c` flag reaches the app through the CLI's own context, which a test has no
+   * way to set — and reading these from `process.env` instead would make the test's setup
+   * invisible in the test.
+   */
+  readonly context?: Record<string, unknown>
 }
 
 export interface BuiltApp {
@@ -56,8 +64,9 @@ export interface BuiltApp {
  * stacks".
  */
 export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
-  // No-arg, so the CLI's context and output directory are picked up from the environment.
-  const app = new App()
+  // Context is passed only when a caller supplied some. Otherwise no-arg, so the CLI's own
+  // context and output directory are picked up from the environment exactly as before.
+  const app = overrides.context ? new App({ context: overrides.context }) : new App()
 
   const { config, account } = resolveEnvironment(
     overrides.env ?? app.node.tryGetContext('env'),

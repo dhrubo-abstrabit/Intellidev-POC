@@ -56,22 +56,30 @@ export class CicdStack extends Stack {
     }
 
     /**
-     * GitHub's OIDC provider, imported rather than created.
+     * GitHub's OIDC provider, created here unless one already exists.
      *
-     * An account may hold exactly one provider per issuer URL, and creating a second fails the
-     * whole stack. Importing means this deploys cleanly whether or not something else already
-     * added it — and it is the same provider either way, so there is nothing to own.
+     * Importing it was the first attempt, and it was wrong in a way worth recording: it made the
+     * provider a manual prerequisite, and creating one by hand needs
+     * `iam:CreateOpenIDConnectProvider`, which the deploy identity does not have. The stack was
+     * therefore undeployable without an administrator running one command first — a step nobody
+     * would remember a year from now.
      *
-     * If the account has none yet, it is one command:
-     *   aws iam create-open-id-connect-provider \
-     *     --url https://token.actions.githubusercontent.com \
-     *     --client-id-list sts.amazonaws.com
+     * Created through CloudFormation instead, the account's own execution role does it, and the
+     * stack stands up on its own.
+     *
+     * An account may hold exactly one provider per issuer, so a second would fail. Pass
+     * `-c oidcProviderArn=arn:...` to adopt an existing one rather than fight it — which is also
+     * what a shared account needs, since the provider is not this stack's to own there.
      */
-    const provider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
-      this,
-      'GitHubOidc',
-      `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
-    )
+    const existingArn = this.node.tryGetContext('oidcProviderArn') as string | undefined
+    const provider = existingArn
+      ? iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(this, 'GitHubOidc', existingArn)
+      : new iam.OpenIdConnectProvider(this, 'GitHubOidc', {
+          url: 'https://token.actions.githubusercontent.com',
+          // The audience GitHub's own action requests. Without it the token is rejected before
+          // any condition in the trust policy is even considered.
+          clientIds: ['sts.amazonaws.com'],
+        })
 
     /**
      * Trusted for one repository, and only from its default branch.
