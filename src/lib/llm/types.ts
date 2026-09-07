@@ -153,9 +153,13 @@ export interface LLMProvider {
    * TaskEnrichmentResult.model must echo this same value. */
   readonly model: string;
   generateActionItems(context: ActionItemContext): Promise<ActionItemGenerationResult>;
-  /** Reconciles this run's draft items against each other and against
-   * openActionItems semantically. Callers should skip calling this when
-   * there's only 0-1 drafts — nothing to consolidate. */
+  /** Reconciles this run's draft items against each other AND against
+   * openActionItems semantically — this is the only place open-item
+   * matching happens at all, so it's needed even for a single draft
+   * whenever an open item exists it might be the same issue as. Callers
+   * should only skip calling this when there's nothing to compare against
+   * in either direction: 0-1 drafts and no open items (see generate.ts's
+   * needsConsolidation). */
   consolidateActionItems(
     openActionItems: OpenActionItemSummary[],
     drafts: DraftForConsolidation[],

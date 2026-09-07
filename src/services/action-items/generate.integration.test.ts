@@ -7,6 +7,7 @@ import { OPENAI_MODEL } from "@/lib/llm/openai";
 import { embedOne, toVectorLiteral, EMBEDDING_MODEL } from "@/services/search/embed";
 import { contentHash } from "@/services/search/chunk";
 import { projectToday } from "@/lib/date/project-day";
+import { uuidv7 } from "@/lib/db/uuid";
 import type { DraftForConsolidation } from "@/lib/llm/types";
 import { generateActionItems } from "./generate";
 
@@ -210,6 +211,97 @@ describe("generateActionItems (real LLM call, real local DB)", () => {
     // fresh batch of the *same* synthetic conversation topics again.
     expect(new Set(titles).size).toBe(titles.length);
     expect(allItems?.length ?? 0).toBeGreaterThanOrEqual(beforeTotal ?? 0);
+  }, 60000);
+
+  it("merges a differently-worded follow-up onto an already-open task instead of duplicating it (regression test for the reported cross-day duplicate bug)", async () => {
+    const { data: project } = await service.from("projects").select("id").eq("client_space_id", clientSpaceId).single();
+    if (!project) throw new Error("expected a project for this client space");
+
+    // Fixed, out-of-band dates — distinct from projectToday("UTC"), which the
+    // other tests in this suite use for the mock connector's own events, so
+    // this test's rows never collide with theirs.
+    const day1 = "2026-01-01";
+    const day2 = "2026-01-02";
+
+    async function seedEvent(date: string, dedupeKey: string, title: string, body: string) {
+      const { error } = await service.from("normalized_events").insert({
+        id: uuidv7(),
+        client_space_id: clientSpaceId,
+        project_id: project!.id,
+        project_connector_id: projectConnectorId,
+        provider: "mock",
+        type: "mock.message",
+        title,
+        body,
+        occurred_at: `${date}T12:00:00Z`,
+        dedupe_key: dedupeKey,
+      });
+      if (error) throw new Error(`failed to seed normalized_events row: ${error.message}`);
+    }
+
+    // Mirrors the real production pair this test guards against: two
+    // messages, worded differently, about the same underlying issue, on two
+    // different days.
+    await seedEvent(
+      day1,
+      "cross-day-dedupe-test-day1",
+      "Embedding model decision needed",
+      "We still need to pick between OpenAI's text-embedding-3-small and Qwen3-Embedding-0.6B (dimension 1024) for the search index before moving forward — nobody has made the call yet.",
+    );
+    const day1Result = await generateActionItems(clientSpaceId, day1);
+    expect(day1Result.status).toBe("succeeded");
+    expect(day1Result.itemsCreated).toBe(1);
+
+    const { data: day1Tasks } = await service.from("tasks").select("id, title").eq("client_space_id", clientSpaceId).eq("for_date", day1);
+    expect(day1Tasks).toHaveLength(1);
+    const originalTask = day1Tasks![0];
+
+    await seedEvent(
+      day2,
+      "cross-day-dedupe-test-day2",
+      "Follow up on embedding model",
+      "Can you finalize the embedding model? We are closing milestone 0 in today's standup.",
+    );
+    const day2Result = await generateActionItems(clientSpaceId, day2);
+    expect(day2Result.status).toBe("succeeded");
+
+    // Proves the actual code path this fix touches, independent of what the
+    // model separately decided about title-reuse during extraction:
+    // consolidateActionItems was called even though this run produced
+    // exactly one draft — the call that used to be skipped entirely for any
+    // single-draft day (see generate.ts's needsConsolidation). Without this
+    // assertion, the test below could pass by coincidence if the model's own
+    // extraction-time title-reuse happened to produce a hash-identical title
+    // on its own — which is exactly the unreliable mechanism the reported
+    // bug slipped through in production.
+    const { data: day2Run } = await service
+      .from("llm_runs")
+      .select("prompt")
+      .eq("client_space_id", clientSpaceId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    expect((day2Run?.prompt as { consolidation?: unknown } | null)?.consolidation).not.toBeNull();
+
+    // The whole point of the fix: a day that produces exactly one draft
+    // still gets matched against already-open work, so this merges onto
+    // the day-1 task instead of creating a second one.
+    expect(day2Result.itemsCreated).toBe(0);
+    expect(day2Result.itemsMerged).toBe(1);
+
+    // Scoped by for_date (set once, at creation, never touched by a later
+    // merge) rather than "every open task in this client space" — earlier
+    // tests in this suite leave their own open tasks behind.
+    const { data: tasksForDay1 } = await service.from("tasks").select("id, title").eq("client_space_id", clientSpaceId).eq("for_date", day1);
+    expect(tasksForDay1).toHaveLength(1);
+    expect(tasksForDay1![0].id).toBe(originalTask.id);
+    // The ORIGINAL title survives the merge — a merge updates description/
+    // priority/confidence, never title, which is what keeps dedupe_hash
+    // stable across repeated merges onto the same task.
+    expect(tasksForDay1![0].title).toBe(originalTask.title);
+
+    const { data: sources } = await service.from("task_sources").select("role").eq("task_id", originalTask.id);
+    expect(sources?.map((s) => s.role).sort()).toEqual(["created_from", "mentioned"]);
   }, 60000);
 
   it("retrieves a related historical chunk into the RELATED CONTEXT prompt section, and never auto-links it as a source", async () => {

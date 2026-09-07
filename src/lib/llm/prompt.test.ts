@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   EXTRACTION_SYSTEM_PROMPT,
+  CONSOLIDATION_SYSTEM_PROMPT,
   ENRICH_TASK_SYSTEM_PROMPT,
   MAX_ATTACHMENT_CHARS_PER_CHUNK,
+  PROMPT_VERSION,
   renderExtractionUserContent,
   renderNewEvents,
   renderOpenItems,
@@ -153,6 +155,19 @@ describe("renderTaskEnrichmentUserContent", () => {
       newContext: { sourceKind: "normalized_event", content: "some content", occurredAt: "2026-08-14T00:00:00Z" },
     });
     expect(rendered).toContain("(none)");
+  });
+});
+
+describe("CONSOLIDATION_SYSTEM_PROMPT", () => {
+  it("explicitly instructs checking a single-draft batch against OPEN ITEMS, not skipping it", () => {
+    expect(CONSOLIDATION_SYSTEM_PROMPT).toMatch(/only ONE draft/i);
+    expect(CONSOLIDATION_SYSTEM_PROMPT).toContain("OPEN ITEMS");
+  });
+});
+
+describe("PROMPT_VERSION", () => {
+  it("is bumped for the consolidation prompt's single-draft clarification", () => {
+    expect(PROMPT_VERSION).toBe("action-items-v6");
   });
 });
 

@@ -8,7 +8,7 @@ import { uuidv7 } from "@/lib/db/uuid";
 import { projectDayKey, utcWindowForDay } from "@/lib/date/project-day";
 import { fetchRelatedContext } from "@/services/action-items/related-context";
 import type { ActionItemContext, DraftForConsolidation, LLMUsage, OpenActionItemSummary, RelatedContextChunk } from "@/lib/llm/types";
-import type { ActionItemDraft } from "@/lib/llm/schema";
+import type { ActionItemConsolidation, ActionItemDraft } from "@/lib/llm/schema";
 import type { Database } from "@/lib/db/database.types";
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
@@ -27,6 +27,15 @@ const EVENT_FETCH_PAGE_SIZE = 1000;
 // .in(normalized_event_id) lookup — well under max_rows and under whatever
 // URL-length ceiling Kong (Supabase's gateway) enforces for a large batch.
 const ATTACHMENT_FETCH_CHUNK_SIZE = 150;
+// Same trap as EVENT_FETCH_PAGE_SIZE above, applied to loadContext's
+// open-items query below — that query had no limit at all until now, which
+// meant PostgREST's max_rows was already silently truncating it past 1000
+// open tasks with nothing to notice. Made explicit (not paged, unlike
+// events) because a client space anywhere near this many open tasks is not
+// a case this pipeline has had to handle yet; a logged warning is enough for
+// that to surface rather than silently shrinking the OPEN ITEMS list the
+// model is shown.
+const MAX_OPEN_ITEMS_FOR_PROMPT = 1000;
 
 export interface GenerateActionItemsResult {
   status: "succeeded" | "skipped" | "failed";
@@ -171,7 +180,14 @@ async function loadContext(service: ServiceClient, ctx: ClientSpaceProjectContex
     .from("tasks")
     .select("id, title, kind, priority")
     .eq("client_space_id", clientSpaceId)
-    .in("status", ["pending", "in_progress"]);
+    .in("status", ["pending", "in_progress"])
+    .order("generated_at", { ascending: false })
+    .limit(MAX_OPEN_ITEMS_FOR_PROMPT);
+  if (openItems?.length === MAX_OPEN_ITEMS_FOR_PROMPT) {
+    console.warn(
+      `[llm] client space ${clientSpaceId}: open-items query hit its ${MAX_OPEN_ITEMS_FOR_PROMPT}-row limit — the oldest open tasks may be missing from this run's OPEN ITEMS list`,
+    );
+  }
 
   const { data: recentSummaries } = await service
     .from("daily_summaries")
@@ -242,6 +258,43 @@ interface ResolvedItem {
   confidence: number;
   ownerHint?: string;
   sourceEventIds: string[];
+}
+
+/**
+ * Resolves consolidateActionItems' output into per-group ResolvedItems —
+ * matching each group's echoed matchesOpenItemId against the REAL open
+ * items list (never trusting it blindly: an id the model invented, or one
+ * that isn't in openItemById, falls back to treating the group as new) and
+ * reusing the matched item's STORED title rather than the model's
+ * canonicalTitle, which is what keeps dedupe_hash correct on a merge.
+ *
+ * Pure — no I/O — so this is testable without a live service client or LLM
+ * call; exported for unit testing, mirroring related-context.ts's
+ * buildQueryTexts.
+ */
+export function resolveConsolidationGroups(
+  groups: ActionItemConsolidation["groups"],
+  draftByKey: Map<string, ActionItemDraft>,
+  openItemById: Map<string, OpenActionItemSummary>,
+): ResolvedItem[] {
+  return groups.map((group) => {
+    const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
+    const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
+    // Never trust the model's echoed id/title pairing blindly — an id it
+    // invented or that no longer matches falls back to treating the group
+    // as new, same as sourceEventIds is validated below.
+    const matchedOpen = group.matchesOpenItemId ? openItemById.get(group.matchesOpenItemId) : undefined;
+    return {
+      matchesOpenItemId: matchedOpen?.id ?? null,
+      title: matchedOpen ? matchedOpen.title : group.canonicalTitle,
+      kind: group.kind,
+      description: group.mergedDescription,
+      priority: group.priority,
+      confidence: group.confidence,
+      ownerHint: group.ownerHint,
+      sourceEventIds,
+    };
+  });
 }
 
 /**
@@ -357,7 +410,17 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
     let consolidationPromptLog: unknown = null;
     let consolidationResponseLog: unknown = null;
 
-    if (allDrafts.length > 1) {
+    // Consolidation is where ALL semantic matching against already-open
+    // tasks lives — not just "dedupe several drafts against each other."
+    // A single draft still needs it whenever an open item exists it might be
+    // the same issue as; skipping the call whenever there was ≤1 draft was
+    // the actual bug behind two different-but-related messages on different
+    // days each becoming their own task (see this function's own doc
+    // comment). Only skip when there's genuinely nothing to compare against
+    // in either direction: 0-1 drafts AND no open items at all.
+    const needsConsolidation = allDrafts.length > 1 || (allDrafts.length === 1 && openActionItems.length > 0);
+
+    if (needsConsolidation) {
       const draftsForConsolidation: DraftForConsolidation[] = allDrafts.map((draft, i) => ({
         key: `d${i + 1}`,
         draft,
@@ -370,24 +433,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       const draftByKey = new Map(draftsForConsolidation.map((d) => [d.key, d.draft]));
       const openItemById = new Map(openActionItems.map((i) => [i.id, i]));
 
-      resolvedItems = consolidationResult.consolidation.groups.map((group) => {
-        const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
-        const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
-        // Never trust the model's echoed id/title pairing blindly — an id
-        // it invented or that no longer matches falls back to treating the
-        // group as new, same as sourceEventIds is validated below.
-        const matchedOpen = group.matchesOpenItemId ? openItemById.get(group.matchesOpenItemId) : undefined;
-        return {
-          matchesOpenItemId: matchedOpen?.id ?? null,
-          title: matchedOpen ? matchedOpen.title : group.canonicalTitle,
-          kind: group.kind,
-          description: group.mergedDescription,
-          priority: group.priority,
-          confidence: group.confidence,
-          ownerHint: group.ownerHint,
-          sourceEventIds,
-        };
-      });
+      resolvedItems = resolveConsolidationGroups(consolidationResult.consolidation.groups, draftByKey, openItemById);
     } else {
       resolvedItems = allDrafts.map((draft) => ({
         matchesOpenItemId: null,

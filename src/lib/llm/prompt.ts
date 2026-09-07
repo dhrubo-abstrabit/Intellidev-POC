@@ -11,11 +11,18 @@ import type { ActionItemContext, DraftForConsolidation, OpenActionItemSummary, R
  * initiated action (see src/services/tasks/enrich.ts) that never touches
  * this prompt.
  *
+ * v6: CONSOLIDATION_SYSTEM_PROMPT clarified for the single-draft case —
+ * generate.ts now calls consolidateActionItems whenever a draft could match
+ * an open item, not only when there's more than one draft to dedupe against
+ * each other (see needsConsolidation there), and the old prompt text read as
+ * vacuous ("some may describe the same... as each other") for a batch of
+ * one.
+ *
  * Lives here, not in generate.ts, because it versions the prompt TEXT below
  * — keeping it in a different file from the text it describes is exactly
  * why bumping it is easy to forget.
  */
-export const PROMPT_VERSION = "action-items-v5";
+export const PROMPT_VERSION = "action-items-v6";
 
 export const EXTRACTION_SYSTEM_PROMPT = `You monitor software team activity (chat messages, task updates, file changes) for a single project and extract actionable signal for a daily digest: new action items, risks, blockers, status updates, and follow-ups a human should know about.
 
@@ -138,10 +145,11 @@ export function renderExtractionUserContent(context: ActionItemContext): string 
   return related ? `${related}\n\n${events}` : events;
 }
 
-export const CONSOLIDATION_SYSTEM_PROMPT = `You are deduplicating a batch of draft action items — some may describe the same underlying issue as each other, or as an item already being tracked, even when worded differently (different phrasing, different level of detail, or written from a different connector's perspective).
+export const CONSOLIDATION_SYSTEM_PROMPT = `You are reconciling a batch of one or more draft action items against each other AND against already-tracked open work — some drafts may describe the same underlying issue as each other, or as an item already being tracked, even when worded differently (different phrasing, different level of detail, or written from a different connector's perspective).
 
 Rules:
-- Group draft items together if they describe the same underlying issue. A group can contain one draft (nothing to merge) or several.
+- Group draft items together if they describe the same underlying issue. A group can contain one draft (nothing to merge with another draft) or several.
+- This still matters with only ONE draft in the batch: check it against OPEN ITEMS below just as carefully as you would a larger batch — a single new message about an issue already being tracked is exactly the case this exists to catch, not a special case to skip.
 - If a group's issue matches an OPEN ITEM below, set matchesOpenItemId to that item's exact id from the list. Do not invent an id, and do not paraphrase its title — canonicalTitle is ignored for a matched group.
 - If a group is genuinely new (no existing open item covers it), matchesOpenItemId is null and canonicalTitle must be stable and specific enough to match verbatim next time this issue comes up (e.g. "Fix flaky checkout test", not "Fix the test that broke today").
 - mergedDescription should combine anything worth keeping from every draft in the group.
