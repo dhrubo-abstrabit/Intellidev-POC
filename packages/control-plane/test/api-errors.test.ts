@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -103,16 +103,24 @@ describe('what a failed write tells the browser', () => {
 
   it('says nothing at all about an error it does not recognise', async () => {
     // A 500 is the case where the detail is *most* likely to be sensitive, because nobody chose
-    // what goes in it. It belongs in the log.
+    // what goes in it. It belongs in the log — captured here rather than left to print, since a
+    // deliberate failure spilling a fake password into the suite's output reads as a real one.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const app = await serverThatFailsToSave(
       new Error('connection to server at "db.internal" failed: password authentication failed'),
     )
     const res = await app.inject(SAVE)
     await app.close()
+    // Counted before restoring: `mockRestore` clears the recorded calls along with the stub.
+    const logCount = logged.mock.calls.length
+    logged.mockRestore()
 
     expect(res.statusCode).toBe(500)
     expect(res.body).not.toMatch(/password/i)
     expect(res.body).not.toMatch(/db\.internal/)
+    // And it really is logged: a generic response with nothing written down would leave a real
+    // failure with no trace anywhere.
+    expect(logCount).toBeGreaterThan(0)
   })
 
   it('still lets a deliberate 4xx say what is wrong', async () => {

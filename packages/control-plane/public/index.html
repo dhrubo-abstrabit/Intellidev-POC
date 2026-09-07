@@ -589,6 +589,16 @@
           <label for="baseBranch">Base branch</label>
           <input id="baseBranch" value="main" />
 
+          <!--
+            Which saved template this task starts from.
+
+            The API accepted `stageTemplateId` from the beginning and nothing here ever sent one,
+            so every task ran the project default whether or not other templates existed — they
+            were savable and then unreachable.
+          -->
+          <label for="taskTemplate">Stages</label>
+          <select id="taskTemplate"></select>
+
           <label>Tools</label>
           <div id="taskServers"><p class="hint">No MCP servers connected yet.</p></div>
 
@@ -726,6 +736,17 @@
       <div class="sheet-head">
         <div class="name" id="stagesTitle">Stages</div>
         <p class="hint" id="stagesScopeNote" style="margin: 4px 0 0"></p>
+        <!--
+          Which of the saved templates is open.
+
+          Without this the editor could only ever reach one: saving wrote the project default, so
+          a second template could be created and then never opened again.
+        -->
+        <div class="row" id="templatePickerRow" style="margin-top: 8px; gap: 6px">
+          <label class="hint" for="templatePicker" style="white-space: nowrap">Editing</label>
+          <select id="templatePicker" style="flex: 1"></select>
+          <button type="button" id="deleteTemplate" class="secondary">Delete</button>
+        </div>
       </div>
       <div class="sheet-body">
         <div id="stageList"></div>
@@ -736,6 +757,17 @@
       <div class="sheet-foot">
         <label class="hint" for="stageTemplateName" style="white-space: nowrap">Save as</label>
         <input id="stageTemplateName" placeholder="a name for this set of stages" style="flex: 1" />
+        <!--
+          Whether saving also claims the project default.
+
+          It used to be unconditional, so saving a second template would silently take the
+          default off the first — the one thing that changes what every future task runs, done
+          as a side effect of pressing Save.
+        -->
+        <label class="hint approval" id="makeDefaultRow" style="white-space: nowrap">
+          <input type="checkbox" id="makeDefault" />
+          <span>the project default</span>
+        </label>
         <button type="button" id="saveStages">Save</button>
         <button type="button" id="closeStages" class="secondary">Close</button>
         <span class="hint" id="stagesStatus"></span>
@@ -1424,6 +1456,14 @@
         body.mcpServerIds = [...document.querySelectorAll('.taskServer:checked')].map(
           (c) => c.value,
         )
+        /**
+         * Only when one was chosen.
+         *
+         * An empty selection means "the project default", and resolution already answers that —
+         * sending an empty string instead would fail the uuid check on a form nobody touched.
+         */
+        const chosenTemplate = $('taskTemplate').value
+        if (chosenTemplate) body.stageTemplateId = chosenTemplate
         const res = await fetch('/api/tasks', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1525,7 +1565,13 @@
       state.stages = []
       state.stageSource = null
 
-      async function loadStages() {
+      /**
+       * `keepOpen` is the template the editor should still be showing afterwards.
+       *
+       * Without it a reload after "Save as" put the picker back on the default, so the template
+       * someone had just created vanished from under them the moment it was saved.
+       */
+      async function loadStages({ keepOpen } = {}) {
         const res = await fetch('/api/stage-templates')
         if (!res.ok) return
         const body = await res.json()
@@ -1535,9 +1581,94 @@
         state.stageSource = body.effective.source
         state.stageTaskId = null
         state.wellKnownStages = body.wellKnown ?? []
-        $('stageTemplateName').value =
-          body.effective.source === 'built-in' ? '' : body.effective.name
+        /**
+         * Every saved template, not only the one in effect.
+         *
+         * The list was fetched and thrown away, which is why the editor could reach exactly one
+         * of them: whatever `effective` happened to be.
+         */
+        state.templates = body.templates ?? []
+        state.openTemplateId =
+          (keepOpen && state.templates.find((t) => t.id === keepOpen)?.id) ??
+          state.templates.find((t) => t.name === body.effective.name)?.id ??
+          null
+        const open = state.templates.find((t) => t.id === state.openTemplateId)
+        if (open) {
+          // The editor shows the template the picker names, which for `keepOpen` is not the one
+          // in effect — reading the stages off `effective` there would show the wrong pipeline.
+          state.stages = open.stages.map((stage) => ({ ...stage }))
+        }
+        $('stageTemplateName').value = open
+          ? open.name
+          : body.effective.source === 'built-in'
+            ? ''
+            : body.effective.name
+        renderTemplatePicker()
+        renderTaskTemplateOptions()
         renderStages()
+      }
+
+      /** A template's own name, plus what it is: a project's, the space's, the default. */
+      function templateLabel(template) {
+        const marks = [
+          template.projectId ? 'this project' : 'shared by the space',
+          ...(template.isDefault ? ['default'] : []),
+        ]
+        return `${template.name} — ${marks.join(', ')}`
+      }
+
+      /**
+       * The picker, and the state that goes with whichever template is open.
+       *
+       * "New template…" is an entry rather than a separate button because creating one is the
+       * same act as editing one with a different name — the alternative was a second control
+       * that did what typing in the name field already does.
+       */
+      function renderTemplatePicker() {
+        const templates = state.templates ?? []
+        $('templatePicker').innerHTML = [
+          ...templates.map(
+            (t) =>
+              `<option value="${escapeAttr(t.id)}" ${t.id === state.openTemplateId ? 'selected' : ''}>${escapeHtmlText(templateLabel(t))}</option>`,
+          ),
+          `<option value="" ${state.openTemplateId ? '' : 'selected'}>New template…</option>`,
+        ].join('')
+
+        const open = templates.find((t) => t.id === state.openTemplateId)
+        // A template the space owns is edited from here, but deleting it would change what every
+        // other project in the space inherits — so that is not a button on a project's screen.
+        $('deleteTemplate').disabled = !open || !open.projectId
+        $('deleteTemplate').title = open?.projectId
+          ? 'Delete this template'
+          : open
+            ? "This one belongs to the client space — delete it where it's owned"
+            : 'Nothing to delete yet'
+        $('makeDefault').checked = open ? open.isDefault : templates.length === 0
+      }
+
+      /**
+       * The stages a new task will run, chosen at dispatch.
+       *
+       * The project default is the first entry and stays selected unless someone picks
+       * otherwise, so the form behaves exactly as it did for anyone who ignores this.
+       */
+      function renderTaskTemplateOptions() {
+        const templates = state.templates ?? []
+        const chosen = $('taskTemplate').value
+        $('taskTemplate').innerHTML = [
+          `<option value="">the project default${
+            state.stageSource === 'built-in' ? ' (built-in stages)' : ''
+          }</option>`,
+          ...templates
+            .filter((t) => !t.isDefault)
+            .map(
+              (t) =>
+                `<option value="${escapeAttr(t.id)}">${escapeHtmlText(templateLabel(t))}</option>`,
+            ),
+        ].join('')
+        // Kept across a reload, so saving a template does not quietly reset a choice made on the
+        // form a moment ago.
+        if (chosen) $('taskTemplate').value = chosen
       }
 
       /** Where the stages a new task runs came from, in words rather than a field name. */
@@ -1635,7 +1766,17 @@
        * that change a stage's *shape* — its kind, or its position — redraw.
        */
       function bindStageInputs() {
-        const at = (el, attr) => state.stages[Number(el.dataset[attr])]
+        /**
+         * Reading a stage out of the array, and recording that it was touched.
+         *
+         * Every control goes through here, so marking it in one place is what makes the
+         * discard warning honest — a flag set by each handler would be forgotten by the next
+         * control someone adds.
+         */
+        const at = (el, attr) => {
+          state.stagesDirty = true
+          return state.stages[Number(el.dataset[attr])]
+        }
 
         $('stageList')
           .querySelectorAll('[data-stage-id]')
@@ -1682,6 +1823,7 @@
           )
 
         const move = (from, to) => {
+          state.stagesDirty = true
           const [moved] = state.stages.splice(from, 1)
           state.stages.splice(to, 0, moved)
           renderStages()
@@ -1704,6 +1846,7 @@
           .forEach(
             (el) =>
               (el.onclick = () => {
+                state.stagesDirty = true
                 state.stages.splice(Number(el.dataset.stageRemove), 1)
                 renderStages()
               }),
@@ -1726,8 +1869,12 @@
       function openStageDialog({ taskId }) {
         state.stageTaskId = taskId ?? null
         // A task's stages have no name of their own; the field would ask for something that has
-        // nowhere to go.
+        // nowhere to go. Same for the picker and the default box: editing one task's stages is
+        // not a way to change a template or to change what other tasks run.
         $('stageTemplateName').hidden = Boolean(taskId)
+        $('templatePickerRow').hidden = Boolean(taskId)
+        $('makeDefaultRow').hidden = Boolean(taskId)
+        state.stagesDirty = false
         $('stagesTitle').textContent = taskId ? 'Stages for this task' : 'Project stages'
         $('stagesScopeNote').textContent = taskId
           ? 'Saved against this task only — the project default and every other task are untouched.'
@@ -1744,7 +1891,59 @@
       }
       $('closeStages').onclick = () => $('stagesDialog').close()
 
+      /**
+       * Switching which template is open.
+       *
+       * The editor holds a copy, so switching discards unsaved edits — confirmed rather than
+       * done silently, because the stages someone just typed are not recoverable from anywhere.
+       */
+      $('templatePicker').onchange = () => {
+        const id = $('templatePicker').value
+        const target = (state.templates ?? []).find((t) => t.id === id)
+
+        if (state.stagesDirty && !confirm('Discard the changes you have not saved?')) {
+          // Put the selection back, or the box would claim to show a template it is not showing.
+          renderTemplatePicker()
+          return
+        }
+
+        state.openTemplateId = target?.id ?? null
+        state.stagesDirty = false
+        if (target) {
+          state.stages = target.stages.map((stage) => ({ ...stage }))
+          $('stageTemplateName').value = target.name
+        } else {
+          // A new template starts from what this project runs today rather than from nothing:
+          // most new templates are a variation on the default, not a blank page.
+          state.stages = (state.projectStages ?? []).map((stage) => ({ ...stage }))
+          $('stageTemplateName').value = ''
+        }
+        $('stagesStatus').textContent = ''
+        renderTemplatePicker()
+        renderStages()
+      }
+
+      $('deleteTemplate').onclick = async () => {
+        const open = (state.templates ?? []).find((t) => t.id === state.openTemplateId)
+        if (!open) return
+        if (!confirm(`Delete "${open.name}"? Tasks already dispatched are unaffected.`)) return
+
+        $('deleteTemplate').disabled = true
+        const res = await fetch(`/api/stage-templates/${open.id}`, { method: 'DELETE' })
+        $('deleteTemplate').disabled = false
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          $('stagesStatus').textContent = body.error ?? 'could not delete'
+          return
+        }
+        state.openTemplateId = null
+        state.stagesDirty = false
+        $('stagesStatus').textContent = 'deleted'
+        await loadStages()
+      }
+
       $('addStage').onclick = () => {
+        state.stagesDirty = true
         state.stages.push({
           id: `stage-${state.stages.length + 1}`,
           kind: 'agent',
@@ -1788,26 +1987,43 @@
           $('stagesStatus').textContent = 'give the template a name first'
           return
         }
+        const open = (state.templates ?? []).find((t) => t.id === state.openTemplateId)
+        /**
+         * A changed name saves a new template rather than renaming the open one.
+         *
+         * Which makes "Save as" literal: the way to keep the original and get a variant is to
+         * type a different name, and the way to edit one is to leave its name alone. Sending the
+         * id whenever we have one would have made renaming the only possible outcome.
+         */
+        const editingSameName = open && open.name === name
+
         $('saveStages').disabled = true
         const res = await fetch('/api/stage-templates', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            ...(editingSameName ? { id: open.id } : {}),
             name,
             stages: state.stages,
-            // Saving from this screen sets the project's default, which is what the button says.
             // Space-level templates are a deliberate act, not a side effect of editing here.
             scope: 'project',
-            isDefault: true,
+            // Asked rather than assumed: this is the one field that changes what every future
+            // task runs, and it used to be set on every save.
+            isDefault: $('makeDefault').checked,
           }),
         })
         $('saveStages').disabled = false
         const body = await res.json().catch(() => ({}))
         $('stagesStatus').textContent = res.ok
-          ? 'saved — new tasks in this project will run these stages'
+          ? $('makeDefault').checked
+            ? 'saved — new tasks in this project will run these stages'
+            : 'saved — pick it under Stages when creating a task'
           : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
         if (res.ok) {
-          await loadStages()
+          // Reopened on what was just saved, so a "Save as" leaves the editor showing the new
+          // template rather than jumping back to whichever one is the default.
+          state.stagesDirty = false
+          await loadStages({ keepOpen: body.template?.id })
           // Closed on success only. A failed save keeps the dialog open with the message beside
           // the button, rather than dismissing the work someone just did.
           $('stagesDialog').close()
