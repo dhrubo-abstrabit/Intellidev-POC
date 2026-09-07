@@ -78,10 +78,9 @@ export interface StageTemplateRow {
  * Written as its own type rather than `Omit<…> & { id?: string }`, which does not do what it
  * looks like — the Omit still requires `id`, and the intersection cannot take it back.
  */
-export type StageTemplateInput = Omit<
-  StageTemplateRow,
-  'id' | 'createdAt' | 'updatedAt'
-> & { id?: string }
+export type StageTemplateInput = Omit<StageTemplateRow, 'id' | 'createdAt' | 'updatedAt'> & {
+  id?: string
+}
 
 export interface ProjectRepoRow {
   id: string
@@ -208,9 +207,7 @@ export interface Store {
    * the write rather than left to a caller: the database refuses two defaults per scope, so a
    * caller that forgot would get a constraint error instead of the obvious behaviour.
    */
-  saveStageTemplate(
-    input: StageTemplateInput,
-  ): Promise<StageTemplateRow>
+  saveStageTemplate(input: StageTemplateInput): Promise<StageTemplateRow>
   deleteStageTemplate(id: string): Promise<boolean>
   /**
    * Removes a repository from a project's allowlist.

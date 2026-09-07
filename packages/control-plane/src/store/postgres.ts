@@ -401,9 +401,7 @@ export class PostgresStore implements Store {
    * constraint violation rather than the thing they obviously meant. Doing it here means
    * "make this the default" is a single call that cannot half-happen.
    */
-  async saveStageTemplate(
-    input: StageTemplateInput,
-  ): Promise<StageTemplateRow> {
+  async saveStageTemplate(input: StageTemplateInput): Promise<StageTemplateRow> {
     return await this.db.transaction(async (tx) => {
       if (input.isDefault) {
         // Scoped exactly as the unique index is: a project's default is independent of the
@@ -433,11 +431,42 @@ export class PostgresStore implements Store {
         updatedAt: new Date(),
       }
 
-      const [row] = input.id
+      /**
+       * A name is a natural key within its scope, so saving over one is an edit.
+       *
+       * FOUND BY SAVING TWICE. This inserted blindly, and the partial unique index on
+       * (project_id, name) rejected the second save with a constraint violation that reached the
+       * client as a 500 — so the editor worked exactly once per name and then broke with no
+       * explanation. Someone renaming nothing and pressing Save again is the *most* likely thing
+       * to happen, not an edge case.
+       *
+       * Found by name rather than expressed as an upsert: the uniqueness is enforced by two
+       * partial indexes, one per scope, and inferring a partial index requires restating its
+       * predicate — a lookup says the same thing in a way that stays true if those indexes change.
+       */
+      const existingId =
+        input.id ??
+        (
+          await tx
+            .select({ id: stageTemplates.id })
+            .from(stageTemplates)
+            .where(
+              and(
+                eq(stageTemplates.clientSpaceId, input.clientSpaceId),
+                input.projectId
+                  ? eq(stageTemplates.projectId, input.projectId)
+                  : isNull(stageTemplates.projectId),
+                eq(stageTemplates.name, input.name),
+              ),
+            )
+            .limit(1)
+        )[0]?.id
+
+      const [row] = existingId
         ? await tx
-            .insert(stageTemplates)
-            .values({ id: input.id, ...values })
-            .onConflictDoUpdate({ target: stageTemplates.id, set: values })
+            .update(stageTemplates)
+            .set(values)
+            .where(eq(stageTemplates.id, existingId))
             .returning()
         : await tx.insert(stageTemplates).values(values).returning()
       return toStageTemplate(row!)
@@ -577,10 +606,7 @@ export class PostgresStore implements Store {
    * task permanently different from its project with no way back.
    */
   async setTaskStages(taskId: string, stages: unknown[] | null): Promise<void> {
-    await this.db
-      .update(taskSpecs)
-      .set({ stages })
-      .where(eq(taskSpecs.taskId, taskId))
+    await this.db.update(taskSpecs).set({ stages }).where(eq(taskSpecs.taskId, taskId))
   }
 
   async setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow> {
@@ -891,6 +917,22 @@ export class PostgresStore implements Store {
       sql`delete from public.tasks
            where project_id = ${scope.projectId}
              and id in (select task_id from runner.task_specs)`,
+    )
+
+    /**
+     * The project's own stage templates go too.
+     *
+     * Left behind, they accumulate in a shared database as templates nobody made — which is
+     * what happened: a contract test run put two rows called "Pipeline" and "Shared name" into
+     * the test project and they simply stayed there.
+     *
+     * Scoped to `project_id`, deliberately not to the client space. A space-level template is
+     * shared by every project in the space, and a suite told to clear one project must not be
+     * able to delete what the others inherit — the same mistake, one level up, that
+     * `PostgresStore destructive safety` exists to prevent.
+     */
+    await this.db.execute(
+      sql`delete from runner.stage_templates where project_id = ${scope.projectId}`,
     )
   }
 

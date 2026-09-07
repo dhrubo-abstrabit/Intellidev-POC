@@ -366,7 +366,10 @@ export async function decideRun(args: {
   const stages = await resolveStages({
     store,
     scope: { projectId: task.projectId, clientSpaceId: task.clientSpaceId },
-    task: { ...(task.stages ? { stages: task.stages } : {}), stageTemplateId: task.stageTemplateId },
+    task: {
+      ...(task.stages ? { stages: task.stages } : {}),
+      stageTemplateId: task.stageTemplateId,
+    },
     builtIn: builtInStageTemplate(task.repoUrl),
   })
 

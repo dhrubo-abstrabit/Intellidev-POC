@@ -113,10 +113,21 @@ export class InMemoryStore implements Store {
     return this.stageTemplates.get(id)
   }
 
-  async saveStageTemplate(
-    input: StageTemplateInput,
-  ): Promise<StageTemplateRow> {
-    const id = input.id ?? randomUUID()
+  async saveStageTemplate(input: StageTemplateInput): Promise<StageTemplateRow> {
+    /**
+     * A name is a natural key within its scope, so saving over one is an edit.
+     *
+     * Postgres enforces that with a partial unique index; this store has to be told, or the two
+     * would disagree — and the disagreement would show up as a test that passes here and a 500
+     * in production, which is exactly how this was found.
+     */
+    const existing = [...this.stageTemplates.values()].find(
+      (t) =>
+        t.clientSpaceId === input.clientSpaceId &&
+        (t.projectId ?? null) === (input.projectId ?? null) &&
+        t.name === input.name,
+    )
+    const id = input.id ?? existing?.id ?? randomUUID()
     const now = new Date().toISOString()
 
     if (input.isDefault) {

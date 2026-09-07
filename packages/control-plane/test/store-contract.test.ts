@@ -213,6 +213,69 @@ function contract(
         }
       })
 
+      it('saves over a template of the same name rather than failing', async () => {
+        /**
+         * FOUND BY SAVING TWICE. The insert was blind, and the partial unique index on
+         * (project_id, name) rejected the second save — reaching the client as a 500, so the
+         * stage editor worked exactly once per name and then broke with no explanation.
+         *
+         * Asserted on both stores because the in-memory one has no index to catch it: without
+         * being told, it would happily keep two templates called the same thing and the
+         * behaviour would differ only in production.
+         */
+        const first = await store.saveStageTemplate({
+          clientSpaceId: scope.clientSpaceId,
+          projectId: scope.projectId,
+          name: 'Pipeline',
+          stages: [{ id: 'code', kind: 'agent', prompt: 'a' }] as never,
+          isDefault: true,
+        })
+        const second = await store.saveStageTemplate({
+          clientSpaceId: scope.clientSpaceId,
+          projectId: scope.projectId,
+          name: 'Pipeline',
+          stages: [{ id: 'code', kind: 'agent', prompt: 'b' }] as never,
+          isDefault: true,
+        })
+
+        // The same row, edited — not a second one beside it.
+        expect(second.id).toBe(first.id)
+        const listed = (await store.listStageTemplates(scope)).filter((t) => t.name === 'Pipeline')
+        expect(listed).toHaveLength(1)
+      })
+
+      it('keeps templates of the same name in different scopes apart', async () => {
+        // A space template and a project template may share a name: one is the inherited
+        // default and the other is the override, and calling them the same thing is natural.
+        await store.saveStageTemplate({
+          clientSpaceId: scope.clientSpaceId,
+          name: 'Shared name',
+          stages: [{ id: 'code', kind: 'agent', prompt: 'space' }] as never,
+          isDefault: false,
+        })
+        await store.saveStageTemplate({
+          clientSpaceId: scope.clientSpaceId,
+          projectId: scope.projectId,
+          name: 'Shared name',
+          stages: [{ id: 'code', kind: 'agent', prompt: 'project' }] as never,
+          isDefault: false,
+        })
+
+        const both = (await store.listStageTemplates(scope)).filter((t) => t.name === 'Shared name')
+        expect(both).toHaveLength(2)
+
+        /**
+         * The space-level one is deleted here rather than by `truncateAll`.
+         *
+         * `truncateAll` is scoped to a project on purpose — a space template is shared by every
+         * project in the space, and letting a per-project reset delete it would make the reset
+         * more dangerous than the leak it fixes. So the test that creates one cleans up after
+         * itself.
+         */
+        const spaceLevel = both.find((t) => t.projectId === undefined)
+        if (spaceLevel) await store.deleteStageTemplate(spaceLevel.id)
+      })
+
       it('finds a run by its runtime handle', async () => {
         const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')
