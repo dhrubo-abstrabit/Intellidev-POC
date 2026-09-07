@@ -100,3 +100,53 @@ describe('the stage editor', () => {
     expect(page).toContain('follow(state.run)')
   })
 })
+
+describe('the stage editor lays out', () => {
+  /**
+   * FOUND BY LOOKING AT IT. The first version reused `.srv`, which is `display: flex` — so every
+   * child of a stage card became a narrow column beside its siblings. The screenshot was a
+   * sentence rendered one word per line, two hundred pixels tall, next to inputs with no width.
+   *
+   * These assert the rules that were missing, because a static page has nothing else checking
+   * that what it renders is usable.
+   */
+  it('gives stage cards their own block layout rather than reusing the flex row', () => {
+    expect(page).toContain('.stage {')
+    expect(page).toContain('.stage-head {')
+    // The class whose `display: flex` caused it must not be what a stage card uses.
+    expect(page).not.toMatch(/<div class="srv">\s*<div class="stage-head"/)
+  })
+
+  it('stops the global input rule making checkboxes full width', () => {
+    /**
+     * `input { width: 100% }` was written when every input on the page was a text field. The
+     * first checkbox took the whole row and left its label zero pixels wide — which is exactly
+     * how a one-line sentence became a two-hundred-pixel column.
+     */
+    expect(page).toMatch(/input\[type='checkbox'\][\s\S]{0,120}width: auto/)
+  })
+
+  it('sizes the panes without guessing the header height', () => {
+    /**
+     * `calc(100vh - 53px)` was here while the header measured 70px, so the page overflowed by
+     * the difference — and would break again the next time the header changed. A flex column
+     * measures it instead.
+     */
+    /**
+     * Scoped to `.layout`, deliberately.
+     *
+     * The run-log panel has its own `calc(100vh - 320px)`, which is a different thing — a
+     * scrollable box sized to fill, not the page frame — and a broader assertion would fail on
+     * that, or on the comment that explains this fix by naming the old value.
+     */
+    const layoutRule = page.slice(page.indexOf('.layout {'), page.indexOf('.side {'))
+    expect(layoutRule).not.toMatch(/height:\s*calc\(100vh/)
+    expect(page).toContain('flex-direction: column')
+    expect(page).toMatch(/\.side,\s*\.main \{\s*overflow-y: auto/)
+  })
+
+  it('keeps the page scroll below the breakpoint, where there is one column', () => {
+    // Fixing the height there would put content under the fold with nothing to scroll it.
+    expect(page).toContain('@media (min-width: 901px)')
+  })
+})

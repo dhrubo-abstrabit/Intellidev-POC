@@ -113,7 +113,6 @@
       .layout {
         display: grid;
         grid-template-columns: 380px minmax(0, 1fr);
-        min-height: calc(100vh - 53px);
       }
       @media (max-width: 900px) {
         .layout {
@@ -124,6 +123,45 @@
         border-right: 1px solid var(--bd-soft);
         background: var(--panel);
         padding: 16px;
+      }
+      /*
+       * The sidebar scrolls itself, and only where there is a sidebar to scroll.
+       *
+       * Without this the panel simply grows: a project with a dozen stages made the whole page
+       * taller than the screen, so reaching the task list meant scrolling past the editor and
+       * the run detail on the right scrolled away with it. Under 900px the layout is one column
+       * and the page scroll is the right one, so this is scoped to the two-column case.
+       */
+      /*
+       * Two panes that scroll themselves, sized without guessing at the header.
+       *
+       * `calc(100vh - 53px)` was here before and the header is 70px, so the page overflowed by
+       * exactly the difference — and would break again the next time the header changed. A flex
+       * column measures it instead: the header takes what it needs, the layout takes the rest.
+       *
+       * Only above 900px. Below that the layout is a single column and the page scroll is the
+       * right one; fixing the height there would put content below the fold with nothing to
+       * scroll it.
+       */
+      @media (min-width: 901px) {
+        body {
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        header {
+          flex: none;
+        }
+        .layout {
+          flex: 1;
+          min-height: 0;
+        }
+        .side,
+        .main {
+          overflow-y: auto;
+          min-height: 0;
+        }
       }
       .main {
         padding: 16px 20px;
@@ -153,6 +191,20 @@
         background: var(--input);
         border: 1px solid var(--bd-input);
         border-radius: 6px;
+      }
+      /*
+       * A checkbox is not a text field.
+       *
+       * The rule above was written when every input on the page was one, so `width: 100%` was
+       * harmless. The first checkbox added made itself the full width of its row and left the
+       * label beside it zero pixels wide — which rendered as a sentence one word per line, two
+       * hundred pixels tall.
+       */
+      input[type='checkbox'],
+      input[type='radio'] {
+        width: auto;
+        padding: 0;
+        accent-color: var(--ok, #2f7d4f);
       }
       textarea {
         min-height: 64px;
@@ -223,6 +275,66 @@
       }
       .srv:last-child {
         border-bottom: 0;
+      }
+      /*
+       * A stage card, which is emphatically not a `.srv`.
+       *
+       * `.srv` is `display: flex`, so reusing it turned every child — the controls, the prompt,
+       * the approval label — into a column squeezed beside its siblings. Stacked instead, with
+       * the controls laid out on a grid so each has a real width rather than whatever flex
+       * leaves it.
+       */
+      .stage {
+        display: block;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .stage:last-child {
+        border-bottom: 0;
+      }
+      .stage-head {
+        display: grid;
+        /* number, id, kind, then three fixed buttons. `minmax(0, …)` so a long id shrinks
+           rather than pushing the buttons off the edge. */
+        grid-template-columns: 1.4em minmax(0, 1fr) 5.5em auto auto auto;
+        gap: 6px;
+        align-items: center;
+      }
+      .stage-head input,
+      .stage-head select {
+        min-width: 0;
+      }
+      .stage .icon {
+        padding: 4px 7px;
+        line-height: 1;
+      }
+      .stage textarea {
+        width: 100%;
+        margin-top: 6px;
+        resize: vertical;
+      }
+      /* The checkbox sits with its label rather than beside it in a flex column. */
+      .stage .approval {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-top: 8px;
+        line-height: 1.4;
+      }
+      .stage .approval input {
+        margin-top: 2px;
+        flex: none;
+      }
+      /*
+       * The label text fills the row rather than shrinking to its longest word.
+       *
+       * A flex item sizes to its content and may shrink below it, which put this sentence in a
+       * 53px column two hundred pixels tall — the tall thin text in the screenshot. `flex: 1`
+       * makes it take the space that is actually there.
+       */
+      .stage .approval span {
+        flex: 1;
+        min-width: 0;
       }
       .srv .grow {
         flex: 1;
@@ -1346,16 +1458,16 @@
 
       /** Where the stages a new task runs came from, in words rather than a field name. */
       const SOURCE_WORDS = {
-        'built-in': 'the built-in default — nothing has been configured yet',
-        'space-default': 'this client space, shared by every project in it',
-        'project-default': 'this project',
+        'built-in': 'the built-in defaults — nothing has been configured yet',
+        'space-default': "this client space's stages, shared by every project in it",
+        'project-default': "this project's own stages",
         'task-template': 'a template chosen per task',
-        'task-inline': 'stages pinned to one task',
+        'task-inline': 'stages pinned to a single task',
       }
 
       function renderStages() {
         $('stagesSource').textContent = state.stageSource
-          ? `A new task runs ${SOURCE_WORDS[state.stageSource] ?? state.stageSource}.`
+          ? `New tasks run ${SOURCE_WORDS[state.stageSource] ?? state.stageSource}.`
           : ''
 
         if (state.stages.length === 0) {
@@ -1366,46 +1478,47 @@
         $('stageList').innerHTML = state.stages
           .map(
             (stage, i) => `
-            <div class="srv" data-stage-row="${i}">
-              <div class="row" style="gap: 6px; align-items: center">
-                <span class="hint" style="width: 1.5em">${i + 1}</span>
-                <input data-stage-id="${i}" value="${escapeAttr(stage.id)}" style="flex: 1" />
+            <div class="stage">
+              <div class="stage-head">
+                <span class="hint">${i + 1}</span>
+                <input data-stage-id="${i}" value="${escapeAttr(stage.id)}" placeholder="stage name" />
                 <select data-stage-kind="${i}">
                   <option value="agent" ${stage.kind === 'agent' ? 'selected' : ''}>agent</option>
                   <option value="builtin" ${stage.kind === 'builtin' ? 'selected' : ''}>builtin</option>
                 </select>
-                <button type="button" class="secondary" data-stage-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
-                <button type="button" class="secondary" data-stage-down="${i}" ${i === state.stages.length - 1 ? 'disabled' : ''}>↓</button>
-                <button type="button" class="secondary" data-stage-remove="${i}">×</button>
+                <button type="button" class="secondary icon" data-stage-up="${i}" title="move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" class="secondary icon" data-stage-down="${i}" title="move down" ${i === state.stages.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" class="secondary icon" data-stage-remove="${i}" title="remove">×</button>
               </div>
               ${
                 stage.kind === 'builtin'
-                  ? `<div class="row" style="margin-top: 6px">
-                       <select data-stage-action="${i}" style="flex: 1">
-                         ${['git.create_branch', 'git.commit', 'github.open_pr']
-                           .map(
-                             (a) =>
-                               `<option value="${a}" ${stage.action === a ? 'selected' : ''}>${a}</option>`,
-                           )
-                           .join('')}
-                       </select>
-                     </div>`
-                  : `<div class="row" style="margin-top: 6px; gap: 6px">
-                       <select data-stage-tools="${i}">
-                         ${['none', 'read_only', 'full']
-                           .map(
-                             (m) =>
-                               `<option value="${m}" ${(stage.tools?.mode ?? 'none') === m ? 'selected' : ''}>tools: ${m}</option>`,
-                           )
-                           .join('')}
-                       </select>
-                     </div>
-                     <textarea data-stage-prompt="${i}" rows="2" style="margin-top: 6px; width: 100%"
-                       placeholder="what this stage should do">${escapeHtmlText(stage.prompt ?? '')}</textarea>`
+                  ? `<select data-stage-action="${i}" style="margin-top: 6px; width: 100%">
+                       ${['git.create_branch', 'git.commit', 'github.open_pr']
+                         .map(
+                           (a) =>
+                             `<option value="${a}" ${stage.action === a ? 'selected' : ''}>${a}</option>`,
+                         )
+                         .join('')}
+                     </select>`
+                  : `<select data-stage-tools="${i}" style="margin-top: 6px; width: 100%">
+                       ${['none', 'read_only', 'full']
+                         .map(
+                           (m) =>
+                             `<option value="${m}" ${(stage.tools?.mode ?? 'none') === m ? 'selected' : ''}>tools: ${m}</option>`,
+                         )
+                         .join('')}
+                     </select>
+                     <textarea data-stage-prompt="${i}" rows="3"
+                       placeholder="what this stage should do">${escapeHtmlText(stage.prompt ?? '')}</textarea>
+                     ${
+                       stage.promptFile && !stage.prompt
+                         ? `<p class="hint" style="margin: 4px 0 0">prompt from the bundle: ${escapeHtmlText(stage.promptFile)}</p>`
+                         : ''
+                     }`
               }
-              <label class="hint" style="display: block; margin-top: 6px">
+              <label class="hint approval">
                 <input type="checkbox" data-stage-approval="${i}" ${stage.requiresApproval ? 'checked' : ''} />
-                Needs approval — the run stops here until someone approves, costing nothing while it waits
+                <span>Needs approval — the run stops after this stage and costs nothing until someone decides</span>
               </label>
             </div>`,
           )
