@@ -150,3 +150,51 @@ describe('the stage editor lays out', () => {
     expect(page).toContain('@media (min-width: 901px)')
   })
 })
+
+describe('the stage editor is a dialog', () => {
+  it('edits in a modal rather than in the sidebar column', () => {
+    /**
+     * Editing a pipeline is work in its own right — several stages, each with a prompt worth
+     * reading — and a 380px column gave it a textarea the width of a phone under a list that
+     * pushed the rest of the page off screen.
+     *
+     * `showModal` rather than a hidden div: focus is trapped, Escape closes it and the page
+     * behind is inert, none of which has to be written here.
+     */
+    expect(page).toContain('<dialog class="sheet" id="stagesDialog"')
+    expect(page).toContain('showModal()')
+  })
+
+  it('leaves a summary behind, so the sidebar still answers what will happen', () => {
+    // "Is the review stage still in there?" should not require opening anything.
+    expect(page).toContain('stagesSummary')
+    expect(page).toContain("' → '")
+  })
+
+  it('keeps the dialog open when a save fails', () => {
+    // Dismissing on failure would throw away the work someone just did, and the message with it.
+    expect(page).toMatch(/if \(res\.ok\) \{[\s\S]{0,400}stagesDialog'\)\.close\(\)/)
+  })
+})
+
+describe('the default stages carry their own instructions', () => {
+  it('ships no promptFile in what the control plane creates', async () => {
+    /**
+     * Prompts lived in `examples/bundle/prompts/*.md`, baked into the image — which made them
+     * exactly as editable as the image, and the whole point of configurable stages is that a
+     * project can say what a stage should do.
+     *
+     * Read from the built-in template rather than the page, because that is what seeds the row a
+     * person then edits.
+     */
+    const { builtInStageTemplate } = await import('../src/dispatch.js')
+    const template = builtInStageTemplate('https://github.com/a/b.git')
+    const agents = template.stages.filter((s) => s.kind === 'agent')
+
+    expect(agents.length).toBeGreaterThan(0)
+    for (const stage of agents) {
+      expect(stage.promptFile, `${stage.id} still points at a bundled file`).toBeUndefined()
+      expect(stage.prompt?.length ?? 0, `${stage.id} has no instructions`).toBeGreaterThan(50)
+    }
+  })
+})

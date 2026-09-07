@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveStages } from '../src/stages/resolve.js'
+import { ensureSeededStageTemplates, resolveStages } from '../src/stages/resolve.js'
 import type { ProjectScope, StageTemplateRow } from '../src/store/types.js'
 
 /**
@@ -170,5 +170,85 @@ describe('resolving which stages a task runs', () => {
       builtIn: BUILT_IN,
     })
     expect(resolved.source).toBe('built-in')
+  })
+})
+
+describe('seeding a space that has never configured anything', () => {
+  function seedStore() {
+    const rows: StageTemplateRow[] = []
+    return {
+      rows,
+      store: {
+        async listStageTemplates() {
+          return rows
+        },
+        async saveStageTemplate(
+          input: Parameters<typeof rows.push>[0] extends never ? never : any,
+        ) {
+          const created = {
+            id: 'seeded',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            ...input,
+          }
+          rows.push(created)
+          return created
+        },
+      },
+    }
+  }
+
+  const SEED = {
+    name: 'built-in',
+    stages: [{ id: 'code', kind: 'agent', prompt: 'do it', tools: { mode: 'full' } }],
+  } as never
+
+  it('creates a space-level default so the stages exist as an editable row', async () => {
+    /**
+     * The point of the whole feature. A template compiled into the source means "configure your
+     * stages" is an edit to a file nobody deploying this can make — so the first time a space
+     * needs stages, it gets a row it owns.
+     */
+    const { store, rows } = seedStore()
+    const created = await ensureSeededStageTemplates({ store, scope: SCOPE, seed: SEED })
+
+    expect(created).toBeDefined()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.isDefault).toBe(true)
+    // Space level, so every project in it starts from this and any may override.
+    expect(rows[0]?.projectId).toBeUndefined()
+    // Named for a person reading a list, not for the code that made it.
+    expect(rows[0]?.name).toBe('Default stages')
+  })
+
+  it('does nothing when the space already has templates', async () => {
+    /**
+     * Including when it has *no default* — someone can delete one deliberately, and putting it
+     * back on the next dispatch would be a decision nobody made.
+     */
+    const { store, rows } = seedStore()
+    rows.push(row({ name: 'theirs', isDefault: false }))
+
+    expect(await ensureSeededStageTemplates({ store, scope: SCOPE, seed: SEED })).toBeUndefined()
+    expect(rows).toHaveLength(1)
+  })
+
+  it('leaves resolution to find the seeded row rather than the constant', async () => {
+    // After seeding, the stages a task runs come from the database. That is the difference
+    // between configurable and merely default.
+    const { store, rows } = seedStore()
+    await ensureSeededStageTemplates({ store, scope: SCOPE, seed: SEED })
+
+    const resolved = await resolveStages({
+      store: {
+        ...store,
+        async getStageTemplate(id: string) {
+          return rows.find((r) => r.id === id)
+        },
+      },
+      scope: SCOPE,
+      builtIn: BUILT_IN,
+    })
+    expect(resolved.source).toBe('space-default')
   })
 })

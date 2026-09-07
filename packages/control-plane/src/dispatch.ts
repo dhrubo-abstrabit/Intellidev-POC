@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
+  DEFAULT_STAGE_PROMPTS,
   DEFAULT_STAGE_TEMPLATE,
   RunSpec,
   StageTemplate,
@@ -21,7 +22,7 @@ import { FargateRunner } from './runner/fargate.js'
 import { ArtifactStore } from './aws/artifacts.js'
 import type { RunTokenRegistry } from './runs/tokens.js'
 import { preflightRepo } from './runs/preflight.js'
-import { resolveStages } from './stages/resolve.js'
+import { ensureSeededStageTemplates, resolveStages } from './stages/resolve.js'
 import type { SeatStore } from './harness/seat-store.js'
 import type { McpOAuth } from './mcp/oauth.js'
 import type { McpStore } from './mcp/store.js'
@@ -152,11 +153,19 @@ export function builtInStageTemplate(repoUrl: string): StageTemplate {
       {
         id: 'design',
         kind: 'agent',
-        promptFile: 'prompts/design.md',
+        // Inline, not `promptFile`. A file baked into the image is exactly as editable as the
+        // image, which is the opposite of what configurable stages are for — someone opening
+        // this template should find text they can change, not a path they cannot open.
+        prompt: DEFAULT_STAGE_PROMPTS['design']!,
         tools: { mode: 'read_only' },
       },
       { id: 'branch', kind: 'builtin', action: 'git.create_branch' },
-      { id: 'code', kind: 'agent', promptFile: 'prompts/code.md', tools: { mode: 'full' } },
+      {
+        id: 'code',
+        kind: 'agent',
+        prompt: DEFAULT_STAGE_PROMPTS['code']!,
+        tools: { mode: 'full' },
+      },
       // The commit stage is what makes the run's work outlive the container, so it is not
       // optional.
       { id: 'commit', kind: 'builtin', action: 'git.commit' },

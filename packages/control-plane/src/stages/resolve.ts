@@ -139,3 +139,44 @@ function belongsTo(template: StageTemplateRow, scope: StageScope): boolean {
   if (template.clientSpaceId !== scope.clientSpaceId) return false
   return template.projectId === undefined || template.projectId === scope.projectId
 }
+
+/**
+ * Give a client space a real template row the first time anyone needs one.
+ *
+ * Without this the built-in template is a constant in the source, and "configure your stages"
+ * means editing a file — which is what the whole feature exists to stop. Seeding turns it into a
+ * row: the same stages, in the database, editable in the UI, referenced by id like everything
+ * else.
+ *
+ * Only when the space has none. It is a starting point, not a policy: a space that has since
+ * deleted or rewritten its templates must not have this quietly put one back.
+ *
+ * Idempotent by that check rather than by an upsert, because a space *may* legitimately have no
+ * default — someone can delete it — and re-creating it on the next dispatch would be a decision
+ * nobody made.
+ */
+export async function ensureSeededStageTemplates(input: {
+  store: {
+    // Narrowed for the same reason `resolveStages` is: these read two ids, and demanding a
+    // `workspaceId` would push an invented value back onto every caller.
+    listStageTemplates(scope: StageScope): Promise<Awaited<ReturnType<Store['listStageTemplates']>>>
+    saveStageTemplate: Store['saveStageTemplate']
+  }
+  scope: StageScope
+  /** The stages to seed from, built by the caller for this repository. */
+  seed: StageTemplate
+}): Promise<StageTemplateRow | undefined> {
+  const existing = await input.store.listStageTemplates(input.scope)
+  // Any template at all means somebody has been here. Seeding on top would add a second one
+  // nobody asked for, next to the ones they made.
+  if (existing.length > 0) return undefined
+
+  return await input.store.saveStageTemplate({
+    clientSpaceId: input.scope.clientSpaceId,
+    // Space level, so every project in the space starts from it and any of them may override.
+    name: input.seed.name === 'built-in' ? 'Default stages' : input.seed.name,
+    description: 'Created automatically from the built-in stages. Edit or replace it freely.',
+    stages: input.seed.stages,
+    isDefault: true,
+  })
+}

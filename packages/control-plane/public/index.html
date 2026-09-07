@@ -284,6 +284,50 @@
        * the controls laid out on a grid so each has a real width rather than whatever flex
        * leaves it.
        */
+      /*
+       * The stage editor as a dialog rather than a column in the sidebar.
+       *
+       * Editing a pipeline is a task in its own right — several stages, each with a prompt worth
+       * reading — and doing it in a 380px column meant a textarea the width of a phone under a
+       * list that pushed everything else off screen. A dialog gets the width the work needs and
+       * leaves the page underneath alone.
+       */
+      dialog.sheet {
+        width: min(760px, 92vw);
+        max-height: 86vh;
+        padding: 0;
+        border: 1px solid var(--bd-soft);
+        border-radius: 14px;
+        background: var(--panel);
+        color: var(--fg);
+      }
+      dialog.sheet::backdrop {
+        background: rgba(0, 0, 0, 0.45);
+      }
+      .sheet-head,
+      .sheet-foot {
+        position: sticky;
+        padding: 14px 18px;
+        background: var(--panel);
+        z-index: 1;
+      }
+      .sheet-head {
+        top: 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .sheet-foot {
+        bottom: 0;
+        border-top: 1px solid var(--bd-soft);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      /* Only the middle scrolls, so the title and the buttons stay put. */
+      .sheet-body {
+        padding: 14px 18px;
+        overflow-y: auto;
+        max-height: calc(86vh - 130px);
+      }
       .stage {
         display: block;
         padding: 10px 0;
@@ -615,21 +659,16 @@
 
         <h2 style="margin-top: 22px">
           Stages
-          <button id="addStage" class="secondary" style="float: right; padding: 4px 10px">
-            Add stage
+          <button id="openStages" class="secondary" style="float: right; padding: 4px 10px">
+            Configure
           </button>
         </h2>
         <!--
-          What a new task will run, and why. The source matters as much as the list: "the space
-          decided this" and "this project overrode it" look identical from the stages alone.
+          A summary here, the editing in a dialog. The sidebar's job is to say what will happen;
+          changing it is a piece of work that needs room.
         -->
         <p class="hint" id="stagesSource"></p>
-        <div id="stageList"></div>
-        <div class="row" style="margin-top: 10px">
-          <input id="stageTemplateName" placeholder="template name" style="flex: 1" />
-          <button type="button" id="saveStages">Save as project default</button>
-        </div>
-        <p class="hint" id="stagesStatus"></p>
+        <p class="hint" id="stagesSummary"></p>
 
         <h2 style="margin-top: 22px">
           MCP servers
@@ -682,6 +721,25 @@
         <div id="detail"><p class="empty">Select a task, or create one.</p></div>
       </section>
     </div>
+
+    <dialog class="sheet" id="stagesDialog">
+      <div class="sheet-head">
+        <div class="name" id="stagesTitle">Stages</div>
+        <p class="hint" id="stagesScopeNote" style="margin: 4px 0 0"></p>
+      </div>
+      <div class="sheet-body">
+        <div id="stageList"></div>
+        <button type="button" id="addStage" class="secondary" style="margin-top: 10px">
+          Add stage
+        </button>
+      </div>
+      <div class="sheet-foot">
+        <input id="stageTemplateName" placeholder="template name" style="flex: 1" />
+        <button type="button" id="saveStages">Save</button>
+        <button type="button" id="closeStages" class="secondary">Close</button>
+        <span class="hint" id="stagesStatus"></span>
+      </div>
+    </dialog>
 
     <script type="module">
       const $ = (id) => document.getElementById(id)
@@ -1470,6 +1528,19 @@
           ? `New tasks run ${SOURCE_WORDS[state.stageSource] ?? state.stageSource}.`
           : ''
 
+        /**
+         * The sidebar shows what will happen; the dialog is where it changes.
+         *
+         * An arrow-separated list is enough to answer "is the review stage still in there?"
+         * without opening anything, and a mark for the stages that stop for approval, because
+         * that is the one property with a cost attached.
+         */
+        $('stagesSummary').textContent = state.stages.length
+          ? state.stages
+              .map((stage) => `${stage.id}${stage.requiresApproval ? ' ⏸' : ''}`)
+              .join(' → ')
+          : 'No stages configured.'
+
         if (state.stages.length === 0) {
           $('stageList').innerHTML = '<p class="empty">No stages. A run would do nothing.</p>'
           return
@@ -1609,6 +1680,22 @@
           )
       }
 
+      /**
+       * Opened as a modal, so the page underneath is inert while a pipeline is being edited.
+       *
+       * `showModal` rather than a hidden div: it traps focus, closes on Escape and dims what is
+       * behind it without any of that being written here.
+       */
+      $('openStages').onclick = () => {
+        $('stagesTitle').textContent = state.stageTaskId ? 'Stages for this task' : 'Project stages'
+        $('stagesScopeNote').textContent = state.stageTaskId
+          ? 'Saved against this task only. Other tasks keep the project default.'
+          : "Saved as this project's default. Every new task starts from it."
+        $('stagesStatus').textContent = ''
+        $('stagesDialog').showModal()
+      }
+      $('closeStages').onclick = () => $('stagesDialog').close()
+
       $('addStage').onclick = () => {
         state.stages.push({
           id: `stage-${state.stages.length + 1}`,
@@ -1644,7 +1731,12 @@
         $('stagesStatus').textContent = res.ok
           ? 'saved — new tasks in this project will run these stages'
           : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
-        if (res.ok) await loadStages()
+        if (res.ok) {
+          await loadStages()
+          // Closed on success only. A failed save keeps the dialog open with the message beside
+          // the button, rather than dismissing the work someone just did.
+          $('stagesDialog').close()
+        }
       }
 
       function escapeAttr(value) {

@@ -29,7 +29,7 @@ import type { SeatStore } from './harness/seat-store.js'
 import type { JwtVerifier } from './auth/jwt.js'
 import type { ProjectAccessChecker } from './auth/access.js'
 import { McpOAuth } from './mcp/oauth.js'
-import { resolveStages } from './stages/resolve.js'
+import { ensureSeededStageTemplates, resolveStages } from './stages/resolve.js'
 import { MCP_PRESETS } from './mcp/presets.js'
 import type { McpStore } from './mcp/store.js'
 import { toPublic, type McpAuthKind } from './mcp/types.js'
@@ -482,6 +482,26 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * in a UI would reimplement resolution in a second place, where it would drift.
    */
   app.get('/api/stage-templates', async () => {
+    /**
+     * Seeded on first look, so the screen opens on something real.
+     *
+     * Showing the built-in stages without a row behind them would mean the first edit has
+     * nothing to edit — and "these are your stages, but you cannot change them yet" is the
+     * confusion the whole feature exists to remove.
+     *
+     * The repository is only used to decide whether a `pr` stage makes sense, and the first
+     * allowed repo is the honest answer at this point: no task has been chosen yet.
+     */
+    const repos = await store.listProjectRepos(opts.scope)
+    const firstRepo = repos[0]
+    await ensureSeededStageTemplates({
+      store,
+      scope: opts.scope,
+      seed: builtInStageTemplate(
+        firstRepo ? `https://github.com/${firstRepo.owner}/${firstRepo.repo}.git` : 'file:///local',
+      ),
+    }).catch(() => undefined)
+
     const templates = await store.listStageTemplates(opts.scope)
     const resolved = await resolveStages({
       store,

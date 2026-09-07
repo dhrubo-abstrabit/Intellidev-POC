@@ -8,6 +8,7 @@
 export * from './ids.js'
 export * from './events.js'
 export * from './stages.js'
+export * from './stage-prompts.js'
 export * from './manifest.js'
 export * from './tools.js'
 export * from './env.js'
