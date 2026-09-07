@@ -568,6 +568,14 @@ export class PostgresStore implements Store {
         runnerStatus: 'not_started',
         // Chosen at creation; absent means "whatever this project's default is at dispatch".
         stageTemplateId: input.stageTemplateId ?? null,
+        /**
+         * Stages pinned to this task, when it was created with its own.
+         *
+         * Dropped here originally, which is the worst shape the bug could take: the request
+         * succeeded, the task looked configured, and at dispatch it silently ran the project
+         * default instead of the pipeline someone had just built.
+         */
+        stages: input.stages ?? null,
       })
 
       const created = await this.readTask(id, tx)

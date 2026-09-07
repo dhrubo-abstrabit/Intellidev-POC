@@ -117,6 +117,111 @@ describe('picking a template for a single task', () => {
     expect(resolved.source).toBe('project-default')
   })
 
+  it('pins stages sent with the request to that task alone', async () => {
+    /**
+     * The one-off. Saving a template for "run this without the design stage" would leave a
+     * permanent project-level profile behind, and a project would collect one per task — so the
+     * stages travel with the task instead, and no template is created or touched.
+     */
+    const store = new InMemoryStore()
+    await allowTestRepo(store)
+    const projectDefault = await store.saveStageTemplate({
+      clientSpaceId: TEST_SCOPE.clientSpaceId,
+      projectId: TEST_SCOPE.projectId,
+      name: 'Full pipeline',
+      stages: [
+        { id: 'design', kind: 'agent', prompt: 'plan' },
+        { id: 'code', kind: 'agent', prompt: 'do' },
+      ] as never,
+      isDefault: true,
+    })
+
+    const app = await serverWith(store)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: {
+        ...TEST_TASK,
+        stages: [{ id: 'code', kind: 'agent', prompt: 'do', tools: { mode: 'full' } }],
+      },
+    })
+    await app.close()
+    expect(res.statusCode).toBe(201)
+
+    const task = await store.getTask(res.json().task.id)
+    const resolved = await resolveStages({
+      store,
+      scope: TEST_SCOPE,
+      task: task!,
+      builtIn: BUILT_IN,
+    })
+    expect(resolved.source).toBe('task-inline')
+    expect(resolved.template.stages.map((s) => s.id)).toEqual(['code'])
+
+    // No template was created, and the project's own is byte-for-byte what it was.
+    const templates = await store.listStageTemplates(TEST_SCOPE)
+    expect(templates).toHaveLength(1)
+    expect(templates[0]?.id).toBe(projectDefault.id)
+    expect(templates[0]?.stages).toEqual(projectDefault.stages)
+  })
+
+  it('keeps a stage that was switched off, marked off', async () => {
+    /**
+     * Off, not deleted. The engine skips a stage with `enabled: false`, so the prompt survives
+     * for the next run — which is the difference between "not this time" and "retype it later".
+     *
+     * Asserted on the stored pipeline rather than on the engine (covered in the adapter): what
+     * could break here is the flag being dropped in transit, and a dropped `false` reads as
+     * `enabled` and quietly runs the stage.
+     */
+    const store = new InMemoryStore()
+    await allowTestRepo(store)
+    const app = await serverWith(store)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: {
+        ...TEST_TASK,
+        stages: [
+          { id: 'design', kind: 'agent', prompt: 'plan', enabled: false },
+          { id: 'code', kind: 'agent', prompt: 'do' },
+        ],
+      },
+    })
+    await app.close()
+    expect(res.statusCode).toBe(201)
+
+    const resolved = await resolveStages({
+      store,
+      scope: TEST_SCOPE,
+      task: (await store.getTask(res.json().task.id))!,
+      builtIn: BUILT_IN,
+    })
+    expect(resolved.template.stages.map((s) => [s.id, s.enabled])).toEqual([
+      ['design', false],
+      ['code', true],
+    ])
+  })
+
+  it('refuses stages that would not run, before the task exists', async () => {
+    // A task created with a broken pipeline would look configured and fail whenever somebody
+    // finally ran it — long after the request that broke it, and with a container spent.
+    const store = new InMemoryStore()
+    await allowTestRepo(store)
+    const app = await serverWith(store)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      // An agent stage with no instructions at all: nothing to send the model.
+      payload: { ...TEST_TASK, stages: [{ id: 'code', kind: 'agent' }] },
+    })
+    await app.close()
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toMatch(/would not run/)
+    expect(await store.listTasks(TEST_SCOPE)).toHaveLength(0)
+  })
+
   it('refuses an id that is not a template', async () => {
     /**
      * Caught at the request rather than at dispatch. A task created with a bad id would look

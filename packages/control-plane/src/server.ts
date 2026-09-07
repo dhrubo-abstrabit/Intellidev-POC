@@ -172,6 +172,19 @@ const CreateTask = z.object({
    * which is what lets a fix to the project's stages reach work that has not started.
    */
   stageTemplateId: z.string().uuid().optional(),
+  /**
+   * Stages pinned to this task alone, instead of any template.
+   *
+   * The alternative was saving a template for every variation — "run this one without the design
+   * stage" would leave a permanent project-level profile behind, and a project would accumulate
+   * one per task. These belong to the task: no template is created, none is edited, and no other
+   * task sees them.
+   *
+   * Unvalidated here on purpose. The shape is checked in the handler with the same schema the
+   * engine uses, so a bad pipeline gets the message that names the offending stage rather than a
+   * zod dump of a deeply nested union.
+   */
+  stages: z.array(z.unknown()).min(1).optional(),
 })
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
@@ -725,8 +738,30 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (unknown.length > 0) {
       return reply.code(400).send({ error: `not a connected MCP server: ${unknown.join(', ')}` })
     }
+
+    /**
+     * Custom stages are parsed before the task exists.
+     *
+     * Refused here rather than at dispatch, for the same reason the per-task edit is: a task
+     * created with a broken pipeline would look configured and fail whenever somebody finally
+     * ran it, long after the request that broke it.
+     */
+    let stages
+    if (parsed.data.stages) {
+      try {
+        stages = StageTemplate.parse({ name: 'task', stages: parsed.data.stages }).stages
+      } catch (error) {
+        return reply.code(400).send({
+          error: 'those stages would not run',
+          detail: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
     try {
-      return reply.code(201).send({ task: await store.createTask(parsed.data, opts.scope) })
+      return reply.code(201).send({
+        task: await store.createTask({ ...parsed.data, ...(stages ? { stages } : {}) }, opts.scope),
+      })
     } catch (error) {
       // A repository outside the project's allowlist is a 400 the form can render, not a
       // fault: the App may well be able to reach it, which is a different question from

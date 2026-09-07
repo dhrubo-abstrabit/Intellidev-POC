@@ -242,6 +242,17 @@
       button.secondary:hover:not(:disabled) {
         background: var(--btn2h);
       }
+      /*
+        `hidden` has to win.
+
+        The attribute's `display: none` comes from the user-agent stylesheet, so any class that
+        sets `display` beats it — and the classes here nearly all do. That is why the template
+        picker and the default checkbox stayed on screen in a mode that hides them: the code was
+        setting `.hidden = true` and the CSS was quietly ignoring it.
+      */
+      [hidden] {
+        display: none !important;
+      }
       .row {
         display: flex;
         gap: 8px;
@@ -338,15 +349,55 @@
       }
       .stage-head {
         display: grid;
-        /* number, id, kind, then three fixed buttons. `minmax(0, …)` so a long id shrinks
-           rather than pushing the buttons off the edge. */
-        grid-template-columns: 1.4em minmax(0, 1fr) 5.5em auto auto auto;
+        /* grip, number, id, kind, the on switch, remove. `minmax(0, …)` so a long id shrinks
+           rather than pushing the controls off the edge. The kind column is wide enough for
+           "builtin" plus a native dropdown arrow — at 5.5em it read "age" and "bui", which is
+           not a choice anyone can make. */
+        grid-template-columns: auto 1.4em minmax(0, 1fr) 8.5em auto auto;
         gap: 6px;
         align-items: center;
       }
       .stage-head input,
       .stage-head select {
         min-width: 0;
+      }
+      .grip {
+        cursor: grab;
+        /* Tight tracking so two dots read as a grip rather than as four characters. */
+        letter-spacing: -2px;
+        padding-inline: 6px;
+      }
+      .stage[draggable='true'] {
+        /* The row moves, the text inside it does not get selected on the way. */
+        user-select: none;
+      }
+      .stage.dragging {
+        opacity: 0.4;
+      }
+      /* Where the row would land. A line rather than a gap, so nothing reflows mid-drag and the
+         target stops moving away from the cursor. */
+      .stage.drop-before {
+        box-shadow: inset 0 3px 0 0 var(--green);
+      }
+      .stage.drop-after {
+        box-shadow: inset 0 -3px 0 0 var(--green);
+      }
+      /* A stage that will be skipped. Legible, but plainly not part of the run. */
+      .stage.off > *:not(.stage-head) {
+        opacity: 0.4;
+      }
+      .stage.off .stage-head input[data-stage-id],
+      .stage.off .stage-head select {
+        opacity: 0.55;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+      }
+      .toggle input {
+        width: auto;
       }
       .stage .icon {
         padding: 4px 7px;
@@ -755,8 +806,15 @@
         </button>
       </div>
       <div class="sheet-foot">
-        <label class="hint" for="stageTemplateName" style="white-space: nowrap">Save as</label>
-        <input id="stageTemplateName" placeholder="a name for this set of stages" style="flex: 1" />
+        <!-- Label and field together, so hiding the field cannot leave its label behind. -->
+        <div class="row" id="stageTemplateNameRow" style="flex: 1">
+          <label class="hint" for="stageTemplateName" style="white-space: nowrap">Save as</label>
+          <input
+            id="stageTemplateName"
+            placeholder="a name for this set of stages"
+            style="flex: 1"
+          />
+        </div>
         <!--
           Whether saving also claims the project default.
 
@@ -1463,7 +1521,23 @@
          * sending an empty string instead would fail the uuid check on a form nobody touched.
          */
         const chosenTemplate = $('taskTemplate').value
-        if (chosenTemplate) body.stageTemplateId = chosenTemplate
+        if (chosenTemplate === CUSTOM_STAGES) {
+          /**
+           * The draft travels with the task, as stages rather than a template id.
+           *
+           * Which is what makes it a one-off: resolution takes inline stages over everything
+           * else, no template is created, and a later edit to the project default leaves this
+           * task alone.
+           */
+          if (!state.draftStages?.length) {
+            $('create').disabled = false
+            $('formHint').textContent = 'build the custom stages first, or pick a template'
+            return
+          }
+          body.stages = state.draftStages
+        } else if (chosenTemplate) {
+          body.stageTemplateId = chosenTemplate
+        }
         const res = await fetch('/api/tasks', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1481,6 +1555,11 @@
         $('title').value = ''
         $('description').value = ''
         $('criteria').value = ''
+        // The draft belonged to that task. Leaving it armed would silently apply a pipeline
+        // built for one task to the next one somebody types.
+        state.draftStages = null
+        renderTaskTemplateOptions()
+        $('taskTemplate').value = ''
         await loadTasks()
         select(task.id)
       }
@@ -1592,6 +1671,17 @@
           (keepOpen && state.templates.find((t) => t.id === keepOpen)?.id) ??
           state.templates.find((t) => t.name === body.effective.name)?.id ??
           null
+        /**
+         * Which template is in effect, kept apart from which one is open.
+         *
+         * They are the same until someone switches the picker, and conflating them is what let
+         * a closed-without-saving switch leave the sidebar button opening the wrong template.
+         */
+        state.effectiveTemplateId =
+          state.templates.find((t) => t.name === body.effective.name)?.id ?? null
+        state.effectiveTemplateName =
+          body.effective.source === 'built-in' ? '' : body.effective.name
+
         const open = state.templates.find((t) => t.id === state.openTemplateId)
         if (open) {
           // The editor shows the template the picker names, which for `keepOpen` is not the one
@@ -1665,10 +1755,48 @@
               (t) =>
                 `<option value="${escapeAttr(t.id)}">${escapeHtmlText(templateLabel(t))}</option>`,
             ),
+          /**
+           * A pipeline for this one task, saving nothing.
+           *
+           * The alternative was a template per variation: "run this one without the design
+           * stage" would leave a permanent project-level profile behind, and a project would
+           * collect one per task until the picker was useless.
+           */
+          `<option value="${CUSTOM_STAGES}">${
+            state.draftStages ? describeDraft(state.draftStages) : 'custom for this task…'
+          }</option>`,
         ].join('')
         // Kept across a reload, so saving a template does not quietly reset a choice made on the
         // form a moment ago.
         if (chosen) $('taskTemplate').value = chosen
+      }
+
+      /** The sentinel for "not a template at all". Not a uuid, so it cannot collide with one. */
+      const CUSTOM_STAGES = 'custom'
+
+      /** What the custom option says once there is a draft behind it. */
+      function describeDraft(stages) {
+        const off = stages.filter((stage) => stage.enabled === false).length
+        const runs = stages.length - off
+        // "3 stages, 1 off" reads as though there were three in total. Say which will run.
+        return `custom — ${runs} will run${off ? `, ${off} off` : ''} (edit)`
+      }
+
+      /**
+       * Choosing "custom" opens the editor rather than selecting a value.
+       *
+       * The stages have to exist before the task does, so this is the only point at which they
+       * can be built — and building them is an edit, not a pick from a list.
+       */
+      $('taskTemplate').onchange = () => {
+        if ($('taskTemplate').value !== CUSTOM_STAGES) return
+        // Starts from what this task would have run anyway, which is nearly always the thing
+        // being varied.
+        state.stages = (state.draftStages ?? state.projectStages ?? []).map((stage) => ({
+          ...stage,
+        }))
+        renderStages()
+        openStageDialog({ draft: true })
       }
 
       /** Where the stages a new task runs came from, in words rather than a field name. */
@@ -1692,10 +1820,9 @@
          * without opening anything, and a mark for the stages that stop for approval, because
          * that is the one property with a cost attached.
          */
-        $('stagesSummary').textContent = state.stages.length
-          ? state.stages
-              .map((stage) => `${stage.id}${stage.requiresApproval ? ' ⏸' : ''}`)
-              .join(' → ')
+        const effective = state.projectStages ?? state.stages
+        $('stagesSummary').textContent = effective.length
+          ? effective.map((stage) => `${stage.id}${stage.requiresApproval ? ' ⏸' : ''}`).join(' → ')
           : 'No stages configured.'
 
         if (state.stages.length === 0) {
@@ -1706,16 +1833,39 @@
         $('stageList').innerHTML = state.stages
           .map(
             (stage, i) => `
-            <div class="stage">
+            <div class="stage${stage.enabled === false ? ' off' : ''}" draggable="true" data-stage-index="${i}">
               <div class="stage-head">
+                <!--
+                  The handle is a button, not a bare grip.
+
+                  Dragging replaced the up/down arrows, and a drag-only control cannot be
+                  operated from the keyboard at all — so this one is focusable and moves the
+                  stage with the arrow keys. Same affordance, both ways in.
+                -->
+                <button
+                  type="button"
+                  class="secondary icon grip"
+                  data-stage-grip="${i}"
+                  title="Drag to reorder, or focus and use the arrow keys"
+                  aria-label="reorder ${escapeAttr(stage.id)}"
+                >⋮⋮</button>
                 <span class="hint">${i + 1}</span>
                 <input data-stage-id="${i}" value="${escapeAttr(stage.id)}" placeholder="stage name" />
                 <select data-stage-kind="${i}">
                   <option value="agent" ${stage.kind === 'agent' ? 'selected' : ''}>agent</option>
                   <option value="builtin" ${stage.kind === 'builtin' ? 'selected' : ''}>builtin</option>
                 </select>
-                <button type="button" class="secondary icon" data-stage-up="${i}" title="move up" ${i === 0 ? 'disabled' : ''}>↑</button>
-                <button type="button" class="secondary icon" data-stage-down="${i}" title="move down" ${i === state.stages.length - 1 ? 'disabled' : ''}>↓</button>
+                <!--
+                  Off, rather than removed.
+
+                  Turning a stage off keeps it and its prompt in the pipeline, so putting it back
+                  is a click — which is the whole point for a one-off: "run this task without the
+                  design stage" should not mean retyping the design stage afterwards.
+                -->
+                <label class="hint toggle" title="${stage.enabled === false ? 'Skipped on this run' : 'Runs'}">
+                  <input type="checkbox" data-stage-enabled="${i}" ${stage.enabled === false ? '' : 'checked'} />
+                  <span>on</span>
+                </label>
                 <button type="button" class="secondary icon" data-stage-remove="${i}" title="remove">×</button>
               </div>
               ${
@@ -1800,6 +1950,21 @@
           .forEach(
             (el) => (el.onchange = () => (at(el, 'stageApproval').requiresApproval = el.checked)),
           )
+        /**
+         * Turning a stage off, which the engine already honours by skipping it.
+         *
+         * Re-rendered because the row's appearance changes — a stage that will not run has to
+         * look like one, or the only evidence is a checkbox nobody scrolls back to.
+         */
+        $('stageList')
+          .querySelectorAll('[data-stage-enabled]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                at(el, 'stageEnabled').enabled = el.checked
+                renderStages()
+              }),
+          )
 
         $('stageList')
           .querySelectorAll('[data-stage-kind]')
@@ -1823,24 +1988,90 @@
           )
 
         const move = (from, to) => {
+          if (to < 0 || to >= state.stages.length || from === to) return
           state.stagesDirty = true
           const [moved] = state.stages.splice(from, 1)
           state.stages.splice(to, 0, moved)
           renderStages()
+          // Focus follows the stage, so a keyboard reorder can continue rather than dumping the
+          // caret back at the top of the list after every single move.
+          $('stageList').querySelector(`[data-stage-grip="${to}"]`)?.focus()
         }
+
+        /**
+         * Reordering by dragging the row, with the keyboard as the equal path.
+         *
+         * The arrows were replaced because reordering five stages meant counting clicks. They
+         * are not simply gone: the grip is focusable and takes ArrowUp/ArrowDown, because a
+         * drag-only list is unusable without a mouse.
+         */
         $('stageList')
-          .querySelectorAll('[data-stage-up]')
-          .forEach(
-            (el) =>
-              (el.onclick = () => move(Number(el.dataset.stageUp), Number(el.dataset.stageUp) - 1)),
-          )
-        $('stageList')
-          .querySelectorAll('[data-stage-down]')
-          .forEach(
-            (el) =>
-              (el.onclick = () =>
-                move(Number(el.dataset.stageDown), Number(el.dataset.stageDown) + 1)),
-          )
+          .querySelectorAll('[data-stage-grip]')
+          .forEach((el) => {
+            const from = Number(el.dataset.stageGrip)
+            el.onkeydown = (event) => {
+              const to =
+                event.key === 'ArrowUp' ? from - 1 : event.key === 'ArrowDown' ? from + 1 : null
+              if (to === null) return
+              // The list scrolls; without this the page jumps a screen on every move.
+              event.preventDefault()
+              move(from, to)
+            }
+          })
+
+        const rows = [...$('stageList').querySelectorAll('[data-stage-index]')]
+        const clearMarks = () =>
+          rows.forEach((row) => row.classList.remove('drop-before', 'drop-after', 'dragging'))
+
+        rows.forEach((row) => {
+          const index = Number(row.dataset.stageIndex)
+
+          row.ondragstart = (event) => {
+            state.dragFrom = index
+            row.classList.add('dragging')
+            // `setData` is required or Firefox refuses to start the drag at all; the payload is
+            // the index, though the handler reads `state.dragFrom` so a drag from another window
+            // cannot reorder this list.
+            event.dataTransfer?.setData('text/plain', String(index))
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+          }
+
+          row.ondragover = (event) => {
+            if (state.dragFrom === undefined || state.dragFrom === index) return
+            // Without preventDefault the drop event never fires — the browser treats the row as
+            // an invalid target and shows the "no drop" cursor.
+            event.preventDefault()
+            const box = row.getBoundingClientRect()
+            const after = event.clientY > box.top + box.height / 2
+            row.classList.remove(after ? 'drop-before' : 'drop-after')
+            row.classList.add(after ? 'drop-after' : 'drop-before')
+          }
+
+          row.ondragleave = () => row.classList.remove('drop-before', 'drop-after')
+
+          row.ondrop = (event) => {
+            event.preventDefault()
+            const from = state.dragFrom
+            state.dragFrom = undefined
+            if (from === undefined || from === index) return clearMarks()
+            const box = row.getBoundingClientRect()
+            const after = event.clientY > box.top + box.height / 2
+            /**
+             * Dropping below a row that sits *after* the one being dragged lands on `index`, not
+             * `index + 1`: removing the dragged row first shifts everything below it up by one.
+             * Getting this wrong moves the stage one place too far, which looks like the drop
+             * being ignored every other time.
+             */
+            const to = after ? (from < index ? index : index + 1) : from < index ? index - 1 : index
+            clearMarks()
+            move(from, to)
+          }
+
+          row.ondragend = () => {
+            state.dragFrom = undefined
+            clearMarks()
+          }
+        })
         $('stageList')
           .querySelectorAll('[data-stage-remove]')
           .forEach(
@@ -1866,30 +2097,66 @@
        * and the *sidebar* button then saved to whichever task was last selected — silently
        * writing a project change onto one task.
        */
-      function openStageDialog({ taskId }) {
+      function openStageDialog({ taskId, draft } = {}) {
         state.stageTaskId = taskId ?? null
-        // A task's stages have no name of their own; the field would ask for something that has
-        // nowhere to go. Same for the picker and the default box: editing one task's stages is
-        // not a way to change a template or to change what other tasks run.
-        $('stageTemplateName').hidden = Boolean(taskId)
-        $('templatePickerRow').hidden = Boolean(taskId)
-        $('makeDefaultRow').hidden = Boolean(taskId)
+        state.stageDraft = Boolean(draft)
+        /**
+         * Three subjects, and only one of them is a template.
+         *
+         * A task's stages — pinned to an existing task, or drafted for one not yet created —
+         * have no name of their own, belong to no template, and are not anyone's default. So
+         * the name field, the picker and the default box are all a project-scope thing: showing
+         * them would offer to do something the save cannot do.
+         */
+        const perTask = Boolean(taskId) || Boolean(draft)
+        $('stageTemplateNameRow').hidden = perTask
+        $('templatePickerRow').hidden = perTask
+        $('makeDefaultRow').hidden = perTask
         state.stagesDirty = false
-        $('stagesTitle').textContent = taskId ? 'Stages for this task' : 'Project stages'
+        $('stagesTitle').textContent = taskId
+          ? 'Stages for this task'
+          : draft
+            ? 'Stages for the next task'
+            : 'Project stages'
         $('stagesScopeNote').textContent = taskId
           ? 'Saved against this task only — the project default and every other task are untouched.'
-          : "Saved as this project's default. Every new task starts from it."
+          : draft
+            ? 'Used by the task you are about to create. Nothing is saved as a template, and no other task changes.'
+            : "Saved as this project's default. Every new task starts from it."
+        $('saveStages').textContent = draft ? 'Use these stages' : 'Save'
         $('stagesStatus').textContent = ''
+        /**
+         * Re-synced on open, not only on load.
+         *
+         * The picker and the default box describe whichever template is open, and both are
+         * plain form controls that keep whatever they were last set to. Opening the dialog
+         * without this showed the default box unchecked for a template that *is* the default —
+         * and a save would then have taken the default away.
+         */
+        if (!perTask) renderTemplatePicker()
         $('stagesDialog').showModal()
       }
 
       $('openStages').onclick = () => {
-        // From the sidebar the subject is the project, so a task edited a moment ago is not it.
+        // From the sidebar the subject is the project, so a task edited a moment ago is not it —
+        // and neither is a template someone switched the picker to and then closed without
+        // saving. Both the stages and the picker go back to what is in effect.
         state.stages = (state.projectStages ?? []).map((stage) => ({ ...stage }))
+        state.openTemplateId = state.effectiveTemplateId ?? null
+        $('stageTemplateName').value = state.effectiveTemplateName ?? ''
         renderStages()
         openStageDialog({ taskId: null })
       }
-      $('closeStages').onclick = () => $('stagesDialog').close()
+      $('closeStages').onclick = () => {
+        /**
+         * Backing out of a draft returns the selector to what it was.
+         *
+         * Otherwise the form would sit on "custom for this task…" with nothing behind it, and
+         * the task would be created with the project default while the form claimed otherwise.
+         */
+        if (state.stageDraft && !state.draftStages) $('taskTemplate').value = ''
+        $('stagesDialog').close()
+      }
 
       /**
        * Switching which template is open.
@@ -1962,6 +2229,21 @@
          * untouched, and so is every other task. Without one, this is the project's default and
          * every future task starts from it.
          */
+        /**
+         * A draft is kept in the page until the task is created.
+         *
+         * There is nothing to save it against yet — the task does not exist — and inventing a
+         * template to hold it is exactly what this avoids.
+         */
+        if (state.stageDraft) {
+          state.draftStages = state.stages.map((stage) => ({ ...stage }))
+          state.stagesDirty = false
+          renderTaskTemplateOptions()
+          $('taskTemplate').value = CUSTOM_STAGES
+          $('stagesDialog').close()
+          return
+        }
+
         if (state.stageTaskId) {
           $('saveStages').disabled = true
           const res = await fetch(`/api/tasks/${state.stageTaskId}/stages`, {
