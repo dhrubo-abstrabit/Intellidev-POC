@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -232,6 +233,32 @@ export const integrations = runner.table('integrations', {
  * Read only by the credential broker, over a service-role connection. The table has RLS on and
  * no policies at all, so no user's JWT can reach it under any circumstances.
  */
+/**
+ * Saved sets of stages, at space or project scope.
+ *
+ * `stages` is the array from the shared `StageTemplate`. JSONB rather than a table of stage rows
+ * because the ordering *is* the array — a position column would be a second source of truth for
+ * what the array already says, and a template is always read and written whole.
+ */
+export const stageTemplates = runner.table(
+  'stage_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientSpaceId: uuid('client_space_id').notNull(),
+    /** Null is the client space's own template, shared by every project in it. */
+    projectId: uuid('project_id'),
+    name: text('name').notNull(),
+    description: text('description'),
+    stages: jsonb('stages').$type<unknown[]>().notNull(),
+    /** What a new task in this scope picks up without anyone choosing. */
+    isDefault: boolean('is_default').notNull().default(false),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('stage_templates_space_idx').on(table.clientSpaceId)],
+)
+
 export const credentials = runner.table('credentials', {
   integrationId: uuid('integration_id').primaryKey(),
   ciphertext: text('ciphertext').notNull(),

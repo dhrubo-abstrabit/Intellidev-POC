@@ -10,6 +10,7 @@ import { DeliveryCursor } from './delivery.js'
 import {
   RepoNotAllowed,
   type Listener,
+  type StageTemplateRow,
   type ProjectRepoRow,
   type ProjectScope,
   type RunRow,
@@ -43,6 +44,7 @@ interface Subscription {
  */
 
 export class InMemoryStore implements Store {
+  private readonly stageTemplates = new Map<string, StageTemplateRow>()
   private readonly tasks = new Map<string, TaskRow>()
   private readonly runs = new Map<string, RunRow>()
   private readonly events = new Map<string, AgentEvent[]>()
@@ -85,6 +87,65 @@ export class InMemoryStore implements Store {
     }
     this.repos.set(row.id, row)
     return row
+  }
+
+  // --- stage templates -----------------------------------------------------
+
+  async listStageTemplates(scope: ProjectScope): Promise<StageTemplateRow[]> {
+    return (
+      [...this.stageTemplates.values()]
+        .filter(
+          (t) =>
+            t.clientSpaceId === scope.clientSpaceId &&
+            (t.projectId === undefined || t.projectId === scope.projectId),
+        )
+        // A project's own first, matching Postgres — resolution relies on finding an override
+        // before the space default it replaces.
+        .sort((a, b) => {
+          if (Boolean(a.projectId) !== Boolean(b.projectId)) return a.projectId ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+    )
+  }
+
+  async getStageTemplate(id: string): Promise<StageTemplateRow | undefined> {
+    return this.stageTemplates.get(id)
+  }
+
+  async saveStageTemplate(
+    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+  ): Promise<StageTemplateRow> {
+    const id = input.id ?? randomUUID()
+    const now = new Date().toISOString()
+
+    if (input.isDefault) {
+      // Scoped as the Postgres partial index is: a project's default is independent of the
+      // space's, so clearing must not reach across that line.
+      for (const [key, existing] of this.stageTemplates) {
+        if (key === id) continue
+        if (existing.clientSpaceId !== input.clientSpaceId) continue
+        if ((existing.projectId ?? null) !== (input.projectId ?? null)) continue
+        if (existing.isDefault) this.stageTemplates.set(key, { ...existing, isDefault: false })
+      }
+    }
+
+    const row: StageTemplateRow = {
+      id,
+      clientSpaceId: input.clientSpaceId,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      name: input.name,
+      ...(input.description ? { description: input.description } : {}),
+      stages: input.stages,
+      isDefault: input.isDefault,
+      createdAt: this.stageTemplates.get(id)?.createdAt ?? now,
+      updatedAt: now,
+    }
+    this.stageTemplates.set(id, row)
+    return row
+  }
+
+  async deleteStageTemplate(id: string): Promise<boolean> {
+    return this.stageTemplates.delete(id)
   }
 
   async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {

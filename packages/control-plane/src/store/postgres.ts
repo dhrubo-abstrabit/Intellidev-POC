@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import pg from 'pg'
 import {
@@ -19,8 +19,17 @@ import {
   type RunRow,
   type Store,
   type TaskRow,
+  type StageTemplateRow,
 } from './types.js'
-import { productTasks, projectRepos, runEvents, runTokens, runs, taskSpecs } from './schema.js'
+import {
+  productTasks,
+  projectRepos,
+  runEvents,
+  runTokens,
+  runs,
+  stageTemplates,
+  taskSpecs,
+} from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
 import { PostgresSeatStore } from '../harness/postgres-seats.js'
 import { PostgresMcpStore } from '../mcp/postgres-mcp.js'
@@ -350,6 +359,96 @@ export class PostgresStore implements Store {
       })
       .returning()
     return toProjectRepo(row!)
+  }
+
+  // --- stage templates -----------------------------------------------------
+
+  /**
+   * Both scopes in one query: the space's templates and this project's.
+   *
+   * Ordered so a project's own come first, which is the order resolution wants — a project
+   * override should be found before the space default it replaces, without the caller sorting.
+   */
+  async listStageTemplates(scope: ProjectScope): Promise<StageTemplateRow[]> {
+    const rows = await this.db
+      .select()
+      .from(stageTemplates)
+      .where(
+        and(
+          eq(stageTemplates.clientSpaceId, scope.clientSpaceId),
+          or(isNull(stageTemplates.projectId), eq(stageTemplates.projectId, scope.projectId)),
+        ),
+      )
+      .orderBy(desc(stageTemplates.projectId), stageTemplates.name)
+    return rows.map(toStageTemplate)
+  }
+
+  async getStageTemplate(id: string): Promise<StageTemplateRow | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(stageTemplates)
+      .where(eq(stageTemplates.id, id))
+      .limit(1)
+    return row ? toStageTemplate(row) : undefined
+  }
+
+  /**
+   * Creates or replaces one, clearing any sibling default in the same scope.
+   *
+   * In one transaction, and not left to the caller. The database enforces one default per scope
+   * with a partial unique index, so a caller that forgot to clear the old one would get a
+   * constraint violation rather than the thing they obviously meant. Doing it here means
+   * "make this the default" is a single call that cannot half-happen.
+   */
+  async saveStageTemplate(
+    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+  ): Promise<StageTemplateRow> {
+    return await this.db.transaction(async (tx) => {
+      if (input.isDefault) {
+        // Scoped exactly as the unique index is: a project's default is independent of the
+        // space's, so clearing must not reach across that line.
+        await tx
+          .update(stageTemplates)
+          .set({ isDefault: false })
+          .where(
+            and(
+              eq(stageTemplates.clientSpaceId, input.clientSpaceId),
+              input.projectId
+                ? eq(stageTemplates.projectId, input.projectId)
+                : isNull(stageTemplates.projectId),
+              eq(stageTemplates.isDefault, true),
+              ...(input.id ? [ne(stageTemplates.id, input.id)] : []),
+            ),
+          )
+      }
+
+      const values = {
+        clientSpaceId: input.clientSpaceId,
+        projectId: input.projectId ?? null,
+        name: input.name,
+        description: input.description ?? null,
+        stages: input.stages as unknown[],
+        isDefault: input.isDefault,
+        updatedAt: new Date(),
+      }
+
+      const [row] = input.id
+        ? await tx
+            .insert(stageTemplates)
+            .values({ id: input.id, ...values })
+            .onConflictDoUpdate({ target: stageTemplates.id, set: values })
+            .returning()
+        : await tx.insert(stageTemplates).values(values).returning()
+      return toStageTemplate(row!)
+    })
+  }
+
+  async deleteStageTemplate(id: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(stageTemplates)
+      .where(eq(stageTemplates.id, id))
+      .returning({ id: stageTemplates.id })
+    return rows.length > 0
   }
 
   async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {
@@ -861,6 +960,20 @@ function parseRepoUrl(repoUrl: string): { owner: string; repo: string } | undefi
     .replace(/\.git$/, '')
     .split('/')
   return parts.length >= 2 && parts[0] && parts[1] ? { owner: parts[0], repo: parts[1] } : undefined
+}
+
+function toStageTemplate(row: typeof stageTemplates.$inferSelect): StageTemplateRow {
+  return {
+    id: row.id,
+    clientSpaceId: row.clientSpaceId,
+    ...(row.projectId ? { projectId: row.projectId } : {}),
+    name: row.name,
+    ...(row.description ? { description: row.description } : {}),
+    stages: row.stages as StageTemplateRow['stages'],
+    isDefault: row.isDefault,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }
 }
 
 function toRun(row: typeof runs.$inferSelect): RunRow {

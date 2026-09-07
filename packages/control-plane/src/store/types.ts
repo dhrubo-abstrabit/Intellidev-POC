@@ -1,3 +1,4 @@
+import type { StageTemplate } from '@intellidev/shared'
 import type { AgentEvent, HarnessId, RunStatus, StageRecord, TaskStatus } from '@intellidev/shared'
 
 /**
@@ -39,6 +40,34 @@ export interface ProjectScope {
  * repository in that org — the broker checks that a run's requested host matches its task, but
  * nothing constrained which repositories a project is entitled to.
  */
+/**
+ * A saved set of stages, at one of two scopes.
+ *
+ * `projectId` absent means the client space's own — shared by every project in it. Present means
+ * a project's, which overrides the space's. Mirrors how integrations are scoped, because it is
+ * the same question: is this shared by the space, or does this project do it differently.
+ */
+export interface StageTemplateRow {
+  id: string
+  clientSpaceId: string
+  /** Absent for a space-level template. */
+  projectId?: string
+  name: string
+  description?: string
+  /**
+   * The stages, in order.
+   *
+   * Typed as the shared `StageTemplate['stages']` rather than `unknown[]`, so a row that would
+   * not run cannot be written — the parse happens at the edge and everything downstream can
+   * rely on it.
+   */
+  stages: StageTemplate['stages']
+  /** What a new task in this scope picks up without anyone choosing. */
+  isDefault: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProjectRepoRow {
   id: string
   projectId: string
@@ -132,6 +161,27 @@ export interface Store {
     input: { owner: string; repo: string; installationRef: string; defaultBranch?: string },
   ): Promise<ProjectRepoRow>
   listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]>
+
+  /**
+   * Both scopes at once: the space's templates and this project's.
+   *
+   * One query rather than two, because every caller wants both — the UI lists what a project
+   * could use, and resolution needs to see a project override sitting next to the space default
+   * it replaces.
+   */
+  listStageTemplates(scope: ProjectScope): Promise<StageTemplateRow[]>
+  getStageTemplate(id: string): Promise<StageTemplateRow | undefined>
+  /**
+   * Creates or replaces one, by id.
+   *
+   * Marking a template default clears the flag on its siblings in the same scope. Done inside
+   * the write rather than left to a caller: the database refuses two defaults per scope, so a
+   * caller that forgot would get a constraint error instead of the obvious behaviour.
+   */
+  saveStageTemplate(
+    input: Omit<StageTemplateRow, 'createdAt' | 'updatedAt'> & { id?: string },
+  ): Promise<StageTemplateRow>
+  deleteStageTemplate(id: string): Promise<boolean>
   /**
    * Removes a repository from a project's allowlist.
    *

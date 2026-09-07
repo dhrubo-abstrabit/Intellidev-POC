@@ -1,0 +1,121 @@
+import { StageTemplate } from '@intellidev/shared'
+import type { ProjectScope, StageTemplateRow, Store } from '../store/types.js'
+
+/**
+ * Which stages a task runs, and where that decision came from.
+ *
+ * Five places can decide, and they are tried most specific first:
+ *
+ *  1. **stages on the task** — an inline array, pinned to that task. Editing a template later
+ *     does not change a task that carried its own.
+ *  2. **a template the task chose** — follows that template, including later edits.
+ *  3. **the project's default** — what a new task in this project picks up.
+ *  4. **the space's default** — what every project in the space inherits.
+ *  5. **the built-in** — what an unconfigured space runs, which is what everything ran before
+ *     any of this existed.
+ *
+ * The order is the whole design. Each level exists because the one above it is too specific to
+ * be a policy and the one below too general to be an exception, and every level is optional — so
+ * a space that configures nothing behaves exactly as it did.
+ *
+ * `source` is returned alongside because "why did this task run those stages" is the question
+ * people actually ask, and answering it from four nullable columns after the fact is guesswork.
+ */
+export type StageSource =
+  'task-inline' | 'task-template' | 'project-default' | 'space-default' | 'built-in'
+
+export interface ResolvedStages {
+  template: StageTemplate
+  source: StageSource
+  /** Absent for an inline or built-in template, which have no row. */
+  templateId?: string
+}
+
+export interface ResolveStagesInput {
+  store: Pick<Store, 'getStageTemplate' | 'listStageTemplates'>
+  scope: ProjectScope
+  /** What the task itself says, if anything. */
+  task?: {
+    stages?: unknown
+    stageTemplateId?: string | undefined
+  }
+  /**
+   * The template to fall back to, built by the caller.
+   *
+   * Passed in rather than imported because the built-in default is not fixed: it adapts to the
+   * repository — a `file://` origin has no GitHub to open a pull request against — and only the
+   * caller knows that. Resolution's job is the *order*, not the last resort.
+   */
+  builtIn: StageTemplate
+}
+
+export async function resolveStages(input: ResolveStagesInput): Promise<ResolvedStages> {
+  const { store, scope, task, builtIn } = input
+
+  /**
+   * Inline stages on the task win, and are validated here.
+   *
+   * A task pinned to a bad array must fail visibly at dispatch rather than reach a container and
+   * die at stage one — the difference between a rejected dispatch and a spent container.
+   */
+  if (Array.isArray(task?.stages) && task.stages.length > 0) {
+    return {
+      template: StageTemplate.parse({ name: 'task', stages: task.stages }),
+      source: 'task-inline',
+    }
+  }
+
+  if (task?.stageTemplateId) {
+    const chosen = await store.getStageTemplate(task.stageTemplateId)
+    /**
+     * A missing template falls through rather than failing.
+     *
+     * The column is `ON DELETE SET NULL`, so this is the narrow window where a template was
+     * deleted between a task being created and dispatched. Refusing the run would be a strange
+     * punishment for a task that was configured correctly when it was made; the project default
+     * is what it would have picked up a moment earlier.
+     */
+    if (chosen && belongsTo(chosen, scope)) {
+      return {
+        template: StageTemplate.parse({ name: chosen.name, stages: chosen.stages }),
+        source: 'task-template',
+        templateId: chosen.id,
+      }
+    }
+  }
+
+  // One query for both scopes; the store returns a project's own first.
+  const available = await store.listStageTemplates(scope)
+
+  const projectDefault = available.find((t) => t.projectId === scope.projectId && t.isDefault)
+  if (projectDefault) {
+    return {
+      template: StageTemplate.parse({ name: projectDefault.name, stages: projectDefault.stages }),
+      source: 'project-default',
+      templateId: projectDefault.id,
+    }
+  }
+
+  const spaceDefault = available.find((t) => t.projectId === undefined && t.isDefault)
+  if (spaceDefault) {
+    return {
+      template: StageTemplate.parse({ name: spaceDefault.name, stages: spaceDefault.stages }),
+      source: 'space-default',
+      templateId: spaceDefault.id,
+    }
+  }
+
+  return { template: builtIn, source: 'built-in' }
+}
+
+/**
+ * Whether a template may be used by this task at all.
+ *
+ * Checked even though RLS already scopes reads: dispatch runs as the service role, which RLS does
+ * not constrain. A task id pointing at another space's template would otherwise run that space's
+ * stages — the one place where "the database will catch it" is not true.
+ */
+function belongsTo(template: StageTemplateRow, scope: ProjectScope): boolean {
+  if (template.clientSpaceId !== scope.clientSpaceId) return false
+  return template.projectId === undefined || template.projectId === scope.projectId
+}
