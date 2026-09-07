@@ -37,6 +37,20 @@ dirty=""
 git diff --quiet HEAD -- . || dirty="-dirty"
 tag="${sha}${dirty}"
 
+# The bundle the image ships, rebuilt every time.
+#
+# THIS IS WHY A FOUR-DAY-OLD RUNNER SHIPPED TWICE. The Dockerfile copies
+# `packages/adapter/dist/intellidev-adapter.js`, and nothing here built it — so the image was
+# whatever someone had last bundled by hand. Seven commits of adapter and shared changes never
+# reached Fargate, and every dispatch died at spec fetch on validation the control plane had
+# already moved past. The push even reported success, with an unchanged digest.
+#
+# Building unconditionally rather than checking timestamps: the build is seconds, and a
+# staleness check that is subtly wrong reintroduces exactly this failure while looking careful.
+printf 'push: bundling the adapter\n'
+(cd ../.. && pnpm --filter @intellidev/adapter run build >/dev/null) \
+  || fail 'the adapter bundle failed to build — the image would ship the previous one'
+
 printf 'push: building %s (%s) for %s\n' "$repo" "$tag" "$want_arch"
 # Also tagged `intellidev/runner:dev`, which is what INTELLIDEV_IMAGE defaults to locally.
 # Without it the local Docker path keeps running whatever was built by hand last, so
