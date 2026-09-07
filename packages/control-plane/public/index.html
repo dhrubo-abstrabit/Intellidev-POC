@@ -734,7 +734,8 @@
         </button>
       </div>
       <div class="sheet-foot">
-        <input id="stageTemplateName" placeholder="template name" style="flex: 1" />
+        <label class="hint" for="stageTemplateName" style="white-space: nowrap">Save as</label>
+        <input id="stageTemplateName" placeholder="a name for this set of stages" style="flex: 1" />
         <button type="button" id="saveStages">Save</button>
         <button type="button" id="closeStages" class="secondary">Close</button>
         <span class="hint" id="stagesStatus"></span>
@@ -1604,11 +1605,15 @@
                          )
                          .join('')}
                      </select>
-                     <textarea data-stage-prompt="${i}" rows="3"
-                       placeholder="what this stage should do">${escapeHtmlText(stage.prompt ?? '')}</textarea>
+                     <textarea data-stage-prompt="${i}" rows="4"
+                       placeholder="what this stage should do — the instructions the model gets">${escapeHtmlText(stage.prompt ?? '')}</textarea>
                      ${
                        stage.promptFile && !stage.prompt
-                         ? `<p class="hint" style="margin: 4px 0 0">prompt from the bundle: ${escapeHtmlText(stage.promptFile)}</p>`
+                         ? `<p class="hint" style="margin: 4px 0 0">
+                              No instructions here — this stage reads
+                              <code>${escapeHtmlText(stage.promptFile)}</code> from the image,
+                              which nobody can edit. Type above to replace it.
+                            </p>`
                          : ''
                      }`
               }

@@ -1,4 +1,4 @@
-import { StageTemplate } from '@intellidev/shared'
+import { DEFAULT_STAGE_PROMPTS, StageTemplate } from '@intellidev/shared'
 import type { ProjectScope, StageTemplateRow, Store } from '../store/types.js'
 
 /**
@@ -179,4 +179,63 @@ export async function ensureSeededStageTemplates(input: {
     stages: input.seed.stages,
     isDefault: true,
   })
+}
+
+/**
+ * Replace `promptFile` pointers with the text they stand for.
+ *
+ * Templates seeded before prompts moved into the database carry `promptFile: 'prompts/code.md'`,
+ * and the editor renders those as an empty box with a path underneath — so the one screen whose
+ * purpose is "say what this stage should do" showed nothing for the stages that already said it.
+ *
+ * Done as a write rather than a display-time substitution, because the two would otherwise
+ * disagree: the container resolves the file from the bundle, the editor would show the inline
+ * text, and nothing would tell you they had drifted. Upgrading the row makes one of them true.
+ *
+ * Only where a default exists and no inline prompt was set. A bundle that genuinely ships its own
+ * prompt for a stage we know nothing about keeps pointing at it, and a prompt someone wrote is
+ * never overwritten by a default.
+ */
+export async function upgradeLegacyPromptFiles(input: {
+  store: {
+    listStageTemplates(scope: StageScope): Promise<Awaited<ReturnType<Store['listStageTemplates']>>>
+    saveStageTemplate: Store['saveStageTemplate']
+  }
+  scope: StageScope
+}): Promise<number> {
+  const templates = await input.store.listStageTemplates(input.scope)
+  let upgraded = 0
+
+  for (const template of templates) {
+    const stages = template.stages as Array<Record<string, unknown>>
+    if (!Array.isArray(stages)) continue
+
+    let changed = false
+    const next = stages.map((stage) => {
+      if (stage['prompt'] || typeof stage['promptFile'] !== 'string') return stage
+      const fallback = DEFAULT_STAGE_PROMPTS[String(stage['id'])]
+      if (!fallback) return stage
+      changed = true
+      // `promptFile` is dropped, not kept alongside: two sources for one prompt is how the
+      // editor comes to show something the run does not use.
+      const { promptFile: _dropped, ...rest } = stage
+      return { ...rest, prompt: fallback }
+    })
+    if (!changed) continue
+
+    await input.store.saveStageTemplate({
+      id: template.id,
+      clientSpaceId: template.clientSpaceId,
+      ...(template.projectId ? { projectId: template.projectId } : {}),
+      name: template.name,
+      ...(template.description ? { description: template.description } : {}),
+      // Parsed on the way out, like every other write of a template: an upgrade that produced
+      // stages the engine cannot run would be a worse state than the one it replaced.
+      stages: StageTemplate.parse({ name: template.name, stages: next }).stages,
+      isDefault: template.isDefault,
+    })
+    upgraded++
+  }
+
+  return upgraded
 }

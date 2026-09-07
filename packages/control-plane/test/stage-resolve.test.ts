@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { ensureSeededStageTemplates, resolveStages } from '../src/stages/resolve.js'
+import { DEFAULT_STAGE_PROMPTS } from '@intellidev/shared'
+import {
+  ensureSeededStageTemplates,
+  resolveStages,
+  upgradeLegacyPromptFiles,
+} from '../src/stages/resolve.js'
 import type { ProjectScope, StageTemplateRow } from '../src/store/types.js'
 
 /**
@@ -250,5 +255,88 @@ describe('seeding a space that has never configured anything', () => {
       builtIn: BUILT_IN,
     })
     expect(resolved.source).toBe('space-default')
+  })
+})
+
+describe('bringing forward templates from before prompts lived in the database', () => {
+  /**
+   * FOUND ON THE HOSTED PLANE. The stage editor showed an empty "what this stage should do" box
+   * with "prompt from the bundle: prompts/code.md" underneath — so the one screen whose entire
+   * purpose is saying what a stage does displayed nothing for the stages that already said it.
+   *
+   * The row was seeded by an image built before the prompts moved into the database. Nothing
+   * writes `promptFile` any more, but the rows it wrote are still there.
+   */
+  function upgradeStore(rows: StageTemplateRow[]) {
+    const saved: unknown[] = []
+    return {
+      saved,
+      store: {
+        async listStageTemplates() {
+          return rows
+        },
+        async saveStageTemplate(input: never) {
+          saved.push(input)
+          return { ...(input as object) } as StageTemplateRow
+        },
+      },
+    }
+  }
+
+  const legacy = (stages: unknown[]) =>
+    row({ name: 'Default stages', isDefault: true, stages: stages as never })
+
+  it('replaces a bundle path with the text it stood for', async () => {
+    const { store, saved } = upgradeStore([
+      legacy([
+        { id: 'design', kind: 'agent', promptFile: 'prompts/design.md' },
+        { id: 'branch', kind: 'builtin', action: 'git.create_branch' },
+        { id: 'code', kind: 'agent', promptFile: 'prompts/code.md' },
+      ]),
+    ])
+
+    expect(await upgradeLegacyPromptFiles({ store, scope: SCOPE })).toBe(1)
+
+    const stages = (saved[0] as { stages: Array<Record<string, unknown>> }).stages
+    expect(stages[0]?.['prompt']).toBe(DEFAULT_STAGE_PROMPTS['design'])
+    // Dropped rather than kept alongside: two sources for one prompt is how the editor comes to
+    // show something the run does not use.
+    expect(stages[0]?.['promptFile']).toBeUndefined()
+    expect(stages[2]?.['prompt']).toBe(DEFAULT_STAGE_PROMPTS['code'])
+    // A builtin stage has no prompt to fill in and must come through untouched.
+    expect(stages[1]?.['action']).toBe('git.create_branch')
+  })
+
+  it('never overwrites a prompt somebody wrote', async () => {
+    // Both fields set is the state the editor produces when someone types over a legacy stage
+    // and saves. The text they typed is the answer, and the stale path goes.
+    const { store, saved } = upgradeStore([
+      legacy([{ id: 'code', kind: 'agent', prompt: 'mine', promptFile: 'prompts/code.md' }]),
+    ])
+
+    expect(await upgradeLegacyPromptFiles({ store, scope: SCOPE })).toBe(0)
+    expect(saved).toHaveLength(0)
+  })
+
+  it('leaves a bundle prompt for a stage we have no default for', async () => {
+    /**
+     * `promptFile` still exists for a bundle that genuinely ships its own prompts for stages we
+     * know nothing about. Blanking those would delete the only instructions the stage had.
+     */
+    const { store, saved } = upgradeStore([
+      legacy([{ id: 'lint', kind: 'agent', promptFile: 'prompts/lint.md' }]),
+    ])
+
+    expect(await upgradeLegacyPromptFiles({ store, scope: SCOPE })).toBe(0)
+    expect(saved).toHaveLength(0)
+  })
+
+  it('writes nothing when every template is already inline', async () => {
+    // Called on every load of the stages screen, so a no-op has to actually be a no-op — an
+    // unconditional save would rewrite every row on every page view.
+    const { store, saved } = upgradeStore([legacy([{ id: 'code', kind: 'agent', prompt: 'x' }])])
+
+    expect(await upgradeLegacyPromptFiles({ store, scope: SCOPE })).toBe(0)
+    expect(saved).toHaveLength(0)
   })
 })
