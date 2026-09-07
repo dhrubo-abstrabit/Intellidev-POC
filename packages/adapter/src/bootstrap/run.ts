@@ -633,11 +633,22 @@ async function loadPrompts(
 ): Promise<Partial<Record<StageId, string>>> {
   const prompts: Partial<Record<StageId, string>> = {}
   for (const stageDef of spec.stageTemplate.stages) {
-    if (stageDef.kind !== 'agent' || !stageDef.promptFile) continue
-    const body = await readFile(
-      join(bundleRoot, stageDef.promptFile.replace(/^\.\//, '')),
-      'utf8',
-    ).catch(() => `You are working on the "${stageDef.id}" stage of this task.`)
+    if (stageDef.kind !== 'agent') continue
+    if (!stageDef.prompt && !stageDef.promptFile) continue
+
+    /**
+     * Inline text wins over a bundled file.
+     *
+     * A stage defined in the UI has no file to point at, and one that carries both was edited by
+     * a person — deferring to a file they cannot see would be the worse surprise. The bundle
+     * remains the source for the stages we ship, which is most of them.
+     */
+    const body = stageDef.prompt
+      ? stageDef.prompt
+      : await readFile(
+          join(bundleRoot, stageDef.promptFile!.replace(/^\.\//, '')),
+          'utf8',
+        ).catch(() => `You are working on the "${stageDef.id}" stage of this task.`)
 
     prompts[stageDef.id] = [
       body.trim(),

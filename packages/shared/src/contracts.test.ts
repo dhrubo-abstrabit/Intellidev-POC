@@ -97,10 +97,43 @@ describe('stage templates', () => {
     ).toThrow(/needs an action/)
   })
 
-  it('requires agent stages to name a prompt', () => {
+  it('requires agent stages to carry instructions, from a file or inline', () => {
+    /**
+     * Either satisfies it. A stage we ship names a file in the bundle; one somebody adds in the
+     * UI carries its text, because the bundle is baked at build time and has nowhere to put it.
+     * A stage with neither runs on a generated one-liner — which looks like it works and
+     * produces nothing useful.
+     */
     expect(() =>
       StageTemplate.parse({ name: 'a', stages: [{ id: 'code', kind: 'agent' }] }),
-    ).toThrow(/needs a promptFile/)
+    ).toThrow(/needs a prompt or a promptFile/)
+
+    for (const stage of [
+      { id: 'code', kind: 'agent', promptFile: 'prompts/code.md' },
+      { id: 'security-review', kind: 'agent', prompt: 'Look for injection and authz gaps.' },
+    ]) {
+      expect(() => StageTemplate.parse({ name: 'a', stages: [stage] })).not.toThrow()
+    }
+  })
+
+  it('accepts a stage name a project invented, and refuses one that is not a slug', () => {
+    /**
+     * The vocabulary used to be a closed enum of nine, which made the pipeline exactly as
+     * configurable as whoever edited that file. It is open now — but still a slug, because an id
+     * names a bundle entry and appears in an event stream, and free text there would let a
+     * template smuggle a path into a filename.
+     */
+    const ok = (id: string) =>
+      StageTemplate.parse({
+        name: 'a',
+        stages: [{ id, kind: 'agent', prompt: 'do the thing' }],
+      })
+    expect(() => ok('security-review')).not.toThrow()
+    expect(() => ok('a11y')).not.toThrow()
+
+    for (const bad of ['../escape', 'Design', 'has space', '-leading', '']) {
+      expect(() => ok(bad), `"${bad}" should be refused`).toThrow()
+    }
   })
 })
 

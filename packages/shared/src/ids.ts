@@ -6,7 +6,40 @@ import { z } from 'zod'
  */
 
 /** One step of the process. The UI calls these "stages" — never "phases". */
-export const StageId = z.enum([
+/**
+ * A stage's name, as a slug.
+ *
+ * This was a closed enum of nine, which made the pipeline exactly as configurable as whoever
+ * edited this file. A client space that wants a `security-review` stage, or one that wants no
+ * `design` at all, was asking for a code change — so the vocabulary is open and the *composition*
+ * is data.
+ *
+ * Still constrained. An id names a directory entry in a bundle, appears in an event stream, and
+ * is a key in several maps, so it is a slug rather than free text: lower case, digits and dashes,
+ * starting with a letter. Anything looser would let a template smuggle a path into a filename.
+ *
+ * `BuiltinAction` stays closed, and that is the real boundary — a builtin stage runs *our* code,
+ * so its action must be one we wrote. An agent stage is a prompt and a tool policy, which is why
+ * it can be anything.
+ */
+export const StageId = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(
+    /^[a-z][a-z0-9-]*$/,
+    'a stage id is lower case letters, digits and dashes, starting with a letter',
+  )
+export type StageId = z.infer<typeof StageId>
+
+/**
+ * The stages the built-in template uses, and what the UI offers first.
+ *
+ * Not a constraint — a project may name a stage anything valid. These exist so the default
+ * template, the bundled prompts and the picker all agree on the common ones rather than each
+ * spelling them separately.
+ */
+export const WELL_KNOWN_STAGE_IDS = [
   'design',
   'branch',
   'code',
@@ -16,8 +49,7 @@ export const StageId = z.enum([
   'review',
   'approval',
   'pr',
-])
-export type StageId = z.infer<typeof StageId>
+] as const
 
 /**
  * Three harnesses. Each is a driver behind one interface, never a fork of the

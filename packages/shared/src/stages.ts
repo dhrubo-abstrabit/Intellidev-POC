@@ -61,6 +61,18 @@ export const StageDefinition = z
     model: z.string().optional(),
     /** Path inside the project bundle, e.g. `prompts/design.md`. */
     promptFile: z.string().optional(),
+    /**
+     * The stage's instructions, inline.
+     *
+     * `promptFile` points into the bundle, which is baked at build time — so a stage somebody
+     * adds in the UI has nowhere to put its prompt and would run with a generated one-liner.
+     * That is the difference between reordering the stages we shipped and actually defining a
+     * new one.
+     *
+     * Preferred over `promptFile` when both are set: the inline text is the one a person edited,
+     * and silently ignoring it in favour of a file they cannot see would be the worse surprise.
+     */
+    prompt: z.string().max(20_000).optional(),
     tools: ToolPolicy.default({ mode: 'none', allow: [], deny: [] }),
     gate: Gate.optional(),
     maxAttempts: z.number().int().positive().default(1),
@@ -102,11 +114,14 @@ export const StageDefinition = z
         path: ['action'],
       })
     }
-    if (stage.kind === 'agent' && !stage.promptFile) {
+    if (stage.kind === 'agent' && !stage.promptFile && !stage.prompt) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `agent stage "${stage.id}" needs a promptFile`,
-        path: ['promptFile'],
+        // Either, not both required: a bundled stage names a file, one defined in the UI carries
+        // its text. A stage with neither would run on a generated placeholder, which looks like
+        // it works and produces nothing useful.
+        message: `agent stage "${stage.id}" needs a prompt or a promptFile`,
+        path: ['prompt'],
       })
     }
   })
