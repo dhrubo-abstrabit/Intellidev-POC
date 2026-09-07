@@ -10,6 +10,7 @@ import {
   type AgentEvent,
   type HarnessId,
   type StageRecord,
+  type RunStatus,
   type TaskStatus,
 } from '@intellidev/shared'
 import { RUN_WALL_CLOCK_SEC, isRunTerminal } from '@intellidev/shared'
@@ -260,6 +261,134 @@ export async function dispatchTask(args: {
   )
 
   return { runId: run.id }
+}
+
+/**
+ * A decision on a parked run, and the resume that follows an approval.
+ *
+ * The engine parks *after* a stage succeeds, with its cursor already past it, so resuming is
+ * simply starting a container that loads the state the previous one wrote. Nothing re-runs and
+ * nothing re-asks — the approved stage is behind the cursor.
+ *
+ * The decision is enforced here rather than in the engine, and this is the reason: a container is
+ * the thing being controlled, so a check inside it would be advice. The authenticated caller, the
+ * store and the audit trail are all here.
+ *
+ * Rejecting settles the run rather than deleting it. "This was rejected" is a different fact from
+ * "this never happened", and only one of them is true.
+ */
+export class ApprovalRefused extends Error {}
+
+export async function decideRun(args: {
+  store: Store
+  runId: string
+  decision: 'approved' | 'rejected'
+  /** Who decided, for the record kept inside the engine state. */
+  decidedBy?: string
+  config: DispatchConfig
+  mcp: McpAccess
+  accounts: SeatStore
+}): Promise<{ runId: string; status: RunStatus }> {
+  const { store, runId, decision, config, mcp, accounts } = args
+
+  const run = await store.getRun(runId)
+  if (!run) throw new ApprovalRefused(`no such run ${runId}`)
+  /**
+   * Only a parked run has a decision outstanding.
+   *
+   * Checked rather than assumed because the obvious client bug is approving twice — a second
+   * approval of a running run would start a *second container for the same run*, and two
+   * containers sharing one worktree and one branch is a far worse outcome than a refusal.
+   */
+  if (run.status !== 'parked') {
+    throw new ApprovalRefused(`run ${runId} is ${run.status}, not awaiting a decision`)
+  }
+
+  const state = (run.engineState ?? {}) as {
+    cursor?: number
+    status?: string
+    approvals?: Record<string, string>
+    records?: Array<{ stage?: string }>
+  }
+
+  if (decision === 'rejected') {
+    await store.updateRun(runId, {
+      status: 'cancelled',
+      endedAt: new Date().toISOString(),
+      failureReason: 'rejected at approval',
+      engineState: { ...state, status: 'cancelled' },
+    })
+    await moveTask(store, run.taskId, 'failed')
+    return { runId, status: 'cancelled' }
+  }
+
+  const task = await store.getTask(run.taskId)
+  if (!task) throw new ApprovalRefused(`run ${runId} has no task`)
+
+  /**
+   * The stage that was waiting, taken from the state rather than the request.
+   *
+   * A caller naming its own stage could approve one that never asked. The last record is the
+   * stage that parked, because parking happens immediately after recording it.
+   */
+  const awaiting = state.records?.at(-1)?.stage
+
+  /**
+   * Returned to running *before* the container starts.
+   *
+   * The engine refuses to re-run a template whose state is already settled — `parked` is one of
+   * those — so a container started against unchanged state would load it, decide the run was
+   * over, and exit having done nothing.
+   */
+  await store.updateRun(runId, {
+    status: 'provisioning',
+    engineState: {
+      ...state,
+      status: 'running',
+      approvals: {
+        ...(state.approvals ?? {}),
+        ...(awaiting ? { [awaiting]: 'approved' } : {}),
+      },
+    },
+  })
+
+  const servers = await resolveMcpServers(task, mcp)
+  const seat = await accounts.material({ clientSpaceId: task.clientSpaceId }, task.harness)
+  const stages = await resolveStages({
+    store,
+    scope: { projectId: task.projectId, clientSpaceId: task.clientSpaceId },
+    task: { ...(task.stages ? { stages: task.stages } : {}), stageTemplateId: task.stageTemplateId },
+    builtIn: builtInStageTemplate(task.repoUrl),
+  })
+
+  /**
+   * The same run id and the same branch.
+   *
+   * A resume is the same run continuing, not a new attempt: a new run id would split one task's
+   * event stream in two, and a new branch would strand the commits the approved stages already
+   * made.
+   */
+  const spec = buildRunSpec({
+    task,
+    run: runId,
+    branch: run.branch,
+    config,
+    servers,
+    stageTemplate: stages.template,
+  })
+
+  void execute({ store, runId, taskId: task.id, spec, config, servers, seat }).catch(
+    (error: unknown) => {
+      void store.updateRun(runId, {
+        status: 'failed',
+        endedAt: new Date().toISOString(),
+        failureReason: error instanceof Error ? error.message : String(error),
+      })
+      void moveTask(store, task.id, 'failed')
+    },
+  )
+
+  return { runId, status: 'provisioning' }
 }
 
 async function execute(args: {

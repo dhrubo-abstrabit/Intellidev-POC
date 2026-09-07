@@ -3,7 +3,14 @@ import { dirname, join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { HarnessId } from '@intellidev/shared'
 import { z } from 'zod'
-import { dispatchTask, DispatchRefused, projectRunEvent, type DispatchConfig } from './dispatch.js'
+import {
+  ApprovalRefused,
+  decideRun,
+  dispatchTask,
+  DispatchRefused,
+  projectRunEvent,
+  type DispatchConfig,
+} from './dispatch.js'
 import {
   HARNESS_AUTH,
   readCredentialFile,
@@ -724,6 +731,43 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   )
 
   // --- runs ----------------------------------------------------------------
+
+  /**
+   * Decide a run that is waiting for approval.
+   *
+   * Approving resumes it in a fresh container, from the stage after the one that parked.
+   * Rejecting settles it as cancelled — a different fact from "it never happened", and the only
+   * one that is true.
+   *
+   * Under `/api`, so it carries a person's own token rather than a run's: this is the one
+   * decision in the system that must come from a human, and the run token is held by the very
+   * container the decision is about.
+   */
+  app.post<{ Params: { id: string } }>('/api/runs/:id/decision', async (request, reply) => {
+    const body = (request.body ?? {}) as { decision?: unknown }
+    if (body.decision !== 'approved' && body.decision !== 'rejected') {
+      return reply.code(400).send({ error: 'decision must be "approved" or "rejected"' })
+    }
+
+    try {
+      const outcome = await decideRun({
+        store,
+        runId: request.params.id,
+        decision: body.decision,
+        config: opts.dispatch,
+        mcp: { registry: opts.mcp, oauth },
+        accounts: opts.accounts,
+      })
+      return outcome
+    } catch (error) {
+      if (error instanceof ApprovalRefused) {
+        // 409, not 400: the request is well formed and the run is simply not in a state where
+        // this means anything — approving twice being the obvious way to arrive here.
+        return reply.code(409).send({ error: error.message })
+      }
+      throw error
+    }
+  })
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (request, reply) => {
     const run = await store.getRun(request.params.id)
