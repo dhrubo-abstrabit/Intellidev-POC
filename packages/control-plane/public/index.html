@@ -1466,6 +1466,15 @@
             </div>
             <div class="row">
               <span class="pill ${task.status}">${task.status.replace(/_/g, ' ')}</span>
+              <!--
+                Only before it runs. Editing the stages of a task that has already started would
+                describe something that did not happen, and a resumed run reads its own state
+                rather than the task.
+              -->
+              <button id="taskStages" class="secondary"
+                ${task.status === 'not_started' || task.status === 'failed' ? '' : 'disabled'}>
+                ${task.stages ? 'Stages (edited)' : 'Stages'}
+              </button>
               <button id="dispatch" ${task.status === 'not_started' || task.status === 'failed' ? '' : 'disabled'}>
                 Dispatch
               </button>
@@ -1477,6 +1486,19 @@
           <h2 style="margin-top: 14px">Live log ${run ? `<span class="meta">· ${run.id}</span>` : ''}</h2>
           <div id="log">${run ? '' : 'Nothing dispatched yet.'}</div>
         `
+        /**
+         * The same dialog, pointed at one task.
+         *
+         * It opens on whatever the task will actually run — its own pinned stages if it has
+         * them, the resolved template otherwise — so editing starts from the truth rather than
+         * from a blank list. Saving pins them to this task alone.
+         */
+        $('taskStages').onclick = () => {
+          state.stages = (task.stages ?? state.projectStages ?? []).map((stage) => ({ ...stage }))
+          renderStages()
+          openStageDialog({ taskId: task.id })
+        }
+
         $('dispatch').onclick = async () => {
           $('dispatch').disabled = true
           $('log').textContent = ''
@@ -1507,7 +1529,10 @@
         if (!res.ok) return
         const body = await res.json()
         state.stages = body.effective.stages.map((s) => ({ ...s }))
+        // Kept so opening the dialog for a task can start from what that task would run.
+        state.projectStages = body.effective.stages
         state.stageSource = body.effective.source
+        state.stageTaskId = null
         state.wellKnownStages = body.wellKnown ?? []
         $('stageTemplateName').value =
           body.effective.source === 'built-in' ? '' : body.effective.name
@@ -1686,13 +1711,31 @@
        * `showModal` rather than a hidden div: it traps focus, closes on Escape and dims what is
        * behind it without any of that being written here.
        */
-      $('openStages').onclick = () => {
-        $('stagesTitle').textContent = state.stageTaskId ? 'Stages for this task' : 'Project stages'
-        $('stagesScopeNote').textContent = state.stageTaskId
-          ? 'Saved against this task only. Other tasks keep the project default.'
+      /**
+       * One dialog, two modes, and the mode is an argument rather than leftover state.
+       *
+       * Both buttons used to call the same handler, so a task edit left the dialog in task mode
+       * and the *sidebar* button then saved to whichever task was last selected — silently
+       * writing a project change onto one task.
+       */
+      function openStageDialog({ taskId }) {
+        state.stageTaskId = taskId ?? null
+        // A task's stages have no name of their own; the field would ask for something that has
+        // nowhere to go.
+        $('stageTemplateName').hidden = Boolean(taskId)
+        $('stagesTitle').textContent = taskId ? 'Stages for this task' : 'Project stages'
+        $('stagesScopeNote').textContent = taskId
+          ? 'Saved against this task only — the project default and every other task are untouched.'
           : "Saved as this project's default. Every new task starts from it."
         $('stagesStatus').textContent = ''
         $('stagesDialog').showModal()
+      }
+
+      $('openStages').onclick = () => {
+        // From the sidebar the subject is the project, so a task edited a moment ago is not it.
+        state.stages = (state.projectStages ?? []).map((stage) => ({ ...stage }))
+        renderStages()
+        openStageDialog({ taskId: null })
       }
       $('closeStages').onclick = () => $('stagesDialog').close()
 
@@ -1708,6 +1751,33 @@
       }
 
       $('saveStages').onclick = async () => {
+        /**
+         * Two destinations, and the difference is the whole feature.
+         *
+         * With a task selected the stages are pinned to that task: the template it came from is
+         * untouched, and so is every other task. Without one, this is the project's default and
+         * every future task starts from it.
+         */
+        if (state.stageTaskId) {
+          $('saveStages').disabled = true
+          const res = await fetch(`/api/tasks/${state.stageTaskId}/stages`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ stages: state.stages }),
+          })
+          $('saveStages').disabled = false
+          const body = await res.json().catch(() => ({}))
+          $('stagesStatus').textContent = res.ok
+            ? 'saved for this task only'
+            : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
+          if (res.ok) {
+            $('stagesDialog').close()
+            // Re-read the task so the button says "edited" and the detail reflects the pin.
+            await select(state.stageTaskId)
+          }
+          return
+        }
+
         const name = $('stageTemplateName').value.trim()
         if (!name) {
           $('stagesStatus').textContent = 'give the template a name first'

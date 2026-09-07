@@ -161,6 +161,13 @@ const CreateTask = z.object({
   baseBranch: z.string().default('main'),
   /** Ids of already-connected servers. Credentials are never sent with a task. */
   mcpServerIds: z.array(McpServerId).default([]),
+  /**
+   * A saved template to follow, rather than this project's default.
+   *
+   * Absent is the ordinary case and means "whatever the project runs when this dispatches",
+   * which is what lets a fix to the project's stages reach work that has not started.
+   */
+  stageTemplateId: z.string().uuid().optional(),
 })
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
@@ -849,6 +856,46 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * decision in the system that must come from a human, and the run token is held by the very
    * container the decision is about.
    */
+  /**
+   * The stages for one task, pinned to it.
+   *
+   * Copy on write, and this is the write. Until it is called the task follows whichever template
+   * resolution finds, so improving a project's stages improves every task that has not run yet.
+   * Saving here stops that for this task only — neither the template nor any other task changes,
+   * which is what "edit the stages for this task" has to mean to be worth having.
+   *
+   * `null` puts it back to following. An edit with no way back is a trap, not a feature.
+   */
+  app.put<{ Params: { id: string } }>('/api/tasks/:id/stages', async (request, reply) => {
+    const task = await store.getTask(request.params.id)
+    // Checked rather than trusted: this runs as the service role, which RLS does not constrain,
+    // so a task id from another project would otherwise be editable by anyone who could guess it.
+    if (!task || task.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such task' })
+    }
+
+    const body = (request.body ?? {}) as { stages?: unknown }
+    if (body.stages === null) {
+      await store.setTaskStages(task.id, null)
+      return { pinned: false }
+    }
+
+    let stages
+    try {
+      stages = StageTemplate.parse({ name: 'task', stages: body.stages }).stages
+    } catch (error) {
+      // Refused here rather than at dispatch: a task saved broken would look configured and then
+      // fail when someone finally ran it, long after the edit that broke it.
+      return reply.code(400).send({
+        error: 'those stages would not run',
+        detail: error instanceof Error ? error.message : String(error),
+      })
+    }
+
+    await store.setTaskStages(task.id, stages)
+    return { pinned: true, stages }
+  })
+
   app.post<{ Params: { id: string } }>('/api/runs/:id/decision', async (request, reply) => {
     const body = (request.body ?? {}) as { decision?: unknown }
     if (body.decision !== 'approved' && body.decision !== 'rejected') {

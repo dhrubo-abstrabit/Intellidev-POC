@@ -206,6 +206,15 @@ export class InMemoryStore implements Store {
    * Enforced server-side because the UI renders status and must never infer it — a client
    * that could set any status would make the board lie.
    */
+  async setTaskStages(taskId: string, stages: unknown[] | null): Promise<void> {
+    const task = this.tasks.get(taskId)
+    if (!task) throw new Error(`no such task ${taskId}`)
+    // Deleted rather than set to null, so `stages` being absent means the same thing in both
+    // stores: this task follows its template.
+    if (stages === null) delete task.stages
+    else task.stages = stages
+  }
+
   async setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow> {
     const task = this.tasks.get(id)
     if (!task) throw new Error(`no such task ${id}`)

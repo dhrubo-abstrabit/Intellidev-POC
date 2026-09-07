@@ -135,6 +135,21 @@ export const taskSpecs = runner.table('task_specs', {
    * board and out of the dedupe constraint.
    */
   runnerStatus: text('runner_status').notNull().default('not_started'),
+  /**
+   * A saved template this task follows, chosen when it was created.
+   *
+   * Following means later edits to that template apply — which is what a task nobody has touched
+   * should do, so a fix to the project's stages reaches work that has not run yet.
+   */
+  stageTemplateId: uuid('stage_template_id'),
+  /**
+   * Stages pinned to this task, written the first time someone edits them.
+   *
+   * Copy on write: a task inherits until it is changed, and from then on it is its own. That is
+   * what makes "edit the stages for this one task" mean what it says — neither the template it
+   * came from nor any other task is touched.
+   */
+  stages: jsonb('stages').$type<unknown[]>(),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })

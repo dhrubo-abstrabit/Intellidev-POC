@@ -152,3 +152,56 @@ describe('deciding a parked run', () => {
     expect((await store.getRun(runId))?.branch).toBe(before?.branch)
   })
 })
+
+describe('stages pinned to one task', () => {
+  /**
+   * Copy on write, which is the whole point. A task follows its template until somebody edits
+   * it — so improving a project's stages improves every task that has not run — and the first
+   * edit makes that task its own without touching the template or any other task.
+   */
+  async function taskIn(store: Store) {
+    await allowTestRepo(store)
+    return await store.createTask(
+      {
+        title: 't',
+        description: 'd',
+        acceptanceCriteria: ['a'],
+        harness: 'claude-code',
+        repoUrl: TEST_REPO_URL,
+        baseBranch: 'main',
+        mcpServerIds: [],
+      },
+      TEST_SCOPE,
+    )
+  }
+
+  it('starts out following, with nothing pinned', async () => {
+    const store = new InMemoryStore()
+    const task = await taskIn(store)
+    // Absent, not empty: an empty array would mean "run no stages", which is a different thing.
+    expect((await store.getTask(task.id))?.stages).toBeUndefined()
+  })
+
+  it('pins on the first edit and leaves everything else alone', async () => {
+    const store = new InMemoryStore()
+    const a = await taskIn(store)
+    const b = await taskIn(store)
+
+    await store.setTaskStages(a.id, [{ id: 'only-code', kind: 'agent', prompt: 'x' }])
+
+    expect((await store.getTask(a.id))?.stages).toHaveLength(1)
+    // The other task is untouched, which is what "for this task only" has to mean.
+    expect((await store.getTask(b.id))?.stages).toBeUndefined()
+  })
+
+  it('can be unpinned, so an edit is not a one-way door', async () => {
+    const store = new InMemoryStore()
+    const task = await taskIn(store)
+    await store.setTaskStages(task.id, [{ id: 'x', kind: 'agent', prompt: 'x' }])
+
+    await store.setTaskStages(task.id, null)
+
+    // Back to following: absent means the same thing it meant before anyone edited.
+    expect((await store.getTask(task.id))?.stages).toBeUndefined()
+  })
+})

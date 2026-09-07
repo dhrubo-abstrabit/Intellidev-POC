@@ -537,6 +537,8 @@ export class PostgresStore implements Store {
         details: input.details ?? null,
         mcpServerIds: input.mcpServerIds,
         runnerStatus: 'not_started',
+        // Chosen at creation; absent means "whatever this project's default is at dispatch".
+        stageTemplateId: input.stageTemplateId ?? null,
       })
 
       const created = await this.readTask(id, tx)
@@ -563,6 +565,24 @@ export class PostgresStore implements Store {
    * onto their table. The projection goes through `runner.product_status()` rather than a map in
    * this file, so anything else that advances a runner status collapses it the same way.
    */
+  /**
+   * Pin a set of stages to one task.
+   *
+   * Copy on write. Until this is called a task follows whichever template resolution finds, so a
+   * fix to the project's stages reaches every task that has not run yet. The moment somebody
+   * edits one task's stages, that task stops following and keeps its own — which is the whole
+   * point of editing them for one task.
+   *
+   * `null` puts it back to following, so a pin is reversible. Without that, one edit would make a
+   * task permanently different from its project with no way back.
+   */
+  async setTaskStages(taskId: string, stages: unknown[] | null): Promise<void> {
+    await this.db
+      .update(taskSpecs)
+      .set({ stages })
+      .where(eq(taskSpecs.taskId, taskId))
+  }
+
   async setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow> {
     const current = await this.getTask(id)
     if (!current) throw new Error(`no such task ${id}`)
@@ -603,6 +623,8 @@ export class PostgresStore implements Store {
         mcpServerIds: taskSpecs.mcpServerIds,
         baseBranch: taskSpecs.baseBranch,
         runnerStatus: taskSpecs.runnerStatus,
+        stageTemplateId: taskSpecs.stageTemplateId,
+        stages: taskSpecs.stages,
         owner: projectRepos.owner,
         repo: projectRepos.repo,
       })
@@ -632,6 +654,8 @@ export class PostgresStore implements Store {
         mcpServerIds: taskSpecs.mcpServerIds,
         baseBranch: taskSpecs.baseBranch,
         runnerStatus: taskSpecs.runnerStatus,
+        stageTemplateId: taskSpecs.stageTemplateId,
+        stages: taskSpecs.stages,
         owner: projectRepos.owner,
         repo: projectRepos.repo,
       })
@@ -909,8 +933,12 @@ function toTask(row: {
   runnerStatus: string
   owner: string
   repo: string
+  stageTemplateId?: string | null
+  stages?: unknown[] | null
 }): TaskRow {
   return {
+    ...(row.stageTemplateId ? { stageTemplateId: row.stageTemplateId } : {}),
+    ...(row.stages ? { stages: row.stages } : {}),
     id: row.id,
     // Non-null in practice: a spec row cannot exist without a project, because its repository
     // is project-scoped. Asserted rather than defaulted, so a violation is loud.

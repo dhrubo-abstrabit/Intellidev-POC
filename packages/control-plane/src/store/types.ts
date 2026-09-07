@@ -236,6 +236,15 @@ export interface Store {
   listTasks(scope: ProjectScope): Promise<TaskRow[]>
   getTask(id: string): Promise<TaskRow | undefined>
   setTaskStatus(id: string, status: TaskStatus): Promise<TaskRow>
+  /**
+   * Pin stages to one task, or `null` to go back to following its template.
+   *
+   * Copy on write: until this is called a task follows whatever resolution finds, so a fix to
+   * the project's stages reaches every task that has not run yet. The first edit makes that task
+   * its own — which is what editing one task's stages should mean — and passing `null` undoes
+   * it, because an edit with no way back is a trap rather than a feature.
+   */
+  setTaskStages(taskId: string, stages: unknown[] | null): Promise<void>
 
   createRun(taskId: string, harness: HarnessId, branch: string): Promise<RunRow>
   getRun(id: string): Promise<RunRow | undefined>
