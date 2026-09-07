@@ -1,0 +1,174 @@
+name: deploy
+
+# Only main, and only after a green check.
+#
+# The two most expensive mistakes in this project were sequencing, not code: an image pushed
+# without deploying the stack that reads its digest, so a run silently used the previous image;
+# and a stack deployed while the control plane still held a task definition revision that no
+# longer existed, so every dispatch failed with `TaskDefinition is inactive`. Both came from
+# doing half of a four-step deploy by hand. Here the steps cannot be separated.
+on:
+  push:
+    branches: [main]
+  # So a deploy can be re-run without an empty commit — a failed push or a transient AWS error
+  # should not need the history rewritten to retry.
+  workflow_dispatch:
+
+concurrency:
+  # Never two deploys at once. They would race on the same task definition family and the same
+  # SSM digests, and the loser would leave a service pointing at an image nobody chose.
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  # `id-token` is what makes OIDC work: GitHub mints a short-lived token, AWS exchanges it for a
+  # role. Nothing long-lived is stored, so there is no access key to leak or rotate.
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ROLE: arn:aws:iam::523366816420:role/intellidev-dev-github-deploy
+
+jobs:
+  # Gate everything on the same checks a pull request runs. A deploy that skips them is a way to
+  # ship something the suite would have caught.
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # What changed decides what is rebuilt. A control-plane change should not rebuild a 387 MB
+  # runner image, and an infra-only change should rebuild neither.
+  changes:
+    runs-on: ubuntu-latest
+    needs: check
+    outputs:
+      runner: ${{ steps.filter.outputs.runner }}
+      controlPlane: ${{ steps.filter.outputs.controlPlane }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Two commits, so a push can be compared against what it replaced.
+          fetch-depth: 2
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            runner:
+              - 'packages/adapter/**'
+              - 'packages/shared/**'
+              - 'infra/docker/Dockerfile'
+            controlPlane:
+              - 'packages/control-plane/**'
+              - 'packages/shared/**'
+              - 'infra/docker/control-plane.Dockerfile'
+            infra:
+              - 'infra/aws/**'
+
+  # The runner image, then the stack that pins it.
+  #
+  # Both, always, in that order. Pushing the image records a digest in SSM; the task definition
+  # reads that digest when the stack deploys. Doing only the first is what made a run use the
+  # previous image while everything looked fine.
+  runner:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.runner == 'true'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      # The bundle the image copies in is built from source; a stale dist would ship the last
+      # commit's adapter inside this commit's image.
+      - run: pnpm --filter @intellidev/adapter build
+      - run: pnpm image:push
+      - name: deploy the runtime stack that pins this image
+        run: pnpm --filter @intellidev/infra-aws exec cdk deploy Intellidev-dev-Runtime --require-approval never
+
+  control-plane:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.controlPlane == 'true'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - run: pnpm control-plane:push
+      - name: deploy the control plane
+        run: pnpm --filter @intellidev/infra-aws exec cdk deploy Intellidev-dev-ControlPlane --require-approval never
+      # The rollout is not finished when CDK returns: a task has to pull the image and pass the
+      # health check. Asking the service directly is the difference between "deployed" and
+      # "serving", and a circuit-breaker rollback would otherwise be reported as success.
+      - name: wait for it to serve
+        run: |
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://control.guidr.tech/healthz || true)
+            [ "$code" = "200" ] && echo "healthy" && exit 0
+            sleep 15
+          done
+          echo "never became healthy" && exit 1
+
+  # Infrastructure changes that touch neither image.
+  #
+  # Runs after the image jobs rather than beside them: a stack whose template changed *and* whose
+  # image changed would otherwise deploy twice concurrently and race itself.
+  infra:
+    runs-on: ubuntu-latest
+    needs: [changes, runner, control-plane]
+    # `always()` because the image jobs are skipped on most commits, and a skipped dependency
+    # would otherwise skip this too.
+    if: always() && needs.changes.outputs.infra == 'true' && needs.check.result != 'failure'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      # Every stack except the pipeline's own identity, which is deployed by hand: a role that can
+      # widen its own trust policy is not a boundary.
+      - name: deploy
+        run: |
+          pnpm --filter @intellidev/infra-aws exec cdk deploy \
+            Intellidev-dev-Network Intellidev-dev-Artifacts Intellidev-dev-Secrets \
+            Intellidev-dev-AppSecrets Intellidev-dev-Registry Intellidev-dev-Runtime \
+            Intellidev-dev-ControlPlane \
+            --require-approval never

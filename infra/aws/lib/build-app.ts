@@ -7,6 +7,7 @@ import { RegistryStack } from './registry-stack.js'
 import { SecretsStack } from './secrets-stack.js'
 import { AppSecretsStack } from './app-secrets-stack.js'
 import { ControlPlaneStack } from './control-plane-stack.js'
+import { CicdStack } from './cicd-stack.js'
 import { RuntimeStack } from './runtime-stack.js'
 import { SmokeStack } from './smoke-stack.js'
 import { stackName } from './naming.js'
@@ -19,6 +20,8 @@ export interface BuildAppOverrides {
   readonly account?: unknown
   /** Overrides `CDK_DEFAULT_ACCOUNT`, so tests need no credentials. */
   readonly ambientAccount?: string | undefined
+  /** Overrides `-c githubRepo=`. Tests pass this; the CLI does not. */
+  readonly githubRepo?: unknown
 }
 
 export interface BuiltApp {
@@ -31,6 +34,13 @@ export interface BuiltApp {
   readonly runtime: RuntimeStack
   readonly smoke: SmokeStack
   readonly controlPlane: ControlPlaneStack
+  /**
+   * Only when `-c githubRepo=owner/name` is given.
+   *
+   * Absent otherwise, so a developer synthesising locally is not asked for a value that only
+   * matters to the pipeline — and so nothing invents a trust policy from a default.
+   */
+  readonly cicd?: CicdStack
 }
 
 /**
@@ -138,5 +148,33 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     applyTags(stack, config)
   Aspects.of(app).add(new NoNatGateways())
 
-  return { app, network, artifacts, secrets, appSecrets, registry, runtime, smoke, controlPlane }
+  /**
+   * The pipeline's identity, only where one was asked for.
+   *
+   * Built last and depends on nothing: it grants permission to deploy the others rather than
+   * consuming anything they produce. Skipped entirely without `-c githubRepo=`, so a local
+   * `cdk synth` neither prompts for a value nor fabricates a trust policy.
+   */
+  const githubRepo = overrides.githubRepo ?? app.node.tryGetContext('githubRepo')
+  const cicd =
+    typeof githubRepo === 'string' && githubRepo.length > 0
+      ? new CicdStack(app, stackName(config.name, 'Cicd'), {
+          environment: config,
+          githubRepo,
+          env: { account, region: config.region },
+        })
+      : undefined
+
+  return {
+    app,
+    network,
+    artifacts,
+    secrets,
+    appSecrets,
+    registry,
+    runtime,
+    smoke,
+    controlPlane,
+    ...(cicd ? { cicd } : {}),
+  }
 }
