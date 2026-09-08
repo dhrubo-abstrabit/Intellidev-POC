@@ -17,6 +17,9 @@ import {
   type Store,
   type TaskRow,
   type StageTemplateInput,
+  type TaskArtifactRow,
+  type TaskArtifactSummary,
+  type TaskArtifactInput,
 } from './types.js'
 
 interface Subscription {
@@ -46,6 +49,7 @@ interface Subscription {
 
 export class InMemoryStore implements Store {
   private readonly stageTemplates = new Map<string, StageTemplateRow>()
+  private readonly artifacts = new Map<string, TaskArtifactRow>()
   private readonly tasks = new Map<string, TaskRow>()
   private readonly runs = new Map<string, RunRow>()
   private readonly events = new Map<string, AgentEvent[]>()
@@ -158,6 +162,69 @@ export class InMemoryStore implements Store {
 
   async deleteStageTemplate(id: string): Promise<boolean> {
     return this.stageTemplates.delete(id)
+  }
+
+  // --- task artifacts ------------------------------------------------------
+
+  async listTaskArtifacts(taskId: string): Promise<TaskArtifactSummary[]> {
+    return [...this.artifacts.values()]
+      .filter((a) => a.taskId === taskId)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(withoutBody)
+  }
+
+  async listProjectArtifacts(scope: ProjectScope, limit = 100): Promise<TaskArtifactSummary[]> {
+    return [...this.artifacts.values()]
+      .filter((a) => a.projectId === scope.projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit)
+      .map(withoutBody)
+  }
+
+  async getTaskArtifact(id: string): Promise<TaskArtifactRow | undefined> {
+    return this.artifacts.get(id)
+  }
+
+  async findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined> {
+    return [...this.artifacts.values()].find((a) => a.taskId === taskId && a.name === name)
+  }
+
+  async saveTaskArtifact(
+    scope: ProjectScope,
+    input: TaskArtifactInput,
+  ): Promise<TaskArtifactRow> {
+    /**
+     * A name is a natural key within a task, so writing the same one again is an edit.
+     *
+     * Postgres enforces that with a unique index and this store has to be told, or the two
+     * disagree — and the disagreement shows up as a test that passes here and a 500 in
+     * production. That is not hypothetical: it is exactly how the stage editor came to fail on
+     * every second save.
+     */
+    const existing = await this.findTaskArtifact(input.taskId, input.name)
+    const now = new Date().toISOString()
+    const row: TaskArtifactRow = {
+      id: existing?.id ?? randomUUID(),
+      clientSpaceId: scope.clientSpaceId,
+      projectId: scope.projectId,
+      taskId: input.taskId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.stage ? { stage: input.stage } : {}),
+      name: input.name,
+      kind: input.kind,
+      ...(input.title ? { title: input.title } : {}),
+      body: input.body,
+      // Bytes, not characters, matching the column's `octet_length` constraint.
+      bytes: Buffer.byteLength(input.body, 'utf8'),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    }
+    this.artifacts.set(row.id, row)
+    return row
+  }
+
+  async deleteTaskArtifact(id: string): Promise<boolean> {
+    return this.artifacts.delete(id)
   }
 
   async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {
@@ -417,4 +484,15 @@ function parseRepoUrl(repoUrl: string): { owner: string; repo: string } | undefi
     .replace(/\.git$/, '')
     .split('/')
   return parts.length >= 2 && parts[0] && parts[1] ? { owner: parts[0], repo: parts[1] } : undefined
+}
+
+/**
+ * Drop the body for a list.
+ *
+ * The same distinction the Postgres store draws by naming columns: a list is read far more often
+ * than a body, and one artifact may be most of a megabyte.
+ */
+function withoutBody(row: TaskArtifactRow): TaskArtifactSummary {
+  const { body: _body, ...summary } = row
+  return summary
 }

@@ -274,6 +274,39 @@ export const stageTemplates = runner.table(
   (table) => [index('stage_templates_space_idx').on(table.clientSpaceId)],
 )
 
+/**
+ * What a stage drew, for the stages after it and for the person reviewing.
+ *
+ * The body is a column rather than an S3 key: these are diagrams and notes, the control plane is
+ * already the only thing a container can reach, and a bucket would buy presigned reads and a
+ * lifecycle policy for kilobytes. The migration's CHECK constraint is what keeps that true.
+ */
+export const taskArtifacts = runner.table(
+  'task_artifacts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientSpaceId: uuid('client_space_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    taskId: uuid('task_id').notNull(),
+    /** Which run and stage wrote it. Null once the run is pruned, or if a person added it. */
+    runId: uuid('run_id'),
+    stage: text('stage'),
+    /** How a later stage refers to it, and what makes a re-render an overwrite. */
+    name: text('name').notNull(),
+    /** Exactly what the preview can render: html, markdown or mermaid. */
+    kind: text('kind').notNull(),
+    title: text('title'),
+    body: text('body').notNull(),
+    bytes: integer('bytes').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('task_artifacts_task_idx').on(table.taskId),
+    index('task_artifacts_project_recent_idx').on(table.projectId, table.updatedAt),
+  ],
+)
+
 export const credentials = runner.table('credentials', {
   integrationId: uuid('integration_id').primaryKey(),
   ciphertext: text('ciphertext').notNull(),

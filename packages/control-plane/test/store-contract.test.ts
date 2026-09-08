@@ -276,6 +276,176 @@ function contract(
         if (spaceLevel) await store.deleteStageTemplate(spaceLevel.id)
       })
 
+      describe('artifacts', () => {
+        /**
+         * What a stage drew, kept for the stages after it and for the person reviewing.
+         *
+         * The properties that matter are the ones a UI and a later stage both depend on: a name is
+         * an overwrite rather than a second row, a list never carries bodies, and an artifact
+         * outlives the run that wrote it.
+         */
+        const diagram = (over: Partial<Parameters<Store['saveTaskArtifact']>[1]> = {}) => ({
+          taskId: '',
+          name: 'architecture.mmd',
+          kind: 'mermaid' as const,
+          body: 'graph TD\n  A --> B',
+          ...over,
+        })
+
+        it('round-trips an artifact, including the optional fields', async () => {
+          const task = await store.createTask(TASK, scope)
+          const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+
+          const saved = await store.saveTaskArtifact(scope, {
+            ...diagram(),
+            taskId: task.id,
+            runId: run.id,
+            stage: 'design',
+            title: 'How the pieces fit',
+          })
+
+          const fetched = await store.getTaskArtifact(saved.id)
+          expect(fetched).toMatchObject({
+            taskId: task.id,
+            runId: run.id,
+            stage: 'design',
+            name: 'architecture.mmd',
+            kind: 'mermaid',
+            title: 'How the pieces fit',
+            body: 'graph TD\n  A --> B',
+          })
+          // Bytes, so a list can show a size without reading every body.
+          expect(fetched?.bytes).toBe(Buffer.byteLength('graph TD\n  A --> B', 'utf8'))
+          expect(fetched?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+        })
+
+        it('counts bytes rather than characters', async () => {
+          /**
+           * The column is checked against `octet_length`, so a body of multi-byte text whose
+           * length was counted in characters would disagree with its own constraint and be
+           * rejected on write. Postgres would refuse it; the in-memory store would not — which is
+           * the shape of divergence these tests exist to catch.
+           */
+          const task = await store.createTask(TASK, scope)
+          const body = '→ ✓ é 日本語'
+
+          const saved = await store.saveTaskArtifact(scope, {
+            ...diagram({ body }),
+            taskId: task.id,
+          })
+
+          expect(saved.bytes).toBe(Buffer.byteLength(body, 'utf8'))
+          expect(saved.bytes).toBeGreaterThan(body.length)
+        })
+
+        it('replaces an artifact of the same name rather than adding a second', async () => {
+          // A stage that re-renders its diagram means to replace it. Two rows with one name leave
+          // nothing to say which is current, and the later stage reads whichever comes back first.
+          const task = await store.createTask(TASK, scope)
+
+          const first = await store.saveTaskArtifact(scope, {
+            ...diagram({ body: 'graph TD\n  A --> B' }),
+            taskId: task.id,
+          })
+          const second = await store.saveTaskArtifact(scope, {
+            ...diagram({ body: 'graph TD\n  A --> C' }),
+            taskId: task.id,
+          })
+
+          expect(second.id).toBe(first.id)
+          expect(second.body).toContain('A --> C')
+          expect(await store.listTaskArtifacts(task.id)).toHaveLength(1)
+          // The creation time survives the edit; only `updatedAt` moves.
+          expect(second.createdAt).toBe(first.createdAt)
+        })
+
+        it('keeps the same name on two different tasks apart', async () => {
+          // `design.md` is the obvious name, so every task will have one.
+          const one = await store.createTask(TASK, scope)
+          const two = await store.createTask(TASK, scope)
+
+          await store.saveTaskArtifact(scope, { ...diagram({ body: 'one' }), taskId: one.id })
+          await store.saveTaskArtifact(scope, { ...diagram({ body: 'two' }), taskId: two.id })
+
+          expect((await store.listTaskArtifacts(one.id))[0]?.taskId).toBe(one.id)
+          expect((await store.findTaskArtifact(two.id, 'architecture.mmd'))?.body).toBe('two')
+        })
+
+        it('leaves bodies out of a list', async () => {
+          /**
+           * A body may be most of a megabyte and a project may have a hundred artifacts, so a
+           * list that carried them would send megabytes to render a sidebar. Asserted rather than
+           * assumed because the Postgres store gets this right by naming columns — which a
+           * `select()` added later would quietly undo.
+           */
+          const task = await store.createTask(TASK, scope)
+          await store.saveTaskArtifact(scope, { ...diagram(), taskId: task.id })
+
+          const [listed] = await store.listTaskArtifacts(task.id)
+          expect(listed?.name).toBe('architecture.mmd')
+          expect(listed).not.toHaveProperty('body')
+
+          const [projectListed] = await store.listProjectArtifacts(scope)
+          expect(projectListed).not.toHaveProperty('body')
+        })
+
+        it("lists the project's artifacts newest first", async () => {
+          // The other half of what this is for: one task's artifact while reviewing it, and the
+          // project's when you want to know what has already been decided.
+          const one = await store.createTask(TASK, scope)
+          const two = await store.createTask(TASK, scope)
+          await store.saveTaskArtifact(scope, { ...diagram({ name: 'older' }), taskId: one.id })
+          // A tick between them, so the two `updatedAt` values genuinely differ. Postgres has
+          // microsecond precision and separates them anyway; the in-memory store keeps ISO
+          // strings at millisecond precision, and this test is about ordering rather than
+          // about how a tie is broken.
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          await store.saveTaskArtifact(scope, { ...diagram({ name: 'newer' }), taskId: two.id })
+
+          const listed = await store.listProjectArtifacts(scope)
+          expect(listed.map((a) => a.name).slice(0, 2)).toEqual(['newer', 'older'])
+        })
+
+        it('records which run and stage wrote it, and works without either', async () => {
+          /**
+           * Both are optional on purpose. An artifact outlives the run that wrote it — the
+           * column is `ON DELETE SET NULL`, because runs are pruned and artifacts are the
+           * point — and a person may add one with no run behind it at all.
+           *
+           * The constraint's own behaviour is not asserted here: nothing in the store deletes a
+           * run, so proving it would mean reaching past the store to restate what the migration
+           * already declares.
+           */
+          const task = await store.createTask(TASK, scope)
+          const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+
+          const attributed = await store.saveTaskArtifact(scope, {
+            ...diagram({ name: 'from-a-run' }),
+            taskId: task.id,
+            runId: run.id,
+            stage: 'design',
+          })
+          const byHand = await store.saveTaskArtifact(scope, {
+            ...diagram({ name: 'by-hand' }),
+            taskId: task.id,
+          })
+
+          expect(attributed).toMatchObject({ runId: run.id, stage: 'design' })
+          expect(byHand.runId).toBeUndefined()
+          expect(byHand.stage).toBeUndefined()
+        })
+
+        it('deletes one by id', async () => {
+          const task = await store.createTask(TASK, scope)
+          const saved = await store.saveTaskArtifact(scope, { ...diagram(), taskId: task.id })
+
+          expect(await store.deleteTaskArtifact(saved.id)).toBe(true)
+          expect(await store.getTaskArtifact(saved.id)).toBeUndefined()
+          // Idempotent, so a double-click on a delete button is not an error.
+          expect(await store.deleteTaskArtifact(saved.id)).toBe(false)
+        })
+      })
+
       it('finds a run by its runtime handle', async () => {
         const task = await store.createTask(TASK, scope)
         const run = await store.createRun(task.id, 'claude-code', 'feat/x')

@@ -78,6 +78,46 @@ export interface StageTemplateRow {
  * Written as its own type rather than `Omit<…> & { id?: string }`, which does not do what it
  * looks like — the Omit still requires `id`, and the intersection cannot take it back.
  */
+/**
+ * What a stage drew, kept for the stages after it and for the person reviewing.
+ *
+ * `kind` is a closed set rather than a content type: the preview renders exactly three things,
+ * and a content-type string admits a hundred values meaning the same thing and several meaning
+ * "execute this".
+ */
+export type ArtifactKind = 'html' | 'markdown' | 'mermaid'
+
+export interface TaskArtifactRow {
+  id: string
+  clientSpaceId: string
+  projectId: string
+  taskId: string
+  /** The run and stage that wrote it. Absent once the run is pruned, or if a person added it. */
+  runId?: string
+  stage?: string
+  /** How a later stage refers to it, and what makes a re-render an overwrite. */
+  name: string
+  kind: ArtifactKind
+  title?: string
+  body: string
+  bytes: number
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * A row without its body.
+ *
+ * Lists are read far more often than bodies, and a project with a hundred artifacts would
+ * otherwise send a megabyte of markdown to render a sidebar.
+ */
+export type TaskArtifactSummary = Omit<TaskArtifactRow, 'body'>
+
+export type TaskArtifactInput = Omit<
+  TaskArtifactRow,
+  'id' | 'createdAt' | 'updatedAt' | 'bytes' | 'clientSpaceId' | 'projectId'
+>
+
 export type StageTemplateInput = Omit<StageTemplateRow, 'id' | 'createdAt' | 'updatedAt'> & {
   id?: string
 }
@@ -214,6 +254,33 @@ export interface Store {
    */
   saveStageTemplate(input: StageTemplateInput): Promise<StageTemplateRow>
   deleteStageTemplate(id: string): Promise<boolean>
+
+  /**
+   * Artifacts a task's stages produced.
+   *
+   * Summaries, not bodies: this feeds a list, and one artifact may be most of a megabyte.
+   */
+  listTaskArtifacts(taskId: string): Promise<TaskArtifactSummary[]>
+  /**
+   * The project's artifacts, newest first.
+   *
+   * The other half of what was asked for: attached to a task, but visible for the project — you
+   * read one task's diagram while reviewing it, and the project's when you want to know what has
+   * already been decided.
+   */
+  listProjectArtifacts(scope: ProjectScope, limit?: number): Promise<TaskArtifactSummary[]>
+  /** With the body, for a preview or for a later stage to read. */
+  getTaskArtifact(id: string): Promise<TaskArtifactRow | undefined>
+  /** By the name a stage refers to it by, within one task. */
+  findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined>
+  /**
+   * Write one, replacing any artifact of the same name on the same task.
+   *
+   * An overwrite rather than a second row, because a stage that re-renders its diagram means to
+   * replace it — and two rows with one name leave nothing to say which is current.
+   */
+  saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow>
+  deleteTaskArtifact(id: string): Promise<boolean>
   /**
    * Removes a repository from a project's allowlist.
    *

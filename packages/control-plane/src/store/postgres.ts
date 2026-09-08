@@ -21,6 +21,10 @@ import {
   type TaskRow,
   type StageTemplateRow,
   type StageTemplateInput,
+  type ArtifactKind,
+  type TaskArtifactRow,
+  type TaskArtifactSummary,
+  type TaskArtifactInput,
 } from './types.js'
 import {
   productTasks,
@@ -29,6 +33,7 @@ import {
   runTokens,
   runs,
   stageTemplates,
+  taskArtifacts,
   taskSpecs,
 } from './schema.js'
 import { NotifyListener, RUN_EVENTS_CHANNEL, type NotifyClient } from './notify.js'
@@ -471,6 +476,98 @@ export class PostgresStore implements Store {
         : await tx.insert(stageTemplates).values(values).returning()
       return toStageTemplate(row!)
     })
+  }
+
+  // --- task artifacts ------------------------------------------------------
+
+  async listTaskArtifacts(taskId: string): Promise<TaskArtifactSummary[]> {
+    // Columns listed rather than `select()`: the body is the one column this must not fetch,
+    // and `select()` would quietly start including it the day a new field is added.
+    const rows = await this.db
+      .select(ARTIFACT_SUMMARY_COLUMNS)
+      .from(taskArtifacts)
+      .where(eq(taskArtifacts.taskId, taskId))
+      .orderBy(asc(taskArtifacts.name))
+    return rows.map(toArtifactSummary)
+  }
+
+  async listProjectArtifacts(scope: ProjectScope, limit = 100): Promise<TaskArtifactSummary[]> {
+    const rows = await this.db
+      .select(ARTIFACT_SUMMARY_COLUMNS)
+      .from(taskArtifacts)
+      .where(eq(taskArtifacts.projectId, scope.projectId))
+      .orderBy(desc(taskArtifacts.updatedAt))
+      .limit(limit)
+    return rows.map(toArtifactSummary)
+  }
+
+  async getTaskArtifact(id: string): Promise<TaskArtifactRow | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(taskArtifacts)
+      .where(eq(taskArtifacts.id, id))
+      .limit(1)
+    return row ? toArtifact(row) : undefined
+  }
+
+  async findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(taskArtifacts)
+      .where(and(eq(taskArtifacts.taskId, taskId), eq(taskArtifacts.name, name)))
+      .limit(1)
+    return row ? toArtifact(row) : undefined
+  }
+
+  async saveTaskArtifact(
+    scope: ProjectScope,
+    input: TaskArtifactInput,
+  ): Promise<TaskArtifactRow> {
+    /**
+     * A name is a natural key within a task, so writing the same one again is an edit.
+     *
+     * Expressed as an upsert on the unique index this time rather than a lookup: the index is a
+     * plain `(task_id, name)` unique, so there is no partial predicate to restate — which was
+     * the only reason `saveStageTemplate` does it the long way.
+     */
+    const [row] = await this.db
+      .insert(taskArtifacts)
+      .values({
+        clientSpaceId: scope.clientSpaceId,
+        projectId: scope.projectId,
+        taskId: input.taskId,
+        runId: input.runId ?? null,
+        stage: input.stage ?? null,
+        name: input.name,
+        kind: input.kind,
+        title: input.title ?? null,
+        body: input.body,
+        // Bytes, not characters: the column is checked against `octet_length`, and multi-byte
+        // text would otherwise disagree with the constraint and be rejected on write.
+        bytes: Buffer.byteLength(input.body, 'utf8'),
+      })
+      .onConflictDoUpdate({
+        target: [taskArtifacts.taskId, taskArtifacts.name],
+        set: {
+          kind: input.kind,
+          title: input.title ?? null,
+          body: input.body,
+          bytes: Buffer.byteLength(input.body, 'utf8'),
+          runId: input.runId ?? null,
+          stage: input.stage ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning()
+    return toArtifact(row!)
+  }
+
+  async deleteTaskArtifact(id: string): Promise<boolean> {
+    const deleted = await this.db
+      .delete(taskArtifacts)
+      .where(eq(taskArtifacts.id, id))
+      .returning({ id: taskArtifacts.id })
+    return deleted.length > 0
   }
 
   async deleteStageTemplate(id: string): Promise<boolean> {
@@ -1071,4 +1168,64 @@ function toRun(row: typeof runs.$inferSelect): RunRow {
     ...(row.handle ? { handle: row.handle } : {}),
     ...(row.engineState ? { engineState: row.engineState } : {}),
   }
+}
+
+/**
+ * Every artifact column except the body.
+ *
+ * Listed explicitly rather than selecting the table: the body is the one column a list must not
+ * fetch, and `select()` would silently start including it the day a column is added.
+ */
+const ARTIFACT_SUMMARY_COLUMNS = {
+  id: taskArtifacts.id,
+  clientSpaceId: taskArtifacts.clientSpaceId,
+  projectId: taskArtifacts.projectId,
+  taskId: taskArtifacts.taskId,
+  runId: taskArtifacts.runId,
+  stage: taskArtifacts.stage,
+  name: taskArtifacts.name,
+  kind: taskArtifacts.kind,
+  title: taskArtifacts.title,
+  bytes: taskArtifacts.bytes,
+  createdAt: taskArtifacts.createdAt,
+  updatedAt: taskArtifacts.updatedAt,
+} as const
+
+/** Shared by the row and summary mappers, which differ only in whether a body is present. */
+function toArtifactSummary(row: {
+  id: string
+  clientSpaceId: string
+  projectId: string
+  taskId: string
+  runId: string | null
+  stage: string | null
+  name: string
+  kind: string
+  title: string | null
+  bytes: number
+  createdAt: Date
+  updatedAt: Date
+}): TaskArtifactSummary {
+  return {
+    id: row.id,
+    clientSpaceId: row.clientSpaceId,
+    projectId: row.projectId,
+    taskId: row.taskId,
+    // Absent rather than null, matching every other optional field in this store: a UI checking
+    // truthiness and one checking `!== undefined` would otherwise disagree.
+    ...(row.runId ? { runId: row.runId } : {}),
+    ...(row.stage ? { stage: row.stage } : {}),
+    name: row.name,
+    // Narrowed here, not asserted at the edge: the column has a CHECK constraint, so a value
+    // outside the set cannot be in the database to begin with.
+    kind: row.kind as ArtifactKind,
+    ...(row.title ? { title: row.title } : {}),
+    bytes: row.bytes,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
+function toArtifact(row: Parameters<typeof toArtifactSummary>[0] & { body: string }): TaskArtifactRow {
+  return { ...toArtifactSummary(row), body: row.body }
 }

@@ -36,6 +36,13 @@
       "when": 1788782634667,
       "tag": "0004_stage_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788869000000,
+      "tag": "0005_task_artifacts",
+      "breakpoints": true
     }
   ]
 }
