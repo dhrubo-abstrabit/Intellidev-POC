@@ -38,7 +38,16 @@ export async function GET(request: NextRequest) {
     // signal — logging the real cause (commonly a PKCE code-verifier
     // cookie missing because the OAuth flow started on a different origin,
     // e.g. localhost vs 127.0.0.1) makes this diagnosable without guessing.
-    console.error("Auth callback code exchange failed:", error.message);
+    // TEMPORARY: cookie names (never values) are logged too, to check
+    // whether the `...-code-verifier` cookie set at sign-in start actually
+    // survived the round trip through Google/Supabase back to this host —
+    // remove once the Amplify PKCE failure is root-caused.
+    console.error("Auth callback code exchange failed:", {
+      message: error.message,
+      name: error.name,
+      status: error.status,
+      cookieNames: request.cookies.getAll().map((c) => c.name),
+    });
   }
 
   return NextResponse.redirect(`${redirectOrigin}/login?error=auth_callback_failed`);
