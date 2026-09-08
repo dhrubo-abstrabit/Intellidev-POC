@@ -1,5 +1,5 @@
 -- pgTAP tests for the vector(1024) migration and match_search_chunks RPC
--- (20260901002100_vector_embeddings.sql). Run with `supabase test db`
+-- (20260901003150_vector_embeddings.sql). Run with `supabase test db`
 -- (requires the local stack: `supabase start`).
 
 begin;
