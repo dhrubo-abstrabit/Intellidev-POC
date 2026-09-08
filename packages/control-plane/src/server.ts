@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import { HarnessId, StageTemplate, WELL_KNOWN_STAGE_IDS } from '@intellidev/shared'
@@ -291,6 +292,79 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   )
   const publicDir =
     opts.publicDir ?? join(dirname(new URL(import.meta.url).pathname), '..', 'public')
+
+  /**
+   * The two libraries the artifact preview needs, served from this origin.
+   *
+   * From here rather than a CDN so the preview's content security policy can name one script
+   * source — this origin — and nothing else. A CDN entry would mean allowing a third party to
+   * run script inside a pane that renders content an agent wrote, which is the one place not to
+   * widen. It also means the preview works on a network that cannot reach a CDN.
+   *
+   * Resolved through `createRequire` rather than by path: pnpm's layout is a content-addressed
+   * store with symlinks, so a hand-built `node_modules/...` path is right on one machine and
+   * wrong in the image.
+   */
+  const vendored: Record<string, { pkg: string; file: string }> = {
+    // 45 KB. Markdown to HTML, run inside the sandboxed preview.
+    '/vendor/marked.js': { pkg: 'marked', file: 'lib/marked.umd.js' },
+    // 3.4 MB. Large, cached, and the reason mermaid diagrams can be drawn at all.
+    '/vendor/mermaid.js': { pkg: 'mermaid', file: 'dist/mermaid.min.js' },
+  }
+  const requireFrom = createRequire(import.meta.url)
+
+  /**
+   * Locates a file inside a package without going through its exports map.
+   *
+   * FOUND BY SERVING IT. `marked` exports only `.` and `./package.json`, so resolving
+   * `marked/lib/marked.umd.js` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` — the browser build
+   * is in the tarball and deliberately not addressable as a subpath.
+   *
+   * `./package.json` is exported by convention and by Node's own recommendation, so resolving
+   * that and joining gives the package's real directory. Still not a hand-built
+   * `node_modules/...` path: pnpm's layout is a content-addressed store full of symlinks, and a
+   * literal path is right on one machine and wrong in the image.
+   */
+  const packageFile = (pkg: string, file: string): string =>
+    join(dirname(requireFrom.resolve(`${pkg}/package.json`)), file)
+
+  /**
+   * The preview's own renderer, served from this origin like the libraries it uses.
+   *
+   * A separate file rather than script inlined into the frame, because the frame's policy names
+   * this origin as the only script source — which is what stops anything arriving *with* an
+   * artifact from executing. Inlining the bootstrap would need `unsafe-inline`, and that would
+   * allow the artifact's scripts too.
+   */
+  app.get('/vendor/artifact-preview.js', async (_request, reply) =>
+    reply
+      .type('application/javascript; charset=utf-8')
+      // Not cached: it is small, and a stale renderer is the kind of bug that presents as "the
+      // preview is blank" long after the change that fixed it.
+      .header('cache-control', 'no-store')
+      .send(await readFile(join(publicDir, 'artifact-preview.js'), 'utf8')),
+  )
+
+  for (const [route, { pkg, file }] of Object.entries(vendored)) {
+    app.get(route, async (_request, reply) => {
+      let path: string
+      try {
+        path = packageFile(pkg, file)
+      } catch {
+        // A clear 500 rather than a blank preview pane: the dependency is missing from the
+        // image, which is a build problem and not something a viewer can do anything about.
+        return reply.code(500).send({ error: `${pkg} is not installed in this image` })
+      }
+      return (
+        reply
+          .type('application/javascript; charset=utf-8')
+          // An hour, and no `immutable`: the URL carries no version, so promising immutability
+          // would be a lie the next upgrade has to live with.
+          .header('cache-control', 'public, max-age=3600')
+          .send(await readFile(path, 'utf8'))
+      )
+    })
+  }
 
   app.get('/', async (_request, reply) => {
     const html = await readFile(join(publicDir, 'index.html'), 'utf8')
@@ -640,6 +714,51 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       return reply.code(404).send({ error: 'no such template' })
     }
     return { deleted: await store.deleteStageTemplate(request.params.id) }
+  })
+
+  // --- artifacts -----------------------------------------------------------
+
+  /**
+   * What a task's stages drew.
+   *
+   * Summaries only. A body may be most of a megabyte, and this feeds a list.
+   */
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/artifacts', async (request, reply) => {
+    const task = await store.getTask(request.params.id)
+    // Checked rather than trusted: these routes run as the service role, which RLS does not
+    // constrain, so a task id from another project would otherwise be readable by anyone who
+    // could guess it.
+    if (!task || task.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such task' })
+    }
+    return { artifacts: await store.listTaskArtifacts(task.id) }
+  })
+
+  /**
+   * The project's artifacts, newest first.
+   *
+   * The other half of the point: one task's diagram while reviewing it, and the project's when
+   * you want to know what has already been decided.
+   */
+  app.get('/api/artifacts', async () => ({
+    artifacts: await store.listProjectArtifacts(opts.scope),
+  }))
+
+  /** One artifact with its body, for the preview to render. */
+  app.get<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
+    const artifact = await store.getTaskArtifact(request.params.id)
+    if (!artifact || artifact.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such artifact' })
+    }
+    return { artifact }
+  })
+
+  app.delete<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
+    const artifact = await store.getTaskArtifact(request.params.id)
+    if (!artifact || artifact.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such artifact' })
+    }
+    return { deleted: await store.deleteTaskArtifact(artifact.id) }
   })
 
   app.get('/api/repos', async () => ({ repos: await store.listProjectRepos(opts.scope) }))
