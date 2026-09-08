@@ -94,10 +94,36 @@ describe('the stage editor', () => {
   })
 
   it('decides a parked run through the api rather than by reloading', () => {
-    // Approving starts a new container for the same run, so the stream is re-followed and the
-    // events continue where they stopped.
+    // A reload would lose the log and the open stream, and re-ask the server for everything the
+    // page already has. (The page reloads in one other place — after signing out — so this
+    // asserts the decision path specifically rather than the whole file.)
     expect(page).toContain('/decision')
-    expect(page).toContain('follow(state.run)')
+    const decide = page.slice(page.indexOf('const decide = async'))
+    expect(decide.slice(0, decide.indexOf("$('approveRun').onclick"))).not.toContain(
+      'location.reload',
+    )
+  })
+
+  it('does not close the event stream when a run parks', () => {
+    /**
+     * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so the stream
+     * closed on it — and re-following replayed from the start, met that same frame again and
+     * closed immediately. Every event from the resumed container was recorded and none was
+     * ever shown: the log stopped dead at the approval and the pull request appeared from
+     * nowhere.
+     *
+     * Asserted on the condition rather than on a call, because the previous version of this
+     * test pinned the *mechanism* (`follow(state.run)`) and so failed when the mechanism was
+     * replaced by something that made it unnecessary.
+     */
+    expect(page).toContain("event.data.outcome !== 'parked'")
+  })
+
+  it('turns an answered approval into a record rather than leaving the buttons live', () => {
+    // They stayed clickable after a successful approval, so the obvious next thing to do was
+    // press them again — which answered "not awaiting a decision" and read as a failure, when
+    // the approval had already worked and opened the pull request.
+    expect(page).toContain("'Approved' : 'Rejected'")
   })
 })
 

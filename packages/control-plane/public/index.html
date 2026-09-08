@@ -2357,6 +2357,9 @@
         closeStream()
         state.run = runId
         state.lastSeq = -1
+        // Per run: `renderDetail` rewrites the pane, so the cards this tracked are gone and
+        // keeping their ids would suppress the decision on the run being opened now.
+        state.approvals = new Map()
 
         const controller = new AbortController()
         state.stream = controller
@@ -2393,11 +2396,24 @@
                   const event = JSON.parse(data)
                   state.lastSeq = event.seq
                   render(event)
-                  if (event.type === 'run.finished') {
+                  /**
+                   * Parking does not end the stream.
+                   *
+                   * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so
+                   * this closed the stream — and a re-follow replayed from the start, hit that
+                   * same frame again and closed immediately. The resumed container's events
+                   * were all recorded and none of them were ever shown: the log stopped dead
+                   * at the approval and the pull request appeared out of nowhere.
+                   *
+                   * Left open instead, so the run continues into its next container on the
+                   * same connection and nothing has to be re-followed.
+                   */
+                  if (event.type === 'run.finished' && event.data.outcome !== 'parked') {
                     closeStream()
                     await loadTasks()
                     return
                   }
+                  if (event.type === 'run.finished') await loadTasks()
                 }
               }
             } catch (error) {
@@ -2424,7 +2440,19 @@
        * which is the point. Nothing is running while this sits on screen.
        */
       function renderApproval(event) {
+        /**
+         * One card per decision, however many times the event is seen.
+         *
+         * The stream replays from a given sequence — on a reconnect, or when the page is
+         * reopened — so `approval.requested` arrives again for a decision that may already
+         * have been made. Appending a second card would offer to approve the same stage twice.
+         */
+        const approvalId = event.data.approvalId ?? `${state.run}:${event.stage}`
+        state.approvals ??= new Map()
+        if (state.approvals.has(approvalId)) return
+
         const box = document.createElement('div')
+        state.approvals.set(approvalId, box)
         box.className = 'card'
         box.style.marginTop = '10px'
         box.innerHTML = `
@@ -2452,11 +2480,23 @@
             $('rejectRun').disabled = false
             return
           }
-          $('approvalStatus').textContent =
-            decision === 'approved' ? 'approved — resuming…' : 'rejected'
-          // Approving starts a new container for the same run, so the stream is re-followed
-          // rather than the page reloaded: the events continue where they left off.
-          if (decision === 'approved') follow(state.run)
+          /**
+           * The card becomes a record of the decision, not a question again.
+           *
+           * FOUND BY APPROVING A RUN. The buttons stayed on screen after a successful
+           * approval, so the obvious next thing to do was press them again — which answered
+           * with "run … is succeeded, not awaiting a decision" and read as the approval having
+           * failed, when it had already worked and opened the pull request.
+           */
+          box.innerHTML = `
+            <div class="name">${decision === 'approved' ? 'Approved' : 'Rejected'}</div>
+            <p class="hint">${
+              decision === 'approved'
+                ? 'The run is continuing from the next stage.'
+                : 'The run was stopped here.'
+            }</p>`
+          // No re-follow: the stream stays open across a park now, so the resumed container's
+          // events arrive on the connection that is already there.
           await loadTasks()
         }
         $('approveRun').onclick = () => void decide('approved')
