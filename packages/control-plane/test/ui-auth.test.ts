@@ -104,6 +104,38 @@ describe('the stage editor', () => {
     )
   })
 
+  it('has a module script the browser can actually parse', async () => {
+    /**
+     * FOUND BY OPENING THE PAGE. The HTML parser ends a script block at the first unescaped
+     * closing tag it meets — inside a string, a template literal or a comment, it makes no
+     * difference. The artifact preview builds a document containing script tags, and a comment
+     * *explaining* that hazard contained the literal sequence: prettier reformatted the file
+     * around it, and the whole page stopped loading with "Invalid or unexpected token".
+     *
+     * Nothing caught it. A syntax check over the file's text passes, because the text is valid
+     * JavaScript — the damage happens in the HTML tokenizer, before the JavaScript parser sees
+     * anything. So this cuts the block the way a browser does and parses *that*.
+     */
+    const { rmSync, writeFileSync, mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { execFileSync } = await import('node:child_process')
+
+    // Exactly the browser's rule: everything up to the first unescaped closing tag.
+    const script = page.split('<script type="module">')[1]?.split('</script>')[0] ?? ''
+    expect(script.length).toBeGreaterThan(1000)
+
+    const dir = mkdtempSync(join(tmpdir(), 'idv-page-'))
+    const file = join(dir, 'page.mjs')
+    try {
+      writeFileSync(file, script)
+      // `--check` parses without running, which is all that is being asked.
+      execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('does not close the event stream when a run parks', () => {
     /**
      * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so the stream

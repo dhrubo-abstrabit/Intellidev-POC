@@ -24,7 +24,18 @@ function fail(message) {
 }
 
 async function render() {
-  if (!node || !target) return
+  /**
+   * Loud, not silent.
+   *
+   * FOUND BY A BLANK PREVIEW. This returned quietly when the elements were missing — which they
+   * were, because the script ran from `<head>` before `<body>` had been parsed. A pane showing
+   * nothing looks exactly like an empty artifact, so the one clue was withheld by the guard.
+   */
+  if (!target) {
+    document.body.textContent = 'The preview did not find its container. This is a bug in the UI.'
+    return
+  }
+  if (!node) return fail('the artifact body was not delivered to the frame')
   let artifact
   try {
     artifact = JSON.parse(node.textContent)

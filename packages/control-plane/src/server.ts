@@ -342,6 +342,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       // Not cached: it is small, and a stale renderer is the kind of bug that presents as "the
       // preview is blank" long after the change that fixed it.
       .header('cache-control', 'no-store')
+      // Same reason as the libraries above: the frame that loads this has an opaque origin.
+      .header('access-control-allow-origin', '*')
       .send(await readFile(join(publicDir, 'artifact-preview.js'), 'utf8')),
   )
 
@@ -361,6 +363,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
           // An hour, and no `immutable`: the URL carries no version, so promising immutability
           // would be a lie the next upgrade has to live with.
           .header('cache-control', 'public, max-age=3600')
+          /**
+           * The preview frame is sandboxed to an opaque origin, so it asks for these as a
+           * cross-origin request. A classic script needs no permission, but anything fetched
+           * in CORS mode does — a module script, or a library loading its own chunk — and that
+           * failure is silent and looks exactly like a blank pane.
+           */
+          .header('access-control-allow-origin', '*')
           .send(await readFile(path, 'utf8'))
       )
     })

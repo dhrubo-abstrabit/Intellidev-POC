@@ -2443,42 +2443,67 @@
        */
       function artifactDocument(artifact) {
         /**
-         * Every `
-    </script>
-    ` below is written `<\/script>`. * * Not a style choice: this function lives inside the page's
-    own `
-    <script>
-      ` block, and
-               * the HTML parser ends that block at the first literal `</script` it sees — inside a
-               * template literal or not. Writing them plainly truncated this file mid-function, and
-               * the page stopped loading entirely. It is the same trap `source` is escaped against a
-               * few lines down, one level up.
-               */
-              const scripts =
-                artifact.kind === 'html'
-                  ? // Nothing runs. An html artifact is arbitrary markup, and it needs no help from us
-                    // to be displayed — so it gets no script at all, its own included.
-                    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">`
-                  : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${location.origin}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">
+         * Closing script tags below are written with a backslash: `<\/script>`.
+         *
+         * Not a style choice. This function lives inside the page's own script block, and the
+         * HTML parser ends that block at the first unescaped closing tag it meets — inside a
+         * template literal or not. Writing them plainly truncated this file mid-function and
+         * the page stopped loading at all.
+         *
+         * The lesson arrived twice: the *comment* that first explained this contained the
+         * literal sequence, so prettier reformatted the file around it and broke the page in
+         * the same way the code was careful not to. Hence the description in words.
+         *
+         * It is the same trap `source` is escaped against a few lines down, one level up.
+         */
+        /**
+         * `defer` on the renderer, and classic scripts rather than modules.
+         *
+         * FOUND BY A BLANK PREVIEW, TWICE OVER. These tags sit in `<head>` while the elements
+         * they act on are in `<body>`, so a classic script runs *before the body exists* —
+         * `getElementById` returned null and the renderer gave up without a word. `defer` moves
+         * it to after parsing, and the two libraries above still execute during it, so they are
+         * ready when it runs.
+         *
+         * The other half: a module script is always fetched in CORS mode, and this frame's
+         * origin is opaque — sandboxed without `allow-same-origin`, which is the point — so the
+         * request counts as cross-origin. The routes now send the header for it either way,
+         * because the next thing added here will hit the same wall.
+         *
+         * FOUND BY A BLANK PREVIEW. A module script is always fetched in CORS mode, and this
+         * frame's origin is opaque — sandboxed without `allow-same-origin`, which is the point —
+         * so the request counts as cross-origin and needs the server to allow the null origin.
+         * It did not, so the renderer was rejected while the two libraries beside it loaded
+         * fine: nothing to see and nothing in the log.
+         *
+         * A classic script needs no such permission. The routes send the header anyway, because
+         * the next thing added here will hit the same wall.
+         */
+        const scripts =
+          artifact.kind === 'html'
+            ? // Nothing runs. An html artifact is arbitrary markup, and it needs no help from us
+              // to be displayed — so it gets no script at all, its own included.
+              `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">`
+            : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${location.origin}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">
                      <script src="${location.origin}/vendor/marked.js"><\/script>
                      <script src="${location.origin}/vendor/mermaid.js"><\/script>
-                     <script type="module" src="${location.origin}/vendor/artifact-preview.js"><\/script>`
+                     <script defer src="${location.origin}/vendor/artifact-preview.js"><\/script>`
 
-              const dark = document.documentElement.dataset.theme === 'dark'
-              /**
-               * `</script` is the one sequence that escapes a script block.
-               *
-               * JSON escaping does not cover it — a body containing the literal characters would end
-               * the block early and everything after it would be parsed as markup. This is the whole
-               * reason the source can be passed as data at all.
-               */
-              const source = JSON.stringify({
-                kind: artifact.kind,
-                body: artifact.body,
-                theme: dark ? 'dark' : 'light',
-              }).replace(/<\/script/gi, '<\\/script')
+        const dark = document.documentElement.dataset.theme === 'dark'
+        /**
+         * `</script` is the one sequence that escapes a script block.
+         *
+         * JSON escaping does not cover it — a body containing the literal characters would end
+         * the block early and everything after it would be parsed as markup. This is the whole
+         * reason the source can be passed as data at all.
+         */
+        const source = JSON.stringify({
+          kind: artifact.kind,
+          body: artifact.body,
+          theme: dark ? 'dark' : 'light',
+        }).replace(/<\/script/gi, '<\\/script')
 
-              return `<!doctype html>
+        return `<!doctype html>
       <html lang="en">
       <head>
       <meta charset="utf-8">
@@ -2506,186 +2531,202 @@
       <script type="application/json" id="artifact-source">${source}<\/script>
       </body>
       </html>`
-            }
+      }
 
-            async function openArtifact(id) {
-              const res = await fetch(`/api/artifacts/${id}`)
-              if (!res.ok) return
-              const { artifact } = await res.json()
-              state.artifact = artifact
+      async function openArtifact(id) {
+        const res = await fetch(`/api/artifacts/${id}`)
+        if (!res.ok) return
+        const { artifact } = await res.json()
+        state.artifact = artifact
 
-              $('artifactTitle').textContent = artifact.title || artifact.name
-              $('artifactMeta').textContent =
-                `${artifact.name} · ${ARTIFACT_KIND_WORDS[artifact.kind] ?? artifact.kind}` +
-                `${artifact.stage ? ` · written by the ${artifact.stage} stage` : ''}`
-              $('artifactSource').textContent = ''
-              // `srcdoc`, not `src`: see `artifactDocument`.
-              $('artifactFrame').srcdoc = artifactDocument(artifact)
-              $('artifactDialog').showModal()
-            }
+        $('artifactTitle').textContent = artifact.title || artifact.name
+        $('artifactMeta').textContent =
+          `${artifact.name} · ${ARTIFACT_KIND_WORDS[artifact.kind] ?? artifact.kind}` +
+          `${artifact.stage ? ` · written by the ${artifact.stage} stage` : ''}`
+        $('artifactSource').textContent = ''
+        /**
+         * Shown first, then filled.
+         *
+         * FOUND BY A BLANK WHITE PANE. A closed `<dialog>` is `display: none`, and a frame
+         * inside one does not load a `srcdoc` set while it is hidden — the attribute was there,
+         * the document was correct, and nothing was ever painted. Re-setting the identical
+         * document after the dialog was on screen rendered it immediately, which is what named
+         * the cause.
+         *
+         * `srcdoc`, not `src`, for a different reason: an `<iframe src>` cannot carry an
+         * Authorization header, and a token in a URL ends up in a proxy log. See
+         * `artifactDocument`.
+         */
+        $('artifactDialog').showModal()
+        $('artifactFrame').srcdoc = artifactDocument(artifact)
+      }
 
-            $('closeArtifact').onclick = () => {
-              // Emptied on close so the next open cannot show the previous artifact for a moment
-              // while its document parses.
-              $('artifactFrame').srcdoc = ''
-              $('artifactDialog').close()
-            }
+      $('closeArtifact').onclick = () => {
+        // Emptied on close so the next open cannot show the previous artifact for a moment
+        // while its document parses.
+        $('artifactFrame').srcdoc = ''
+        $('artifactDialog').close()
+      }
 
-            $('artifactRaw').onclick = () => {
-              // The source, for a diagram that will not parse or a note someone wants to copy. Shown
-              // in the same sandboxed frame as text rather than opened in a tab, because a tab would
-              // be a same-origin document containing agent-written markup.
-              const artifact = state.artifact
-              if (!artifact) return
-              $('artifactFrame').srcdoc = artifactDocument({
-                kind: 'markdown',
-                // Fenced, so `marked` renders it as a code block and nothing in it is interpreted.
-                body: '```\n' + artifact.body + '\n```',
+      $('artifactRaw').onclick = () => {
+        // The source, for a diagram that will not parse or a note someone wants to copy. Shown
+        // in the same sandboxed frame as text rather than opened in a tab, because a tab would
+        // be a same-origin document containing agent-written markup.
+        const artifact = state.artifact
+        if (!artifact) return
+        // The dialog is already open here, so the ordering that caught `openArtifact` does not
+        // apply — but the frame is emptied first so a failed render cannot leave the previous
+        // document on screen looking like the source.
+        $('artifactFrame').srcdoc = ''
+        $('artifactFrame').srcdoc = artifactDocument({
+          kind: 'markdown',
+          // Fenced, so `marked` renders it as a code block and nothing in it is interpreted.
+          body: '```\n' + artifact.body + '\n```',
+        })
+        $('artifactSource').textContent = 'showing the source'
+      }
+
+      $('artifactDelete').onclick = async () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        if (!confirm(`Delete "${artifact.name}"? Later stages will no longer be able to read it.`))
+          return
+        const res = await fetch(`/api/artifacts/${artifact.id}`, { method: 'DELETE' })
+        if (!res.ok) {
+          $('artifactSource').textContent = 'could not delete that'
+          return
+        }
+        $('artifactFrame').srcdoc = ''
+        $('artifactDialog').close()
+        if (state.selected) await select(state.selected)
+      }
+
+      function escapeAttr(value) {
+        return String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;')
+      }
+      function escapeHtmlText(value) {
+        return String(value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
+
+      // --- live stream ---------------------------------------------------------
+      /**
+       * Server-sent events read over `fetch`, not through `EventSource`.
+       *
+       * `EventSource` cannot set request headers, so it cannot present a bearer token — every
+       * connection came back 401 the moment the API was gated, and the only symptom was
+       * "stream interrupted — reconnecting…" forever while the run itself was fine.
+       *
+       * The token deliberately does not go in the query string instead. A URL is not a private
+       * place: it lands in load balancer access logs, in browser history, and in any referrer
+       * the page emits. A header is the only place a credential belongs.
+       *
+       * Reconnection is ours to do now, which `EventSource` handled — and it is the reason
+       * `since` exists, so a resumed stream continues from the last sequence seen rather than
+       * replaying or skipping.
+       */
+      function follow(runId) {
+        closeStream()
+        state.run = runId
+        state.lastSeq = -1
+        // Per run: `renderDetail` rewrites the pane, so the cards this tracked are gone and
+        // keeping their ids would suppress the decision on the run being opened now.
+        state.approvals = new Map()
+
+        const controller = new AbortController()
+        state.stream = controller
+
+        void (async () => {
+          // Backoff, so a control plane that is down is not hammered by a page left open.
+          let delay = 500
+          while (!controller.signal.aborted) {
+            try {
+              const res = await fetch(`/api/runs/${runId}/stream?since=${state.lastSeq}`, {
+                headers: { accept: 'text/event-stream' },
+                signal: controller.signal,
               })
-              $('artifactSource').textContent = 'showing the source'
-            }
+              if (!res.ok) throw new Error(`stream returned ${res.status}`)
+              delay = 500
 
-            $('artifactDelete').onclick = async () => {
-              const artifact = state.artifact
-              if (!artifact) return
-              if (!confirm(`Delete "${artifact.name}"? Later stages will no longer be able to read it.`))
-                return
-              const res = await fetch(`/api/artifacts/${artifact.id}`, { method: 'DELETE' })
-              if (!res.ok) {
-                $('artifactSource').textContent = 'could not delete that'
-                return
-              }
-              $('artifactFrame').srcdoc = ''
-              $('artifactDialog').close()
-              if (state.selected) await select(state.selected)
-            }
-
-            function escapeAttr(value) {
-              return String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;')
-            }
-            function escapeHtmlText(value) {
-              return String(value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            }
-
-            // --- live stream ---------------------------------------------------------
-            /**
-             * Server-sent events read over `fetch`, not through `EventSource`.
-             *
-             * `EventSource` cannot set request headers, so it cannot present a bearer token — every
-             * connection came back 401 the moment the API was gated, and the only symptom was
-             * "stream interrupted — reconnecting…" forever while the run itself was fine.
-             *
-             * The token deliberately does not go in the query string instead. A URL is not a private
-             * place: it lands in load balancer access logs, in browser history, and in any referrer
-             * the page emits. A header is the only place a credential belongs.
-             *
-             * Reconnection is ours to do now, which `EventSource` handled — and it is the reason
-             * `since` exists, so a resumed stream continues from the last sequence seen rather than
-             * replaying or skipping.
-             */
-            function follow(runId) {
-              closeStream()
-              state.run = runId
-              state.lastSeq = -1
-              // Per run: `renderDetail` rewrites the pane, so the cards this tracked are gone and
-              // keeping their ids would suppress the decision on the run being opened now.
-              state.approvals = new Map()
-
-              const controller = new AbortController()
-              state.stream = controller
-
-              void (async () => {
-                // Backoff, so a control plane that is down is not hammered by a page left open.
-                let delay = 500
-                while (!controller.signal.aborted) {
-                  try {
-                    const res = await fetch(`/api/runs/${runId}/stream?since=${state.lastSeq}`, {
-                      headers: { accept: 'text/event-stream' },
-                      signal: controller.signal,
-                    })
-                    if (!res.ok) throw new Error(`stream returned ${res.status}`)
-                    delay = 500
-
-                    const reader = res.body.getReader()
-                    const decoder = new TextDecoder()
-                    let buffer = ''
-                    for (;;) {
-                      const { value, done } = await reader.read()
-                      if (done) break
-                      buffer += decoder.decode(value, { stream: true })
-                      // Frames are separated by a blank line; a partial one stays in the buffer.
-                      const frames = buffer.split('\n\n')
-                      buffer = frames.pop() ?? ''
-                      for (const frame of frames) {
-                        const data = frame
-                          .split('\n')
-                          .filter((l) => l.startsWith('data:'))
-                          .map((l) => l.slice(5).trim())
-                          .join('\n')
-                        if (!data) continue
-                        const event = JSON.parse(data)
-                        state.lastSeq = event.seq
-                        render(event)
-                        /**
-                         * Parking does not end the stream.
-                         *
-                         * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so
-                         * this closed the stream — and a re-follow replayed from the start, hit that
-                         * same frame again and closed immediately. The resumed container's events
-                         * were all recorded and none of them were ever shown: the log stopped dead
-                         * at the approval and the pull request appeared out of nowhere.
-                         *
-                         * Left open instead, so the run continues into its next container on the
-                         * same connection and nothing has to be re-followed.
-                         */
-                        if (event.type === 'run.finished' && event.data.outcome !== 'parked') {
-                          closeStream()
-                          await loadTasks()
-                          return
-                        }
-                        if (event.type === 'run.finished') await loadTasks()
-                      }
-                    }
-                  } catch (error) {
-                    if (controller.signal.aborted) return
-                    append('warn', `stream interrupted — reconnecting… (${error.message})`)
+              const reader = res.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              for (;;) {
+                const { value, done } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                // Frames are separated by a blank line; a partial one stays in the buffer.
+                const frames = buffer.split('\n\n')
+                buffer = frames.pop() ?? ''
+                for (const frame of frames) {
+                  const data = frame
+                    .split('\n')
+                    .filter((l) => l.startsWith('data:'))
+                    .map((l) => l.slice(5).trim())
+                    .join('\n')
+                  if (!data) continue
+                  const event = JSON.parse(data)
+                  state.lastSeq = event.seq
+                  render(event)
+                  /**
+                   * Parking does not end the stream.
+                   *
+                   * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so
+                   * this closed the stream — and a re-follow replayed from the start, hit that
+                   * same frame again and closed immediately. The resumed container's events
+                   * were all recorded and none of them were ever shown: the log stopped dead
+                   * at the approval and the pull request appeared out of nowhere.
+                   *
+                   * Left open instead, so the run continues into its next container on the
+                   * same connection and nothing has to be re-followed.
+                   */
+                  if (event.type === 'run.finished' && event.data.outcome !== 'parked') {
+                    closeStream()
+                    await loadTasks()
+                    return
                   }
-                  if (controller.signal.aborted) return
-                  await new Promise((r) => setTimeout(r, delay))
-                  delay = Math.min(delay * 2, 10_000)
+                  if (event.type === 'run.finished') await loadTasks()
                 }
-              })()
+              }
+            } catch (error) {
+              if (controller.signal.aborted) return
+              append('warn', `stream interrupted — reconnecting… (${error.message})`)
             }
+            if (controller.signal.aborted) return
+            await new Promise((r) => setTimeout(r, delay))
+            delay = Math.min(delay * 2, 10_000)
+          }
+        })()
+      }
 
-            function closeStream() {
-              state.stream?.abort()
-              state.stream = null
-            }
+      function closeStream() {
+        state.stream?.abort()
+        state.stream = null
+      }
 
-            /**
-             * A run that stopped for approval.
-             *
-             * Rendered from the event rather than by polling: `approval.requested` arrives on the same
-             * stream everything else does, and the container has already exited by the time it lands —
-             * which is the point. Nothing is running while this sits on screen.
-             */
-            function renderApproval(event) {
-              /**
-               * One card per decision, however many times the event is seen.
-               *
-               * The stream replays from a given sequence — on a reconnect, or when the page is
-               * reopened — so `approval.requested` arrives again for a decision that may already
-               * have been made. Appending a second card would offer to approve the same stage twice.
-               */
-              const approvalId = event.data.approvalId ?? `${state.run}:${event.stage}`
-              state.approvals ??= new Map()
-              if (state.approvals.has(approvalId)) return
+      /**
+       * A run that stopped for approval.
+       *
+       * Rendered from the event rather than by polling: `approval.requested` arrives on the same
+       * stream everything else does, and the container has already exited by the time it lands —
+       * which is the point. Nothing is running while this sits on screen.
+       */
+      function renderApproval(event) {
+        /**
+         * One card per decision, however many times the event is seen.
+         *
+         * The stream replays from a given sequence — on a reconnect, or when the page is
+         * reopened — so `approval.requested` arrives again for a decision that may already
+         * have been made. Appending a second card would offer to approve the same stage twice.
+         */
+        const approvalId = event.data.approvalId ?? `${state.run}:${event.stage}`
+        state.approvals ??= new Map()
+        if (state.approvals.has(approvalId)) return
 
-              const box = document.createElement('div')
-              state.approvals.set(approvalId, box)
-              box.className = 'card'
-              box.style.marginTop = '10px'
-              box.innerHTML = `
+        const box = document.createElement('div')
+        state.approvals.set(approvalId, box)
+        box.className = 'card'
+        box.style.marginTop = '10px'
+        box.innerHTML = `
                 <div class="name">Waiting for approval</div>
                 <p class="hint">${escapeHtmlText(event.data.detail ?? event.data.action ?? '')}</p>
                 <div class="row" style="margin-top: 8px">
@@ -2693,180 +2734,180 @@
                   <button type="button" id="rejectRun" class="secondary">Reject</button>
                 </div>
                 <p class="hint" id="approvalStatus"></p>`
-              $('detail').append(box)
+        $('detail').append(box)
 
-              const decide = async (decision) => {
-                $('approveRun').disabled = true
-                $('rejectRun').disabled = true
-                const res = await fetch(`/api/runs/${state.run}/decision`, {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ decision }),
-                })
-                const body = await res.json().catch(() => ({}))
-                if (!res.ok) {
-                  $('approvalStatus').textContent = body.error ?? 'could not record that'
-                  $('approveRun').disabled = false
-                  $('rejectRun').disabled = false
-                  return
-                }
-                /**
-                 * The card becomes a record of the decision, not a question again.
-                 *
-                 * FOUND BY APPROVING A RUN. The buttons stayed on screen after a successful
-                 * approval, so the obvious next thing to do was press them again — which answered
-                 * with "run … is succeeded, not awaiting a decision" and read as the approval having
-                 * failed, when it had already worked and opened the pull request.
-                 */
-                box.innerHTML = `
+        const decide = async (decision) => {
+          $('approveRun').disabled = true
+          $('rejectRun').disabled = true
+          const res = await fetch(`/api/runs/${state.run}/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ decision }),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            $('approvalStatus').textContent = body.error ?? 'could not record that'
+            $('approveRun').disabled = false
+            $('rejectRun').disabled = false
+            return
+          }
+          /**
+           * The card becomes a record of the decision, not a question again.
+           *
+           * FOUND BY APPROVING A RUN. The buttons stayed on screen after a successful
+           * approval, so the obvious next thing to do was press them again — which answered
+           * with "run … is succeeded, not awaiting a decision" and read as the approval having
+           * failed, when it had already worked and opened the pull request.
+           */
+          box.innerHTML = `
                   <div class="name">${decision === 'approved' ? 'Approved' : 'Rejected'}</div>
                   <p class="hint">${
                     decision === 'approved'
                       ? 'The run is continuing from the next stage.'
                       : 'The run was stopped here.'
                   }</p>`
-                // No re-follow: the stream stays open across a park now, so the resumed container's
-                // events arrive on the connection that is already there.
-                await loadTasks()
-              }
-              $('approveRun').onclick = () => void decide('approved')
-              $('rejectRun').onclick = () => void decide('rejected')
-            }
+          // No re-follow: the stream stays open across a park now, so the resumed container's
+          // events arrive on the connection that is already there.
+          await loadTasks()
+        }
+        $('approveRun').onclick = () => void decide('approved')
+        $('rejectRun').onclick = () => void decide('rejected')
+      }
 
-            const stageEls = new Map()
-            function render(event) {
-              if (event.type === 'approval.requested') renderApproval(event)
-              if (event.type === 'stage.entered') markStage(event.stage, 'active')
-              if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
-              const line = describe(event)
-              if (line)
-                append(
-                  line.cls,
-                  `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`,
-                )
-            }
+      const stageEls = new Map()
+      function render(event) {
+        if (event.type === 'approval.requested') renderApproval(event)
+        if (event.type === 'stage.entered') markStage(event.stage, 'active')
+        if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
+        const line = describe(event)
+        if (line)
+          append(
+            line.cls,
+            `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`,
+          )
+      }
 
-            function markStage(stage, cls) {
-              if (!stage) return
-              let el = stageEls.get(stage)
-              if (!el) {
-                el = document.createElement('span')
-                el.className = 'stage'
-                el.textContent = stage
-                $('stages')?.appendChild(el)
-                stageEls.set(stage, el)
-              }
-              el.className = `stage ${cls}`
-            }
+      function markStage(stage, cls) {
+        if (!stage) return
+        let el = stageEls.get(stage)
+        if (!el) {
+          el = document.createElement('span')
+          el.className = 'stage'
+          el.textContent = stage
+          $('stages')?.appendChild(el)
+          stageEls.set(stage, el)
+        }
+        el.className = `stage ${cls}`
+      }
 
-            function describe(e) {
-              const d = e.data ?? {}
-              switch (e.type) {
-                case 'assistant.delta':
-                  return null
-                case 'command.output':
-                  return null
-                case 'run.provisioning':
-                  return { cls: '', text: 'provisioning' }
-                case 'cache.restored':
-                  return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
-                case 'worktree.ready':
-                  return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
-                case 'run.started':
-                  return { cls: 'ok', text: `started with ${d.harness}` }
-                case 'stage.entered':
-                  return { cls: 'st', text: `── attempt ${d.attempt}` }
-                case 'stage.exited':
-                  return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
-                case 'assistant.message':
-                  return { cls: '', text: `say: ${firstLine(d.text)}` }
-                case 'thinking.started':
-                  return { cls: '', text: 'thinking' }
-                case 'tool.call':
-                  return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
-                case 'tool.result':
-                  return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
-                case 'tool.denied':
-                  return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
-                case 'seat.authenticated':
-                  return {
-                    cls: 'ok',
-                    text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}`,
-                  }
-                case 'tool.server_connected':
-                  return {
-                    cls: 'ok',
-                    text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}`,
-                  }
-                case 'file.changed':
-                  return { cls: '', text: `${d.change} ${d.path}` }
-                case 'diff.produced':
-                  return {
-                    cls: '',
-                    text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}`,
-                  }
-                case 'gate.evaluated':
-                  return {
-                    cls: d.passed ? 'ok' : 'bad',
-                    text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}`,
-                  }
-                case 'gate.blocked':
-                  return {
-                    cls: 'warn',
-                    text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}`,
-                  }
-                case 'git.branch_created':
-                  return { cls: '', text: `branch ${d.branch}` }
-                case 'git.committed':
-                  return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
-                case 'git.pushed':
-                  return { cls: 'ok', text: `pushed ${d.branch}` }
-                case 'pr.opened':
-                  return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
-                // Labelled as an estimate, because for seat auth it is derived rather than billed.
-                case 'usage.updated':
-                  return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
-                case 'error':
-                  return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
-                case 'harness.crashed':
-                  return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
-                case 'run.finished':
-                  return {
-                    cls: d.outcome === 'succeeded' ? 'ok' : 'bad',
-                    text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}`,
-                  }
-                default:
-                  return { cls: '', text: e.type }
-              }
+      function describe(e) {
+        const d = e.data ?? {}
+        switch (e.type) {
+          case 'assistant.delta':
+            return null
+          case 'command.output':
+            return null
+          case 'run.provisioning':
+            return { cls: '', text: 'provisioning' }
+          case 'cache.restored':
+            return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
+          case 'worktree.ready':
+            return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
+          case 'run.started':
+            return { cls: 'ok', text: `started with ${d.harness}` }
+          case 'stage.entered':
+            return { cls: 'st', text: `── attempt ${d.attempt}` }
+          case 'stage.exited':
+            return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
+          case 'assistant.message':
+            return { cls: '', text: `say: ${firstLine(d.text)}` }
+          case 'thinking.started':
+            return { cls: '', text: 'thinking' }
+          case 'tool.call':
+            return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
+          case 'tool.result':
+            return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
+          case 'tool.denied':
+            return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'seat.authenticated':
+            return {
+              cls: 'ok',
+              text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}`,
             }
+          case 'tool.server_connected':
+            return {
+              cls: 'ok',
+              text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}`,
+            }
+          case 'file.changed':
+            return { cls: '', text: `${d.change} ${d.path}` }
+          case 'diff.produced':
+            return {
+              cls: '',
+              text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}`,
+            }
+          case 'gate.evaluated':
+            return {
+              cls: d.passed ? 'ok' : 'bad',
+              text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}`,
+            }
+          case 'gate.blocked':
+            return {
+              cls: 'warn',
+              text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}`,
+            }
+          case 'git.branch_created':
+            return { cls: '', text: `branch ${d.branch}` }
+          case 'git.committed':
+            return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
+          case 'git.pushed':
+            return { cls: 'ok', text: `pushed ${d.branch}` }
+          case 'pr.opened':
+            return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
+          // Labelled as an estimate, because for seat auth it is derived rather than billed.
+          case 'usage.updated':
+            return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
+          case 'error':
+            return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
+          case 'harness.crashed':
+            return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
+          case 'run.finished':
+            return {
+              cls: d.outcome === 'succeeded' ? 'ok' : 'bad',
+              text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}`,
+            }
+          default:
+            return { cls: '', text: e.type }
+        }
+      }
 
-            function append(cls, text) {
-              const log = $('log')
-              if (!log) return
-              const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
-              const span = document.createElement('span')
-              span.className = cls
-              span.textContent = text + '\n'
-              log.appendChild(span)
-              // Only follow the tail if the reader was already there; yanking the scroll away
-              // from someone reading history is worse than not following.
-              if (atBottom) log.scrollTop = log.scrollHeight
-            }
+      function append(cls, text) {
+        const log = $('log')
+        if (!log) return
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+        const span = document.createElement('span')
+        span.className = cls
+        span.textContent = text + '\n'
+        log.appendChild(span)
+        // Only follow the tail if the reader was already there; yanking the scroll away
+        // from someone reading history is worse than not following.
+        if (atBottom) log.scrollTop = log.scrollHeight
+      }
 
-            const firstLine = (t = '', max = 110) => {
-              const line = String(t).split('\n')[0]
-              return line.length > max ? line.slice(0, max) + '…' : line
-            }
-            function escape(text) {
-              const el = document.createElement('span')
-              el.textContent = String(text ?? '')
-              return el.innerHTML
-            }
+      const firstLine = (t = '', max = 110) => {
+        const line = String(t).split('\n')[0]
+        return line.length > max ? line.slice(0, max) + '…' : line
+      }
+      function escape(text) {
+        const el = document.createElement('span')
+        el.textContent = String(text ?? '')
+        return el.innerHTML
+      }
 
-            await loadSeats()
-            await loadServers()
-            await loadStages()
-            await loadTasks()
+      await loadSeats()
+      await loadServers()
+      await loadStages()
+      await loadTasks()
     </script>
   </body>
 </html>
