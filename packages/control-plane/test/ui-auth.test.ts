@@ -136,6 +136,28 @@ describe('the stage editor', () => {
     }
   })
 
+  it('says a task is waiting on approval rather than blocked', () => {
+    /**
+     * FOUND BY READING IT. The pill printed the stored status with underscores swapped, so a
+     * task waiting for a person said `blocked` — a word that describes the state machine and
+     * not the situation. Before that it said `running`, while nothing was running.
+     */
+    expect(page).toContain("blocked: 'waiting on approval'")
+    // And the precise case: a parked run says so regardless of what the task row holds, which
+    // also covers a row left on `running` by a run that parked before the status existed.
+    expect(page).toContain("current?.status === 'parked'")
+  })
+
+  it('does not paint a waiting task in the failure colour', () => {
+    // `.pill.blocked` was grouped with `.pill.failed`, so a task waiting for someone to look at
+    // it was red — the same mistake the word made, in a different medium.
+    const css = page.slice(page.indexOf('.pill.failed'), page.indexOf('.stages {'))
+    expect(css).toMatch(/\.pill\.blocked/)
+    // In the amber group, beside the other two states that mean "needs attention, not broken".
+    const amber = css.slice(css.indexOf('.pill.waiting_capacity'))
+    expect(amber).toContain('.pill.blocked')
+  })
+
   it('does not close the event stream when a run parks', () => {
     /**
      * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so the stream

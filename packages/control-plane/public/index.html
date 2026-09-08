@@ -528,13 +528,20 @@
         color: var(--green);
         border-color: var(--green-bd);
       }
-      .pill.failed,
-      .pill.blocked {
+      .pill.failed {
         color: var(--red);
         border-color: var(--bd-danger);
       }
+      /*
+        Amber, not red.
+
+        `blocked` was grouped with `failed`, which put the alarm colour on a task that is simply
+        waiting for someone to look at it — the same mistake as the word did. It needs attention;
+        it has not gone wrong.
+      */
       .pill.waiting_capacity,
-      .pill.parked {
+      .pill.parked,
+      .pill.blocked {
         color: var(--amber);
         border-color: var(--bd-warn);
       }
@@ -1016,7 +1023,7 @@
           <div class="card task ${state.selected === t.id ? 'selected' : ''}" data-id="${t.id}">
             <div class="row" style="justify-content: space-between">
               <h3>${escape(t.title)}</h3>
-              <span class="pill ${t.status}">${t.status.replace(/_/g, ' ')}</span>
+              <span class="pill ${t.status}">${escapeHtmlText(taskLabel(t))}</span>
             </div>
             <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}${t.mcpServerIds?.length ? ` · ${escape(t.mcpServerIds.join(', '))}` : ''}</p>
           </div>`,
@@ -1644,7 +1651,7 @@
               <p style="color: var(--fg3); margin: 6px 0 0; max-width: 60ch">${escape(task.description)}</p>
             </div>
             <div class="row">
-              <span class="pill ${task.status}">${task.status.replace(/_/g, ' ')}</span>
+              <span class="pill ${task.status}">${escapeHtmlText(taskLabel(task, runs))}</span>
               <!--
                 Only before it runs. Editing the stages of a task that has already started would
                 describe something that did not happen, and a resumed run reads its own state
@@ -1873,6 +1880,41 @@
         }))
         renderStages()
         openStageDialog({ draft: true })
+      }
+
+      /**
+       * What a status is called on screen.
+       *
+       * The pill used to print the stored value with its underscores swapped, so it read
+       * `blocked` and `waiting capacity` — accurate as field names and unhelpful as English. The
+       * class still carries the raw status, so the colours keep keying off the real thing.
+       */
+      const TASK_STATUS_WORDS = {
+        not_started: 'not started',
+        dispatched: 'starting',
+        running: 'running',
+        waiting_capacity: 'waiting for capacity',
+        in_review: 'in review',
+        done: 'done',
+        blocked: 'waiting on approval',
+        failed: 'failed',
+      }
+
+      /**
+       * The label for a task, preferring what its newest run says.
+       *
+       * A parked run is the precise fact: the container is gone and a decision is outstanding.
+       * The task status is a coarser projection of that, and it can also be *stale* — a run that
+       * parked before parking started setting `blocked` left its task on `running`, and the board
+       * claimed something was running when nothing was. Reading the run fixes both at once,
+       * without a migration to correct rows after the fact.
+       *
+       * `runs` is absent in the sidebar, which lists tasks only; there the mapped word is used.
+       */
+      function taskLabel(task, runs) {
+        const current = runs ? latestRun(runs) : undefined
+        if (current?.status === 'parked') return 'waiting on approval'
+        return TASK_STATUS_WORDS[task.status] ?? task.status.replace(/_/g, ' ')
       }
 
       /** Where the stages a new task runs came from, in words rather than a field name. */
