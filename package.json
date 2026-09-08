@@ -21,7 +21,6 @@
     "@base-ui/react": "^1.6.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/utilities": "^3.2.2",
-    "@langchain/community": "1.1.29",
     "@langchain/core": "1.2.9",
     "@langchain/openai": "1.5.11",
     "@langchain/textsplitters": "1.0.1",
@@ -34,7 +33,7 @@
     "js-tiktoken": "1.0.21",
     "lucide-react": "^1.28.0",
     "mammoth": "^1.12.0",
-    "next": "16.2.12",
+    "next": "^16.3.4",
     "next-themes": "^0.4.6",
     "openai": "^7.8.0",
     "pdf-parse": "^2.4.5",
@@ -60,5 +59,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true
   }
 }

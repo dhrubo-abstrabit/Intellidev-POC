@@ -7,10 +7,9 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Every PDF/DOCX parse must go through src/lib/pdf/load.ts's
   // createPdfLoader/createDocxLoader/loadPdfParse — direct imports skip the
-  // DOMMatrix/pdfjs-worker production fix documented there. Convention alone
-  // can't police this since @langchain/community's own loader also imports
-  // pdf-parse internally; this rule is the half of the invariant that *is*
-  // our own code.
+  // DOMMatrix/pdfjs-worker production fix documented there. This rule is what
+  // actually enforces that, since it's the only thing that can police an
+  // import from inside node_modules the way convention alone can't.
   {
     files: ["src/**/*.{ts,tsx}"],
     ignores: ["src/lib/pdf/**"],
@@ -24,8 +23,8 @@ const eslintConfig = defineConfig([
               message: "Import via src/lib/pdf/load.ts's loadPdfParse() instead — a direct import skips the DOMMatrix production fix.",
             },
             {
-              name: "@langchain/community/document_loaders/fs/pdf",
-              message: "Import via src/lib/pdf/load.ts's createPdfLoader() instead — a direct import skips the DOMMatrix production fix.",
+              name: "mammoth",
+              message: "Import via src/lib/pdf/load.ts's createDocxLoader() instead, so every DOCX parse stays in one place.",
             },
           ],
           patterns: [

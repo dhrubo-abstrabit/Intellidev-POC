@@ -28,18 +28,16 @@ describe("loadPdfParse", () => {
 });
 
 describe("createPdfLoader", () => {
-  it("extracts real text through LangChain's PDFLoader after preparePdfGlobals", async () => {
-    // Same regression this file exists to prevent, exercised through the
-    // second importer: @langchain/community's PDFLoader does its own bare
-    // `import("pdf-parse")` internally and sets neither global itself, so
-    // this only passes if preparePdfGlobals() ran first and the module
-    // registry's cache is doing the work described in load.ts's doc comment.
+  it("extracts real text and per-page metadata through the public loader API", async () => {
+    // Exercises the same pdf-parse/pdfjs path as loadPdfParse above, but
+    // through createPdfLoader's per-page splitting — the shape every real
+    // caller (extractFileText, parseAttachmentText) actually consumes.
     await preparePdfGlobals();
     const loader = await createPdfLoader(new Blob([Buffer.from(MINIMAL_PDF, "latin1")]));
     const docs = await loader.load();
     expect(docs).toHaveLength(1);
     expect(docs[0].pageContent).toContain("Hello PDF");
-    expect(docs[0].metadata.loc.pageNumber).toBe(1);
-    expect(docs[0].metadata.pdf.totalPages).toBe(1);
+    expect(docs[0].metadata.loc?.pageNumber).toBe(1);
+    expect(docs[0].metadata.pdf?.totalPages).toBe(1);
   });
 });

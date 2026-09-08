@@ -1,28 +1,32 @@
 import "server-only";
-import type { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
-import type { DocxLoader } from "@langchain/community/document_loaders/fs/docx";
+
+/** Minimal shape shared by `createPdfLoader`/`createDocxLoader` output —
+ * mirrors the `Document[]` contract callers were already written against
+ * (from when these wrapped LangChain's loaders), so no caller needed to
+ * change when the wrapping was replaced by calling `pdf-parse`/`mammoth`
+ * directly. */
+export interface LoadedDocument {
+  pageContent: string;
+  metadata: {
+    loc?: { pageNumber: number };
+    pdf?: { totalPages: number };
+  };
+}
+
+export interface DocumentLoader {
+  load(): Promise<LoadedDocument[]>;
+}
 
 /**
  * Every PDF parse in this app must go through `createPdfLoader` (or
- * `loadPdfParse` for the raw `pdf-parse` module) — never import `pdf-parse`,
- * `pdfjs-dist`, or `@langchain/community/document_loaders/fs/pdf` directly.
- * Constructing a PDFLoader any other way skips the global-prep below and
+ * `loadPdfParse` for the raw `pdf-parse` module) — never import `pdf-parse`
+ * or `pdfjs-dist` directly. Doing so skips the global-prep below and
  * reintroduces the production outage this file exists to prevent.
  *
- * The rule used to be "the only place pdf-parse may be imported from,"
- * enforced by convention, because this file was the only importer.
- * `@langchain/community/document_loaders/fs/pdf` is a second importer now —
- * it does its own bare `await import("pdf-parse")` internally and sets
- * neither of the globals below — and it lives inside `node_modules`, so
- * convention can't police it. What actually matters is *ordering*, not
- * exclusivity: Node's ESM module registry is per-process, so once
- * `pdf-parse` has been evaluated once with these globals already set, every
- * later `import("pdf-parse")` — including LangChain's own, buried inside
- * `PDFLoaderImports()` — resolves to the same cached, already-safe module.
- * `createPdfLoader` guarantees that ordering by always calling
- * `preparePdfGlobals()` before ever touching a PDFLoader; an ESLint
- * `no-restricted-imports` rule blocks every other import path our own code
- * could take.
+ * This is the only place `pdf-parse` is imported from anywhere in this repo
+ * (an ESLint `no-restricted-imports` rule blocks every other import path our
+ * own code could take), so there is exactly one ordering to guarantee:
+ * `preparePdfGlobals()` always runs before the first `import("pdf-parse")`.
  *
  * ## Why
  *
@@ -116,29 +120,54 @@ export async function preparePdfGlobals(): Promise<void> {
 }
 
 /** Raw `pdf-parse` module access, for callers that need the `PDFParse` class
- * directly rather than LangChain's `Document[]` shape. Prefer `createPdfLoader`
- * for anything that can consume `Document[]`. */
+ * directly rather than the per-page `LoadedDocument[]` shape. Prefer
+ * `createPdfLoader` for anything that can consume `LoadedDocument[]`. */
 export async function loadPdfParse() {
   await preparePdfGlobals();
   return import("pdf-parse");
 }
 
 /**
- * The only way to obtain a `PDFLoader` — constructing one any other way
- * skips `preparePdfGlobals()` and reintroduces the outage documented above.
- * `splitPages` defaults to `true` (LangChain's own default) so callers get
- * one `Document` per page with `metadata.loc.pageNumber` populated.
+ * The only way to parse a PDF into `LoadedDocument[]` — going around this
+ * (e.g. constructing `PDFParse` directly) skips `preparePdfGlobals()` and
+ * reintroduces the outage documented above. `splitPages` defaults to `true`
+ * so callers get one `LoadedDocument` per page with `metadata.loc.pageNumber`
+ * populated, matching the shape callers were already written against.
  */
-export async function createPdfLoader(blob: Blob, opts?: { splitPages?: boolean }): Promise<PDFLoader> {
+export async function createPdfLoader(blob: Blob, opts?: { splitPages?: boolean }): Promise<DocumentLoader> {
   await preparePdfGlobals();
-  const { PDFLoader: PDFLoaderCtor } = await import("@langchain/community/document_loaders/fs/pdf");
-  return new PDFLoaderCtor(blob, { splitPages: opts?.splitPages ?? true });
+  const { PDFParse } = await import("pdf-parse");
+  const splitPages = opts?.splitPages ?? true;
+  return {
+    async load() {
+      const data = new Uint8Array(await blob.arrayBuffer());
+      const parser = new PDFParse({ data });
+      try {
+        const result = await parser.getText();
+        if (!splitPages) {
+          return [{ pageContent: result.text, metadata: { pdf: { totalPages: result.total } } }];
+        }
+        return result.pages.map((page) => ({
+          pageContent: page.text,
+          metadata: { loc: { pageNumber: page.num }, pdf: { totalPages: result.total } },
+        }));
+      } finally {
+        await parser.destroy();
+      }
+    },
+  };
 }
 
-/** DOCX has no pagination concept, hence no globals to prepare — this exists
- * purely for symmetry with `createPdfLoader` as the one PDF/DOCX loader
- * factory module. */
-export async function createDocxLoader(blob: Blob): Promise<DocxLoader> {
-  const { DocxLoader: DocxLoaderCtor } = await import("@langchain/community/document_loaders/fs/docx");
-  return new DocxLoaderCtor(blob);
+/** DOCX has no pagination concept, hence no globals to prepare and always a
+ * single-element result — this exists purely for symmetry with
+ * `createPdfLoader` as the one PDF/DOCX loader factory module. */
+export async function createDocxLoader(blob: Blob): Promise<DocumentLoader> {
+  return {
+    async load() {
+      const mammoth = await import("mammoth");
+      const arrayBuffer = await blob.arrayBuffer();
+      const { value } = await mammoth.extractRawText({ buffer: Buffer.from(arrayBuffer) });
+      return [{ pageContent: value, metadata: {} }];
+    },
+  };
 }
