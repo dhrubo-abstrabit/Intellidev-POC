@@ -18,6 +18,14 @@ export type BatchMemberOutcome = "succeeded" | "failed" | "enqueue_failed" | "ti
  * supabase/migrations/20260901000900_sync.sql) — connectors, events and
  * the daily digest all belong to the client space; a project is a tagged
  * view over a subset of its action items, not a separate data owner.
+ *
+ * Returns `created: true` only for the call that actually inserted the row —
+ * every other call (reused an existing row, or lost the 23505 insert race)
+ * gets `false`. The cron tick uses this to enqueue the batch-timeout backstop
+ * job exactly once per (space, day) rather than once per tick that happens to
+ * see due connectors for a space whose batch already exists (see
+ * src/app/api/cron/tick/route.ts) — load-bearing now that the tick runs every
+ * minute instead of once a day.
  */
 export async function seedBatchForClientSpace(
   service: ServiceClient,
@@ -25,7 +33,7 @@ export async function seedBatchForClientSpace(
   // batch is a coordination record for one engagement's daily sync, and every
   // access path to it flows through client_space_id.
   params: { clientSpaceId: string; batchDate: string; projectConnectorIds: string[] },
-): Promise<string> {
+): Promise<{ batchId: string; created: boolean }> {
   const { clientSpaceId, batchDate, projectConnectorIds } = params;
 
   const { data: existing } = await service
@@ -36,6 +44,7 @@ export async function seedBatchForClientSpace(
     .maybeSingle();
 
   let batchId = existing?.id;
+  let created = false;
   if (!batchId) {
     const { data: inserted, error } = await service
       .from("sync_batches")
@@ -56,6 +65,7 @@ export async function seedBatchForClientSpace(
       batchId = raceRow.id;
     } else {
       batchId = inserted.id;
+      created = true;
     }
   }
 
@@ -66,7 +76,7 @@ export async function seedBatchForClientSpace(
     );
   }
 
-  return batchId;
+  return { batchId, created };
 }
 
 export type SettleBatchResult =
@@ -128,12 +138,20 @@ export async function settleBatchMembership(
   if (!member) return { inBatch: false };
 
   const nowIso = new Date().toISOString();
-  const { data: claimed } = await service
+  const { data: claimed, error: claimError } = await service
     .from("sync_batch_members")
     .update({ completed_at: nowIso, outcome })
     .eq("id", member.id)
     .is("completed_at", null)
     .select("id");
+  // Surfaced loudly rather than folded into the "already settled" branch
+  // below — a rejected update (e.g. a future outcome value added to
+  // BatchMemberOutcome without a matching CHECK-constraint migration, the
+  // exact shape of the enqueue_failed/timed_out bug this file used to have)
+  // must not silently masquerade as a legitimate race.
+  if (claimError) {
+    throw new Error(`Could not settle batch member ${member.id} with outcome "${outcome}": ${claimError.message}`);
+  }
   if (!claimed || claimed.length === 0) {
     // Already settled — either an earlier delivery of this SAME terminal
     // event (the job queue is at-least-once, in which case the caller that
@@ -155,12 +173,15 @@ export async function settleBatchMembership(
 
   if ((remaining ?? 0) > 0) return { inBatch: true, firedLlmJob: false, alreadySettled: false };
 
-  const { data: won } = await service
+  const { data: won, error: wonError } = await service
     .from("sync_batches")
     .update({ llm_triggered_at: nowIso })
     .eq("id", batch.id)
     .is("llm_triggered_at", null)
     .select("id");
+  if (wonError) {
+    throw new Error(`Could not mark batch ${batch.id} extraction-triggered: ${wonError.message}`);
+  }
 
   return { inBatch: true, firedLlmJob: (won?.length ?? 0) === 1, alreadySettled: false };
 }
@@ -208,14 +229,59 @@ const BACKFILL_SCAN_ROW_LIMIT = 5000;
 // remove.
 const DAY_JOB_STAGGER_SECONDS = 30;
 
+// Rate-limits the `debounce: true` call site only (see the option below) —
+// the "late arrival" trigger in run-sync.ts, which used to fire only for the
+// rare manual "Sync now" landing after the day's batch already fired but
+// became the ordinary case once the tick runs every minute instead of once a
+// day. 15 minutes matches project_connectors.sync_interval_seconds' old
+// historical default (900s), so a connector left on that cadence sees
+// roughly the same extraction rhythm as before this feature existed.
+const EXTRACTION_DEBOUNCE_MS = 15 * 60 * 1000;
+
 /**
  * Fires the LLM job for a client space's batchDate once its batch is
  * confirmed complete, and sweeps for older unprocessed backlog at the same
  * time (see BACKFILL_DAY_CAP) — the general mechanism a first-time connector
  * backfill relies on to get more than just "today" extracted, but it applies
  * equally to e.g. a connector that was broken for a week and just caught up.
+ *
+ * `options.debounce` gates the call behind a per-client-space cooldown
+ * (client_spaces.last_extraction_enqueued_at) via a single-statement
+ * compare-and-swap — the same no-counter-arithmetic idiom
+ * settleBatchMembership uses above. Callers that need a GUARANTEED trigger
+ * (the once-per-day digest, a manual "Sync now" outside any batch) must NOT
+ * set this: debouncing those could skip a day's digest entirely, or make a
+ * user's manual sync appear to do nothing. It is safe to debounce the "late
+ * arrival" call site specifically because this function only ever enqueues
+ * work for events with processed_at IS NULL and re-sweeps older unprocessed
+ * days on every later call — a skipped call delays extraction to the next
+ * un-debounced or post-cooldown call, it never drops an event.
  */
-export async function triggerDailyExtraction(service: ServiceClient, clientSpaceId: string, date: string): Promise<void> {
+export async function triggerDailyExtraction(
+  service: ServiceClient,
+  clientSpaceId: string,
+  date: string,
+  options?: { debounce?: boolean },
+): Promise<void> {
+  if (options?.debounce) {
+    const cutoffIso = new Date(Date.now() - EXTRACTION_DEBOUNCE_MS).toISOString();
+    const { data: won, error: debounceError } = await service
+      .from("client_spaces")
+      .update({ last_extraction_enqueued_at: new Date().toISOString() })
+      .eq("id", clientSpaceId)
+      .or(`last_extraction_enqueued_at.is.null,last_extraction_enqueued_at.lt.${cutoffIso}`)
+      .select("id");
+    if (debounceError) {
+      // Fail closed: skip firing rather than risk unbounded extraction
+      // rounds if the debounce check itself is broken. The next call (this
+      // connector's next sync, or the guaranteed daily digest) still sweeps
+      // whatever this one would have — see the doc comment above.
+      console.error(`[sync] debounce check failed for client space ${clientSpaceId}; skipping this trigger:`, debounceError);
+      return;
+    }
+    if (!won || won.length === 0) return; // another call already won this window
+  }
+
   const dates = new Set([date]);
 
   const { data: clientSpace } = await service.from("client_spaces").select("timezone").eq("id", clientSpaceId).maybeSingle();

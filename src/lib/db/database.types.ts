@@ -77,6 +77,7 @@ export type Database = {
           created_by: string | null
           description: string | null
           id: string
+          last_extraction_enqueued_at: string | null
           name: string
           slug: string
           tenant_id: string
@@ -91,6 +92,7 @@ export type Database = {
           created_by?: string | null
           description?: string | null
           id?: string
+          last_extraction_enqueued_at?: string | null
           name: string
           slug: string
           tenant_id: string
@@ -105,6 +107,7 @@ export type Database = {
           created_by?: string | null
           description?: string | null
           id?: string
+          last_extraction_enqueued_at?: string | null
           name?: string
           slug?: string
           tenant_id?: string
@@ -2188,8 +2191,8 @@ export type Database = {
       current_project_ids: { Args: never; Returns: string[] }
       current_tenant_ids: { Args: never; Returns: string[] }
       current_workspace_ids: { Args: never; Returns: string[] }
-      dispatch_daily_tick: { Args: never; Returns: undefined }
       dispatch_jobs: { Args: never; Returns: undefined }
+      dispatch_sync_tick: { Args: never; Returns: undefined }
       enqueue_job: {
         Args: { p_delay_seconds?: number; p_payload: Json; p_route: string }
         Returns: number

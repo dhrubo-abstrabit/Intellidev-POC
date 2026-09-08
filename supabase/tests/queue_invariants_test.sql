@@ -3,9 +3,9 @@
 -- `supabase test db` (requires the local stack: `supabase start`).
 
 begin;
-select plan(10);
+select plan(12);
 
--- 1, 2 & 3. All three extensions dispatch_jobs()/dispatch_daily_tick()/
+-- 1, 2 & 3. All three extensions dispatch_jobs()/dispatch_sync_tick()/
 --    reap_job_dispatches() depend on are installed. pg_net is checked
 --    explicitly and separately from pg_cron/pgmq: it was wrongly assumed
 --    pre-installed on every environment when this migration was first
@@ -59,7 +59,7 @@ select is(
       and grantee in ('anon', 'authenticated')
       and routine_name in (
         'enqueue_job', 'ack_job', 'fail_job',
-        'dispatch_jobs', 'dispatch_daily_tick', 'reap_job_dispatches'
+        'dispatch_jobs', 'dispatch_sync_tick', 'reap_job_dispatches'
       )
   ),
   0,
@@ -88,22 +88,34 @@ select is(
   'job_dispatches has no grants to anon or authenticated'
 );
 
--- 7 & 8. The three schedules exist with the expected cadence. daily_tick is
---    created inactive by 20260820101500_pgmq_pg_cron.sql (so it couldn't
---    double-fire alongside Vercel Cron, which owned the daily tick at the
---    time) and re-activated by 20260820102300_enable_daily_tick.sql, once
---    Vercel Cron was confirmed gone (vercel.json has been `{}` since
---    5bcf4c8) and api/cron/tick had its own maxDuration set. By the time
---    this test runs against a fully-migrated database, it should be active.
+-- 7, 8, 9 & 10. The three schedules exist with the expected cadence.
+--    sync_tick (20260904000150_sync_tick_every_minute.sql) replaced the old
+--    once-a-day `daily_tick` so project_connectors.sync_interval_seconds is
+--    actually honored down to its 60-second CHECK floor — before that
+--    migration, any interval under ~24h was indistinguishable from 24h,
+--    since due-ness was only ever re-evaluated once a day. Asserting the
+--    schedule itself (not just "active", which the old test settled for) is
+--    what makes this the invariant that keeps user-chosen intervals honest.
+--    Also asserts no `daily_tick` job survives — a partially-applied rename
+--    must not leave both schedules active and double-firing.
 select is(
   (select schedule from cron.job where jobname = 'job_dispatch'),
   '5 seconds',
   'job_dispatch runs every 5 seconds'
 );
 select is(
-  (select active from cron.job where jobname = 'daily_tick'),
+  (select active from cron.job where jobname = 'sync_tick'),
   true,
-  'daily_tick is active'
+  'sync_tick is active'
+);
+select is(
+  (select schedule from cron.job where jobname = 'sync_tick'),
+  '* * * * *',
+  'sync_tick runs every minute'
+);
+select ok(
+  not exists(select 1 from cron.job where jobname = 'daily_tick'),
+  'daily_tick no longer exists'
 );
 
 select * from finish();
