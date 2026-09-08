@@ -29,17 +29,32 @@ select is(
 
 -- Tenants, workspaces, client spaces and projects created as postgres
 -- (bypasses RLS) so the fixture setup itself isn't gated by the policies
--- under test. handle_new_tenant/handle_new_workspace still fire (they're
--- AFTER INSERT triggers, unaffected by role) and populate tenant_admins/
--- workspace_members for us, which is what the RLS checks below actually rely
--- on.
-insert into public.tenants (id, name, slug, owner_id) values
-  ('90000000-0000-0000-0000-000000000009', 'Acme Corp', 'acme-rls-test', 'a0000000-0000-0000-0000-00000000000a'),
-  ('90000000-0000-0000-0000-00000000000f', 'Northwind Corp', 'northwind-rls-test', 'b0000000-0000-0000-0000-00000000000b');
+-- under test.
+--
+-- MEMBERSHIP IS EXPLICIT HERE, and has to be. This fixture used to pass
+-- `owner_id` to tenants and workspaces and rely on handle_new_tenant /
+-- handle_new_workspace to fan out the membership rows. Both assumptions are
+-- now wrong: the v2 rebuild dropped owner_id (ownership is a tenant_members
+-- role, not a column — a column and a role row would be two sources of truth
+-- for one fact), and those triggers return early when auth.uid() is null,
+-- which it always is when inserting as `postgres`. The suite therefore
+-- inserted nothing, granted nothing, and died on a missing column before
+-- reaching any assertion.
+insert into public.tenants (id, name, slug) values
+  ('90000000-0000-0000-0000-000000000009', 'Acme Corp', 'acme-rls-test'),
+  ('90000000-0000-0000-0000-00000000000f', 'Northwind Corp', 'northwind-rls-test');
 
-insert into public.workspaces (id, tenant_id, name, slug, owner_id) values
-  ('c0000000-0000-0000-0000-00000000000c', '90000000-0000-0000-0000-000000000009', 'Acme Technologies', 'acme-rls-test', 'a0000000-0000-0000-0000-00000000000a'),
-  ('d0000000-0000-0000-0000-00000000000d', '90000000-0000-0000-0000-00000000000f', 'Northwind Traders', 'northwind-rls-test', 'b0000000-0000-0000-0000-00000000000b');
+insert into public.tenant_members (tenant_id, user_id, role) values
+  ('90000000-0000-0000-0000-000000000009', 'a0000000-0000-0000-0000-00000000000a', 'owner'),
+  ('90000000-0000-0000-0000-00000000000f', 'b0000000-0000-0000-0000-00000000000b', 'owner');
+
+insert into public.workspaces (id, tenant_id, name, slug) values
+  ('c0000000-0000-0000-0000-00000000000c', '90000000-0000-0000-0000-000000000009', 'Acme Technologies', 'acme-rls-test'),
+  ('d0000000-0000-0000-0000-00000000000d', '90000000-0000-0000-0000-00000000000f', 'Northwind Traders', 'northwind-rls-test');
+
+insert into public.workspace_members (workspace_id, tenant_id, user_id, role) values
+  ('c0000000-0000-0000-0000-00000000000c', '90000000-0000-0000-0000-000000000009', 'a0000000-0000-0000-0000-00000000000a', 'admin'),
+  ('d0000000-0000-0000-0000-00000000000d', '90000000-0000-0000-0000-00000000000f', 'b0000000-0000-0000-0000-00000000000b', 'admin');
 
 -- Deliberately identical name across both workspaces — a leak that shows the
 -- wrong workspace's client space or project would otherwise be easy to miss.

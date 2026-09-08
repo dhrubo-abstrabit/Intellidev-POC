@@ -78,7 +78,19 @@ export type AttachmentSummary = {
   sizeBytes: number | null;
   status: "pending" | "extracted" | "skipped" | "failed";
   skipReason: string | null;
+  /** Which page of this attachment a task's citation actually came from —
+   * resolved via task_sources.chunk_id -> search_chunks.page_number.
+   * Only ever set on the task-management provenance path (see that page's
+   * query); DayLinkage's day-wide attachment fetch has no single task's
+   * citation to resolve this against, so it's always null there. */
+  pageNumber: number | null;
 };
+
+/** task_sources.role is a check-constrained text column, not a real
+ * Postgres enum (see that column's own migration comment), so
+ * `supabase gen types` gives it bare `string` — this is the narrowed type
+ * every reader in this app should use instead. */
+export type TaskSourceRole = "created_from" | "enriched" | "mentioned";
 
 /** One normalized_events row (a Slack message, etc.) linked to an action
  * item via task_sources — the "why was this created" trail. */
@@ -90,6 +102,11 @@ export type SourceEvent = {
   title: string | null;
   body: string | null;
   occurredAt: string;
+  role: TaskSourceRole;
+  /** Non-null only for a PM-added link (task_sources.linked_by is not
+   * null) — the discriminator for both the role badge and whether an
+   * unlink button renders. Null means model-written and read-only. */
+  linkedBy: { id: string; name: string | null } | null;
   attachments: AttachmentSummary[];
 };
 

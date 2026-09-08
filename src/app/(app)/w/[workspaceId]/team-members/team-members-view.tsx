@@ -1,6 +1,6 @@
 "use client";
 
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmActionButton } from "@/components/dashboard/confirm-action-button";
 import { TeamMemberDialog } from "@/app/(app)/w/[workspaceId]/team-members/team-member-dialog";
@@ -17,16 +17,23 @@ export function TeamMembersView({ workspaceId, members, canManage }: TeamMembers
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Team Members</CardTitle>
+        <CardTitle>Contacts</CardTitle>
+        <CardDescription>
+          People you want to assign tasks to — client stakeholders, colleagues outside this tool. They are NOT app
+          users and cannot sign in. For who has access, see Access.
+        </CardDescription>
         {canManage ? (
           <CardAction>
-            <TeamMemberDialog workspaceId={workspaceId} triggerLabel="Add team member" />
+            <TeamMemberDialog workspaceId={workspaceId} triggerLabel="Add contact" />
           </CardAction>
         ) : null}
       </CardHeader>
       <CardContent>
         {members.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No team members yet — add your first one.</p>
+          <p className="text-sm text-muted-foreground">
+            No contacts yet. This list is for people you assign tasks to, not for who can sign in — workspace members
+            live under Access. Add a contact to start assigning work to them.
+          </p>
         ) : (
           <Table>
             <TableHeader>

@@ -7,31 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       audit_logs: {
@@ -392,15 +367,21 @@ export type Database = {
           id: string
           invited_by: string | null
           project_id: string | null
-          project_role: Database["public"]["Enums"]["project_role"] | null
+          project_role: string | null
+          project_role_scope: Database["public"]["Enums"]["scope_level"] | null
           revoked_at: string | null
-          space_role: Database["public"]["Enums"]["space_role"] | null
+          space_role: string | null
+          space_role_scope: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
-          tenant_role: Database["public"]["Enums"]["tenant_role"] | null
+          tenant_role: string | null
+          tenant_role_scope: Database["public"]["Enums"]["scope_level"] | null
           token_hash: string
           updated_at: string
           workspace_id: string | null
-          workspace_role: Database["public"]["Enums"]["workspace_role"] | null
+          workspace_role: string | null
+          workspace_role_scope:
+            | Database["public"]["Enums"]["scope_level"]
+            | null
         }
         Insert: {
           accepted_at?: string | null
@@ -412,15 +393,21 @@ export type Database = {
           id?: string
           invited_by?: string | null
           project_id?: string | null
-          project_role?: Database["public"]["Enums"]["project_role"] | null
+          project_role?: string | null
+          project_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           revoked_at?: string | null
-          space_role?: Database["public"]["Enums"]["space_role"] | null
+          space_role?: string | null
+          space_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
-          tenant_role?: Database["public"]["Enums"]["tenant_role"] | null
+          tenant_role?: string | null
+          tenant_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           token_hash: string
           updated_at?: string
           workspace_id?: string | null
-          workspace_role?: Database["public"]["Enums"]["workspace_role"] | null
+          workspace_role?: string | null
+          workspace_role_scope?:
+            | Database["public"]["Enums"]["scope_level"]
+            | null
         }
         Update: {
           accepted_at?: string | null
@@ -432,15 +419,21 @@ export type Database = {
           id?: string
           invited_by?: string | null
           project_id?: string | null
-          project_role?: Database["public"]["Enums"]["project_role"] | null
+          project_role?: string | null
+          project_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           revoked_at?: string | null
-          space_role?: Database["public"]["Enums"]["space_role"] | null
+          space_role?: string | null
+          space_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id?: string
-          tenant_role?: Database["public"]["Enums"]["tenant_role"] | null
+          tenant_role?: string | null
+          tenant_role_scope?: Database["public"]["Enums"]["scope_level"] | null
           token_hash?: string
           updated_at?: string
           workspace_id?: string | null
-          workspace_role?: Database["public"]["Enums"]["workspace_role"] | null
+          workspace_role?: string | null
+          workspace_role_scope?:
+            | Database["public"]["Enums"]["scope_level"]
+            | null
         }
         Relationships: [
           {
@@ -472,11 +465,39 @@ export type Database = {
             referencedColumns: ["id", "workspace_id"]
           },
           {
+            foreignKeyName: "invitations_project_role_fkey"
+            columns: ["project_role_scope", "project_role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
+          },
+          {
+            foreignKeyName: "invitations_space_role_fkey"
+            columns: ["space_role_scope", "space_role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
+          },
+          {
+            foreignKeyName: "invitations_tenant_role_fkey"
+            columns: ["tenant_role_scope", "tenant_role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
+          },
+          {
             foreignKeyName: "invitations_workspace_id_tenant_id_fkey"
             columns: ["workspace_id", "tenant_id"]
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id", "tenant_id"]
+          },
+          {
+            foreignKeyName: "invitations_workspace_role_fkey"
+            columns: ["workspace_role_scope", "workspace_role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
           },
         ]
       }
@@ -696,6 +717,99 @@ export type Database = {
           },
         ]
       }
+      permissions: {
+        Row: {
+          category: string
+          created_at: string
+          description: string | null
+          key: string
+          label: string
+          requires: string | null
+          sort_order: number
+        }
+        Insert: {
+          category: string
+          created_at?: string
+          description?: string | null
+          key: string
+          label: string
+          requires?: string | null
+          sort_order?: number
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          description?: string | null
+          key?: string
+          label?: string
+          requires?: string | null
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "permissions_requires_fkey"
+            columns: ["requires"]
+            isOneToOne: false
+            referencedRelation: "permissions"
+            referencedColumns: ["key"]
+          },
+        ]
+      }
+      platform_members: {
+        Row: {
+          created_at: string
+          expires_at: string | null
+          granted_by: string | null
+          reason: string | null
+          role: string
+          role_scope: Database["public"]["Enums"]["scope_level"] | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at?: string | null
+          granted_by?: string | null
+          reason?: string | null
+          role: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string | null
+          granted_by?: string | null
+          reason?: string | null
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "platform_members_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "platform_members_role_scope_role_fkey"
+            columns: ["role_scope", "role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
+          },
+          {
+            foreignKeyName: "platform_members_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_connector_cursors: {
         Row: {
           created_at: string
@@ -819,7 +933,8 @@ export type Database = {
           client_space_id: string
           created_at: string
           project_id: string
-          role: Database["public"]["Enums"]["project_role"] | null
+          role: string | null
+          role_scope: Database["public"]["Enums"]["scope_level"] | null
           updated_at: string
           user_id: string
         }
@@ -828,7 +943,8 @@ export type Database = {
           client_space_id: string
           created_at?: string
           project_id: string
-          role?: Database["public"]["Enums"]["project_role"] | null
+          role?: string | null
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           updated_at?: string
           user_id: string
         }
@@ -837,7 +953,8 @@ export type Database = {
           client_space_id?: string
           created_at?: string
           project_id?: string
-          role?: Database["public"]["Enums"]["project_role"] | null
+          role?: string | null
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           updated_at?: string
           user_id?: string
         }
@@ -862,6 +979,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "projects"
             referencedColumns: ["id", "client_space_id"]
+          },
+          {
+            foreignKeyName: "project_members_role_fkey"
+            columns: ["role_scope", "role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
           },
         ]
       }
@@ -982,6 +1106,92 @@ export type Database = {
           },
         ]
       }
+      role_permissions: {
+        Row: {
+          cascades: boolean
+          created_at: string
+          permission: string
+          role_key: string
+          scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Insert: {
+          cascades?: boolean
+          created_at?: string
+          permission: string
+          role_key: string
+          scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Update: {
+          cascades?: boolean
+          created_at?: string
+          permission?: string
+          role_key?: string
+          scope_level?: Database["public"]["Enums"]["scope_level"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "role_permissions_permission_fkey"
+            columns: ["permission"]
+            isOneToOne: false
+            referencedRelation: "permissions"
+            referencedColumns: ["key"]
+          },
+          {
+            foreignKeyName: "role_permissions_scope_level_role_key_fkey"
+            columns: ["scope_level", "role_key"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
+          },
+        ]
+      }
+      roles: {
+        Row: {
+          assignable: boolean
+          created_at: string
+          description: string | null
+          is_system: boolean
+          key: string
+          label: string
+          rank: number
+          scope_level: Database["public"]["Enums"]["scope_level"]
+          tenant_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          assignable?: boolean
+          created_at?: string
+          description?: string | null
+          is_system?: boolean
+          key: string
+          label: string
+          rank: number
+          scope_level: Database["public"]["Enums"]["scope_level"]
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          assignable?: boolean
+          created_at?: string
+          description?: string | null
+          is_system?: boolean
+          key?: string
+          label?: string
+          rank?: number
+          scope_level?: Database["public"]["Enums"]["scope_level"]
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "roles_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       search_chunks: {
         Row: {
           chunk_index: number
@@ -993,11 +1203,12 @@ export type Database = {
           embed_error: string | null
           embed_status: Database["public"]["Enums"]["embed_status"]
           embedded_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           fts: unknown
           id: string
           occurred_at: string
+          page_number: number | null
           project_id: string | null
           provider: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -1016,11 +1227,12 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
           occurred_at: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -1039,11 +1251,12 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
           occurred_at?: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id?: string
@@ -1159,7 +1372,8 @@ export type Database = {
           created_at: string
           invited_by: string | null
           joined_at: string
-          role: Database["public"]["Enums"]["space_role"]
+          role: string
+          role_scope: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at: string
           user_id: string
@@ -1169,7 +1383,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["space_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at?: string
           user_id: string
@@ -1179,7 +1394,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["space_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id?: string
           updated_at?: string
           user_id?: string
@@ -1198,6 +1414,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "space_members_role_fkey"
+            columns: ["role_scope", "role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
           },
           {
             foreignKeyName: "space_members_tenant_id_user_id_fkey"
@@ -1368,6 +1591,7 @@ export type Database = {
           chunk_id: string | null
           client_space_id: string
           linked_at: string
+          linked_by: string | null
           llm_run_id: string | null
           normalized_event_id: string
           relevance: number | null
@@ -1378,6 +1602,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id: string
           relevance?: number | null
@@ -1388,6 +1613,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id?: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id?: string
           relevance?: number | null
@@ -1407,6 +1633,13 @@ export type Database = {
             columns: ["client_space_id"]
             isOneToOne: false
             referencedRelation: "client_spaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "task_sources_linked_by_fkey"
+            columns: ["linked_by"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
           {
@@ -1442,7 +1675,7 @@ export type Database = {
           dedupe_hash: string
           description: string | null
           due_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           embedding_src_hash: string | null
           for_date: string
@@ -1470,7 +1703,7 @@ export type Database = {
           dedupe_hash: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date: string
@@ -1498,7 +1731,7 @@ export type Database = {
           dedupe_hash?: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date?: string
@@ -1618,7 +1851,8 @@ export type Database = {
           created_at: string
           invited_by: string | null
           joined_at: string
-          role: Database["public"]["Enums"]["tenant_role"]
+          role: string
+          role_scope: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at: string
           user_id: string
@@ -1627,7 +1861,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["tenant_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at?: string
           user_id: string
@@ -1636,7 +1871,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["tenant_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id?: string
           updated_at?: string
           user_id?: string
@@ -1648,6 +1884,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tenant_members_role_fkey"
+            columns: ["role_scope", "role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
           },
           {
             foreignKeyName: "tenant_members_tenant_id_fkey"
@@ -1795,7 +2038,8 @@ export type Database = {
           created_at: string
           invited_by: string | null
           joined_at: string
-          role: Database["public"]["Enums"]["workspace_role"]
+          role: string
+          role_scope: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at: string
           user_id: string
@@ -1805,7 +2049,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["workspace_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id: string
           updated_at?: string
           user_id: string
@@ -1815,7 +2060,8 @@ export type Database = {
           created_at?: string
           invited_by?: string | null
           joined_at?: string
-          role?: Database["public"]["Enums"]["workspace_role"]
+          role?: string
+          role_scope?: Database["public"]["Enums"]["scope_level"] | null
           tenant_id?: string
           updated_at?: string
           user_id?: string
@@ -1828,6 +2074,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "workspace_members_role_fkey"
+            columns: ["role_scope", "role"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["scope_level", "key"]
           },
           {
             foreignKeyName: "workspace_members_tenant_id_user_id_fkey"
@@ -1900,6 +2153,33 @@ export type Database = {
     Functions: {
       accept_invitation: { Args: { p_token: string }; Returns: string }
       ack_job: { Args: { p_msg_id: number }; Returns: boolean }
+      assignable_roles: {
+        Args: {
+          p_scope_id: string
+          p_scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Returns: {
+          description: string
+          key: string
+          label: string
+          rank: number
+        }[]
+      }
+      caller_rank: {
+        Args: {
+          p_scope_id: string
+          p_scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Returns: number
+      }
+      can: {
+        Args: {
+          p_permission: string
+          p_scope_id: string
+          p_scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Returns: boolean
+      }
       create_tenant_and_workspace: {
         Args: { p_name: string; p_slug: string }
         Returns: {
@@ -1919,6 +2199,10 @@ export type Database = {
       }
       fail_job: {
         Args: { p_attempt: number; p_error: string; p_msg_id: number }
+        Returns: boolean
+      }
+      has_platform_permission: {
+        Args: { p_permission: string }
         Returns: boolean
       }
       has_space_role: {
@@ -1942,8 +2226,69 @@ export type Database = {
         }
         Returns: boolean
       }
+      invite_preview: {
+        Args: { p_token: string }
+        Returns: {
+          email: string
+          expires_at: string
+          invited_by: string
+          project_name: string
+          role_labels: string[]
+          space_name: string
+          status: string
+          tenant_name: string
+          workspace_name: string
+        }[]
+      }
       manageable_client_space_ids: { Args: never; Returns: string[] }
       manageable_project_ids: { Args: never; Returns: string[] }
+      match_search_chunks: {
+        Args: {
+          p_client_space_id: string
+          p_embedding: string
+          p_embedding_model?: string
+          p_exclude_source_ids?: string[]
+          p_limit?: number
+          p_max_distance?: number
+          p_one_per_source?: boolean
+          p_project_id?: string
+        }
+        Returns: {
+          chunk_id: string
+          citable_event_id: string
+          content: string
+          distance: number
+          occurred_at: string
+          page_number: number
+          provider: Database["public"]["Enums"]["connector_provider"]
+          source_id: string
+          source_kind: Database["public"]["Enums"]["chunk_source"]
+          source_url: string
+          title: string
+        }[]
+      }
+      my_permissions: {
+        Args: {
+          p_scope_id: string
+          p_scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Returns: string[]
+      }
+      pending_invitations: {
+        Args: {
+          p_scope_id: string
+          p_scope_level: Database["public"]["Enums"]["scope_level"]
+        }
+        Returns: {
+          email: string
+          expired: boolean
+          expires_at: string
+          id: string
+          invited_by: string
+          role_label: string
+        }[]
+      }
+      project_ids_with: { Args: { p_permission: string }; Returns: string[] }
       prune_event_attachments: {
         Args: { p_older_than_days?: number }
         Returns: {
@@ -1952,6 +2297,10 @@ export type Database = {
         }[]
       }
       reap_job_dispatches: { Args: never; Returns: undefined }
+      space_ids_with: { Args: { p_permission: string }; Returns: string[] }
+      sweep_expired_invitations: { Args: never; Returns: number }
+      tenant_ids_with: { Args: { p_permission: string }; Returns: string[] }
+      workspace_ids_with: { Args: { p_permission: string }; Returns: string[] }
     }
     Enums: {
       chunk_source: "normalized_event" | "event_attachment" | "context_document"
@@ -1981,9 +2330,11 @@ export type Database = {
         | "daily_summary"
         | "embed"
         | "backfill"
+        | "enrich_task"
       llm_run_status: "queued" | "running" | "succeeded" | "failed"
       project_role: "member" | "viewer"
       project_visibility: "space" | "restricted"
+      scope_level: "platform" | "tenant" | "workspace" | "space" | "project"
       space_role: "admin" | "member" | "viewer"
       sync_job_status:
         | "queued"
@@ -2122,9 +2473,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {
       chunk_source: [
@@ -2160,10 +2508,12 @@ export const Constants = {
         "daily_summary",
         "embed",
         "backfill",
+        "enrich_task",
       ],
       llm_run_status: ["queued", "running", "succeeded", "failed"],
       project_role: ["member", "viewer"],
       project_visibility: ["space", "restricted"],
+      scope_level: ["platform", "tenant", "workspace", "space", "project"],
       space_role: ["admin", "member", "viewer"],
       sync_job_status: [
         "queued",

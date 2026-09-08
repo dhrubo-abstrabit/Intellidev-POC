@@ -17,19 +17,25 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "@aws-sdk/client-sesv2": "^3.1125.0",
     "@base-ui/react": "^1.6.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/utilities": "^3.2.2",
+    "@langchain/core": "1.2.9",
+    "@langchain/openai": "1.5.11",
+    "@langchain/textsplitters": "1.0.1",
     "@nangohq/frontend": "^0.71.4",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "js-tiktoken": "1.0.21",
     "lucide-react": "^1.28.0",
     "mammoth": "^1.12.0",
-    "next": "16.2.12",
+    "next": "^16.3.4",
     "next-themes": "^0.4.6",
+    "openai": "^7.8.0",
     "pdf-parse": "^2.4.5",
     "react": "19.2.4",
     "react-day-picker": "^10.0.1",
@@ -53,5 +59,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true
   }
 }

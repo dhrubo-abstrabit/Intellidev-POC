@@ -15,6 +15,7 @@ import {
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { resolveProjectScope } from "@/lib/scope";
+import { can, spaceScope, projectScope } from "@/lib/authz";
 import { listConnectors } from "@/connectors/registry";
 import { AsyncButton } from "@/components/dashboard/async-button";
 import { ConfirmActionButton } from "@/components/dashboard/confirm-action-button";
@@ -85,6 +86,23 @@ export default async function IntegrationsPage({
   if (!scope) {
     notFound();
   }
+
+  // UI-only. Every one of these actions re-checks server-side with
+  // requirePermission (see integrations/actions.ts, where the service-role
+  // client means RLS never runs) — this just stops rendering controls that
+  // would fail, and says why on hover instead of on click.
+  const [canManageConnections, canConfigureProject, canSync] = await Promise.all([
+    can("connection.manage", spaceScope(scope.clientSpaceId)),
+    can("project.manage", projectScope(scope.projectId)),
+    can("sync.trigger", projectScope(scope.projectId)),
+  ]);
+  const connectionsReason = canManageConnections
+    ? undefined
+    : "Only space admins can connect or disconnect providers.";
+  const syncReason = canSync ? undefined : "You do not have permission to run a sync.";
+  const configReason = canConfigureProject
+    ? undefined
+    : "Only people who can manage this project may change its connector settings.";
 
   const supabase = await createClient();
 
@@ -225,6 +243,7 @@ export default async function IntegrationsPage({
                               )}
                               loadingMessage="Queuing sync…"
                               size="sm"
+                              disabledReason={syncReason}
                               data-testid={`sync-${integration.provider}`}
                             >
                               Sync now
@@ -239,6 +258,7 @@ export default async function IntegrationsPage({
                             )}
                             triggerLabel="Disconnect"
                             triggerVariant="default"
+                            disabledReason={connectionsReason}
                             confirmLabel="Disconnect"
                             loadingMessage="Disconnecting…"
                             title={`Disconnect ${integration.displayName ?? integration.provider}?`}
@@ -329,6 +349,7 @@ export default async function IntegrationsPage({
                             />
                           ) : (
                             <IntegrationConfigForm
+                              disabledReason={configReason}
                               key={JSON.stringify(config)}
                               workspaceId={workspaceId}
                               projectId={projectId}
@@ -362,6 +383,7 @@ export default async function IntegrationsPage({
                 loadingMessage="Checking…"
                 size="sm"
                 variant="outline"
+                disabledReason={connectionsReason}
                 data-testid="check-connections"
               >
                 Check for connections
@@ -379,6 +401,7 @@ export default async function IntegrationsPage({
                 <CardContent>
                   {connector.nangoProviderConfigKey ? (
                     <ConnectProviderButton
+                      disabledReason={connectionsReason}
                       provider={connector.id}
                       workspaceId={workspaceId}
                       projectId={projectId}

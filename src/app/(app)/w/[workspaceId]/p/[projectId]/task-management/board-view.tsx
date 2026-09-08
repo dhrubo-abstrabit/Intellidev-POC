@@ -104,6 +104,7 @@ export function BoardView({
 
   return (
     <DndContext
+      id="task-board"
       sensors={sensors}
       collisionDetection={closestCenter}
       onDragStart={handleDragStart}

@@ -4,6 +4,13 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { assertProjectScope } from "@/lib/scope";
 import { createClient } from "@/lib/supabase/server";
+// Every action in this file except saveSyncSchedule (see its own doc comment
+// below) writes through the service-role client, which bypasses RLS entirely
+// — so the policies that would otherwise require space admin
+// (space_connections_delete, project_connectors_write) never run here.
+// requirePermission is the ONLY authorization on those paths, which is why it
+// appears in every one of them.
+import { requirePermission, spaceScope, projectScope } from "@/lib/authz";
 import { createServiceClient } from "@/lib/supabase/service";
 import { parseScheduleFormData, secondsToLabel, RETIRED_GOOGLE_PROVIDERS } from "@/lib/sync/schedule";
 import { getConnector } from "@/connectors/registry";
@@ -341,6 +348,7 @@ export async function createIntegrationConnectSession(
 ): Promise<{ sessionToken: string }> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("connection.manage", spaceScope(scope.clientSpaceId));
 
   if (!isNangoConnector(provider)) {
     throw new Error(`"${provider}" is not an OAuth-based connector.`);
@@ -376,6 +384,7 @@ export async function finalizeConnection(
 ): Promise<{ message: string }> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("connection.manage", spaceScope(scope.clientSpaceId));
 
   if (!isNangoConnector(provider)) {
     throw new Error(`"${provider}" is not an OAuth-based connector.`);
@@ -437,6 +446,7 @@ export async function reconcileConnections(
 ): Promise<ReconcileConnectionsResult> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("connection.manage", spaceScope(scope.clientSpaceId));
 
   const connections = await listConnectionsByTags({
     workspace_id: workspaceId,
@@ -505,6 +515,7 @@ export async function reconcileConnections(
 export async function connectMock(workspaceId: string, projectId: string): Promise<{ message: string }> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("connection.manage", spaceScope(scope.clientSpaceId));
 
   const service = createServiceClient();
 
@@ -588,6 +599,7 @@ export async function connectMock(workspaceId: string, projectId: string): Promi
 export async function syncNow(workspaceId: string, projectId: string, projectConnectorId: string): Promise<{ message: string }> {
   await requireUser();
   await assertProjectScope(workspaceId, projectId);
+  await requirePermission("sync.trigger", projectScope(projectId));
 
   // Publishes onto pgmq, which pg_cron's dispatcher drains every few seconds
   // and delivers to /api/jobs/sync as a net.http_post — see
@@ -622,6 +634,7 @@ export async function disconnectIntegration(
 ): Promise<{ message: string }> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("connection.manage", spaceScope(scope.clientSpaceId));
 
   const service = createServiceClient();
   const { data: projectConnector } = await service
@@ -743,6 +756,7 @@ export async function saveIntegrationConfig(
 ): Promise<SaveIntegrationConfigResult> {
   const user = await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("project.manage", projectScope(scope.projectId));
 
   const service = createServiceClient();
   const { data: projectConnector } = await service

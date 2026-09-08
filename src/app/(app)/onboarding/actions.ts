@@ -27,6 +27,83 @@ export async function createWorkspace(
   const supabase = await createClient();
   const baseSlug = slugify(parsed.data.name);
 
+  // TWO DIFFERENT ACTIONS SHARE THIS FORM, and conflating them caused two
+  // bugs in one day.
+  //
+  //   no tenant yet          -> first run. Create the tenant AND a workspace.
+  //   tenant + workspace.create -> an owner adding another workspace to the
+  //                             organisation they already have. Create ONLY
+  //                             the workspace; making a second tenant here is
+  //                             what silently orphaned an invited billing
+  //                             admin's membership.
+  //   tenant, no permission  -> not allowed to create anything. The page
+  //                             redirects them to /org before this runs.
+  //
+  // The comment this replaces said "this app has no tenant/billing UI yet, so
+  // creating a workspace provisions a brand-new tenant behind the scenes, one
+  // per workspace". That stopped being true when /org shipped.
+  const { data: existingTenant } = await supabase.from("tenants").select("id").limit(1).maybeSingle();
+
+  if (existingTenant) {
+    for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
+      const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
+
+      // NO `.select()` ON THE INSERT. This is not a style choice.
+      //
+      // Adding one makes it INSERT ... RETURNING, whose implicit SELECT check
+      // runs workspaces_select -> workspace_ids_with('workspace.read'). That
+      // resolver is declared STABLE, so it evaluates against the snapshot
+      // taken at STATEMENT START — in which the row being inserted does not
+      // exist yet. Its tenant-owner arm (`select w.id from workspaces w join
+      // tenant_members ...`) therefore cannot see the new row, the RETURNING
+      // check fails, and Postgres reports it as "new row violates row-level
+      // security policy" — which reads like a permissions bug and is not one.
+      // Verified: the same insert WITHOUT returning succeeds for the same user.
+      //
+      // Same family as the tenants problem 20260901001900 documents, different
+      // mechanism: there it was AFTER-trigger timing, here it is function
+      // volatility. Reading the row back in a SEPARATE statement gets a fresh
+      // snapshot and works.
+      const { error: insertError } = await supabase
+        .from("workspaces")
+        .insert({ tenant_id: existingTenant.id, name: parsed.data.name, slug });
+
+      if (insertError) {
+        // workspaces.slug is unique PER TENANT, so a clash is possible here in
+        // a way it never is on the first-run path.
+        if (insertError.code === POSTGRES_UNIQUE_VIOLATION) continue;
+        return { error: "Could not create workspace. You may not have permission to add one." };
+      }
+
+      const { data: created } = await supabase
+        .from("workspaces")
+        .select("id")
+        .eq("tenant_id", existingTenant.id)
+        .eq("slug", slug)
+        .maybeSingle();
+      if (!created) {
+        return { error: "Workspace created, but could not be opened. Try reloading." };
+      }
+
+      const audit = createServiceClient();
+      await audit.from("audit_logs").insert([
+        {
+          tenant_id: existingTenant.id,
+          workspace_id: created.id,
+          actor_user_id: user.id,
+          actor_type: "user",
+          action: "workspace.created",
+          target_type: "workspace",
+          target_id: created.id,
+          metadata: { name: parsed.data.name },
+        },
+      ]);
+
+      redirect(`/w/${created.id}`);
+    }
+    return { error: "Could not create workspace. Please try again." };
+  }
+
   // A workspace cannot exist without a tenant above it — workspaces.tenant_id
   // is NOT NULL, and the workspaces_insert policy requires the caller to
   // already hold tenant_role 'owner' (see

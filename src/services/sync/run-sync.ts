@@ -10,6 +10,7 @@ import { uuidv7 } from "@/lib/db/uuid";
 import { enqueueJob } from "@/lib/queue";
 import { projectToday } from "@/lib/date/project-day";
 import { settleBatchMembership, triggerDailyExtraction } from "@/services/sync/batch";
+import { insertChunksForSources, type ChunkSourceInput } from "@/services/search/ingest";
 import type { Database, Json } from "@/lib/db/database.types";
 
 /** One cursor row per project connector (scope_key='default') holding
@@ -156,6 +157,7 @@ export async function runSync(
 
     let eventsWritten = 0;
     let attachmentsPending = 0;
+    let chunksPending = 0;
     if (rawRows.length > 0) {
       // raw_events' dedupe indexes are PARTIAL (`where provider_event_id is
       // not null` / `where provider_event_id is null and payload_hash is not
@@ -238,6 +240,31 @@ export async function runSync(
           .select("id");
         if (normalizedError) throw new Error(`normalized_events insert failed: ${normalizedError.message}`);
         eventsWritten = insertedNormalized?.length ?? 0;
+
+        // Chunk+index only the genuinely NEW rows this call actually
+        // inserted — ignoreDuplicates means insertedNormalized already
+        // excludes anything a redelivered/chained-resume call already wrote
+        // (and therefore may already have chunked) in an earlier pass.
+        // Batched into ONE insertChunksForSources call, not one per event —
+        // a sync landing 100+ events must not cost 100+ sequential
+        // PostgREST round trips against this route's own write budget.
+        const insertedIds = new Set((insertedNormalized ?? []).map((row) => row.id));
+        if (insertedIds.size > 0) {
+          const chunkInputs: ChunkSourceInput[] = normalizedDrafts
+            .filter((d) => insertedIds.has(d.row.id) && d.draft.body)
+            .map((d) => ({
+              clientSpaceId: pc.client_space_id,
+              projectId: pc.project_id,
+              sourceKind: "normalized_event",
+              sourceId: d.row.id,
+              provider: pc.provider,
+              occurredAt: d.row.occurred_at,
+              title: d.draft.title,
+              sourceUrl: d.draft.resourceUrl,
+              text: d.draft.body!,
+            }));
+          chunksPending += await insertChunksForSources(service, chunkInputs);
+        }
       }
 
       // Persist any attachments the connector's normalize() described (pure,
@@ -340,6 +367,22 @@ export async function runSync(
       .update({ status: "connected", last_validated_at: nowIso })
       .eq("id", pc.connection_id)
       .neq("status", "revoked");
+
+    // Independent of the attachments-pending handoff and batch-settle logic
+    // below: nothing downstream of THIS run (task generation, the batch
+    // settle) reads search_chunks or waits on embeddings, so this is
+    // fire-and-forget, not part of that handoff chain. A failed enqueue
+    // just leaves these chunks pending until the next sync run for this
+    // connector opportunistically enqueues again. Fires on every chained
+    // hop that inserted chunks, not just the terminal one — each enqueue is
+    // a cheap queue insert, and runEmbedding drains its own backlog
+    // independently, so a few redundant enqueues across a chain cost
+    // nothing beyond an early one mostly finding no work left to do.
+    if (chunksPending > 0) {
+      await enqueueJob("/api/jobs/embed", { clientSpaceId: pc.client_space_id }).catch((err) => {
+        console.error(`[sync] failed to enqueue embed job for client space ${pc.client_space_id}:`, err);
+      });
+    }
 
     await service
       .from("sync_jobs")

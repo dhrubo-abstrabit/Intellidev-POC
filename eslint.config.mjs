@@ -5,6 +5,38 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  // Every PDF/DOCX parse must go through src/lib/pdf/load.ts's
+  // createPdfLoader/createDocxLoader/loadPdfParse — direct imports skip the
+  // DOMMatrix/pdfjs-worker production fix documented there. This rule is what
+  // actually enforces that, since it's the only thing that can police an
+  // import from inside node_modules the way convention alone can't.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/pdf/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "pdf-parse",
+              message: "Import via src/lib/pdf/load.ts's loadPdfParse() instead — a direct import skips the DOMMatrix production fix.",
+            },
+            {
+              name: "mammoth",
+              message: "Import via src/lib/pdf/load.ts's createDocxLoader() instead, so every DOCX parse stays in one place.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["pdfjs-dist", "pdfjs-dist/*"],
+              message: "Import via src/lib/pdf/load.ts instead — a direct import skips the DOMMatrix/pdfjs-worker production fix.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

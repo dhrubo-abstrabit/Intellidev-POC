@@ -50,3 +50,17 @@ export const ActionItemConsolidationSchema = z.object({
   ),
 });
 export type ActionItemConsolidation = z.infer<typeof ActionItemConsolidationSchema>;
+
+/** Output of a PM-initiated single-chunk enrichment call (see
+ * services/tasks/enrich.ts and TaskEnrichmentContext in types.ts). Must be
+ * able to decline: retrieval-surfaced context is often tangential, and
+ * silently padding an already-good description is the main quality risk in
+ * this feature — changed:false means "leave the description alone", with
+ * description then expected to equal the task's current description
+ * verbatim (re-checked server-side, never trusted from the flag alone). */
+export const TaskEnrichmentSchema = z.object({
+  changed: z.boolean(),
+  description: z.string().max(2000),
+  reason: z.string().max(300).optional(),
+});
+export type TaskEnrichment = z.infer<typeof TaskEnrichmentSchema>;

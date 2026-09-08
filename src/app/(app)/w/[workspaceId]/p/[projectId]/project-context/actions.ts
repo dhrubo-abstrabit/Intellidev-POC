@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
-import { loadPdfParse } from "@/lib/pdf/load";
+import { requirePermission, projectScope } from "@/lib/authz";
+import { createDocxLoader, createPdfLoader } from "@/lib/pdf/load";
 import { createClient } from "@/lib/supabase/server";
 
 export async function updateProjectContext(
@@ -11,17 +12,28 @@ export async function updateProjectContext(
   description: string,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("project.manage", projectScope(projectId));
 
-  // projects grants full update to any workspace member (no column
-  // restriction, unlike action_items) — user-scoped client is sufficient.
+  // User-scoped client: projects_update (project.manage) is the boundary. The
+  // comment this replaces said projects "grants full update to any workspace
+  // member", which stopped being true when that policy moved to a permission.
+  //
+  // The zero-row guard matters as much as the gate: RLS refuses an UPDATE by
+  // matching no rows and returning no error, so without it this reported
+  // "Project context saved" to someone whose write had been rejected.
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("projects")
     .update({ description: description.trim() || null })
     .eq("id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not save project context: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not save project context. Only people who can manage this project may edit it.");
   }
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/project-context`);
@@ -49,26 +61,24 @@ export async function extractFileText(formData: FormData): Promise<{ text: strin
   }
 
   const name = file.name.toLowerCase();
-  const buffer = Buffer.from(await file.arrayBuffer());
 
   if (name.endsWith(".pdf") || file.type === "application/pdf") {
-    const { PDFParse } = await loadPdfParse();
-    const parser = new PDFParse({ data: buffer });
-    try {
-      const result = await parser.getText();
-      return { text: result.text };
-    } finally {
-      await parser.destroy();
-    }
+    // file is already a Blob (File extends Blob) — pass it straight through
+    // rather than round-tripping via Buffer, since the loader accepts one
+    // directly. splitPages defaults true; joined here because this path has
+    // no page-number concept, unlike attachments/parse.ts's PDF branch.
+    const loader = await createPdfLoader(file);
+    const docs = await loader.load();
+    return { text: docs.map((doc) => doc.pageContent).join("\n\n") };
   }
 
   if (
     name.endsWith(".docx") ||
     file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
-    const mammoth = await import("mammoth");
-    const result = await mammoth.extractRawText({ buffer });
-    return { text: result.value };
+    const loader = await createDocxLoader(file);
+    const docs = await loader.load();
+    return { text: docs[0]?.pageContent ?? "" };
   }
 
   throw new Error(`${file.name}: unsupported file type.`);
