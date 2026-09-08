@@ -2,6 +2,7 @@
 
 import { requireUser } from "@/lib/auth";
 import { assertProjectScope } from "@/lib/scope";
+import { requirePermission, spaceScope } from "@/lib/authz";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 
@@ -17,9 +18,12 @@ const ATTACHMENT_PREVIEW_TTL_SECONDS = 120;
  * why this didn't exist before: the bucket has zero storage.objects
  * policies, so only the service-role client can generate a signed URL for it
  * at all. Authorization instead rides on event_attachments' own RLS select
- * policy (workspace membership): the row lookup below uses the user-scoped
- * client, so a caller who can't see this attachment gets `null` back and
- * never reaches the service-role client underneath.
+ * policy (data.read at the space AND the project): the row lookup below uses
+ * the user-scoped client, so a caller who can't see this attachment gets
+ * `null` back and never reaches the service-role client underneath. The
+ * explicit data.read check is belt-and-braces on the same boundary — it makes
+ * the authorization visible next to the service-role call rather than implied
+ * by which client the lookup happens to use.
  *
  * Lives here (not under a single route's actions.ts) because both the
  * Project Data tab (DayLinkage) and Task Tracking's detail sheet
@@ -33,6 +37,7 @@ export async function getAttachmentPreviewUrl(
 ): Promise<{ url: string }> {
   await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  await requirePermission("data.read", spaceScope(scope.clientSpaceId));
 
   const supabase = await createClient();
   const { data: attachment } = await supabase

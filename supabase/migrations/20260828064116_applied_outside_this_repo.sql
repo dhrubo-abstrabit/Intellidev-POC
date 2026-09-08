@@ -1,0 +1,22 @@
+-- =========================================================================
+-- PLACEHOLDER — intentionally empty. Applies nothing.
+--
+-- Version 20260828064116 is recorded in this project's remote
+-- migration history but has never existed as a file in this repository (git
+-- log confirms it was never added or deleted here). It was applied directly
+-- to the cloud project some time between the v1 schema (20260820*) and the
+-- v2 rebuild (20260901*), most likely through the dashboard SQL editor or a
+-- push from a branch that was never committed.
+--
+-- Whatever it did is already done and is NOT undone by this file. Anything it
+-- created inside `public` was in any case removed before the v2 rebuild ran:
+-- 20260901000100 onwards use bare `create table` (not `if not exists`) and
+-- applied cleanly, which is only possible against an empty public schema.
+--
+-- This file exists so that local and remote migration histories agree.
+-- Without it the CLI refuses every push with
+-- "Remote migration versions not found in local migrations directory", and
+-- the documented fix — `migration repair --status reverted` — would delete
+-- the remote history rows instead. Recording the history is more honest than
+-- erasing it, and it needs no write to production.
+-- =========================================================================

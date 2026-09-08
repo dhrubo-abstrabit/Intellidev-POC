@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronRight, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Plus, Users } from "lucide-react";
+import { Building2, ChevronRight, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Plus, Shield, Users } from "lucide-react";
 import { signOut } from "@/app/(auth)/actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,7 +43,7 @@ function railIconClass(active: boolean) {
   );
 }
 
-/** A project's 5 sub-pages — rendered as a desktop disclosure and a mobile
+/** A project's 6 sub-pages — rendered as a desktop disclosure and a mobile
  * submenu (both below), the only two places this app lists them now that
  * the old per-project top tab row is gone. */
 function projectTabs(workspaceId: string, projectId: string) {
@@ -54,6 +54,7 @@ function projectTabs(workspaceId: string, projectId: string) {
     { href: `${base}/project-context`, label: "Project Context" },
     { href: `${base}/task-management`, label: "Task Tracking" },
     { href: `${base}/integrations`, label: "Integrations" },
+    { href: `${base}/access`, label: "Access" },
   ];
 }
 
@@ -61,8 +62,8 @@ function projectTabs(workspaceId: string, projectId: string) {
  * Replaces the old header-based workspace-switcher + Overview/Team-Members
  * nav, and the old per-project top tab row, with a persistent left sidebar
  * (see w/[workspaceId]/layout.tsx and p/[projectId]/layout.tsx). Each
- * project row is a disclosure — clicking it expands/collapses its 5
- * sub-pages inline; the mobile menu below gives each project the same 5
+ * project row is a disclosure — clicking it expands/collapses its 6
+ * sub-pages inline; the mobile menu below gives each project the same 6
  * pages via a submenu instead, since there's no room to expand inline there.
  *
  * Renders two trees, both always in the DOM, gated by Tailwind's `md:`
@@ -76,15 +77,27 @@ export function WorkspaceSidebar({
   workspaces,
   projects,
 }: {
-  workspaceId: string;
-  current: Summary;
+  /**
+   * NULL when the signed-in person belongs to no workspace at all.
+   *
+   * That is a real state, not a defensive nicety: someone invited to the
+   * organisation alone — a billing admin — gets a tenant_members row and
+   * nothing beneath it. Before this, the sidebar assumed a workspace always
+   * existed, /org lived under /w/:workspaceId, and such a person had no
+   * reachable page at all. They were sent to onboarding and silently created a
+   * SECOND organisation, orphaning the membership they were invited to.
+   */
+  workspaceId: string | null;
+  current: Summary | null;
   workspaces: Summary[];
   projects: Summary[];
 }) {
   const pathname = usePathname();
-  const base = `/w/${workspaceId}`;
+  const base = workspaceId ? `/w/${workspaceId}` : "";
   const isOverview = pathname === base;
   const isTeamMembers = pathname === `${base}/team-members`;
+  const isMembers = pathname === `${base}/members`;
+  const isOrg = pathname === "/org";
   const isProjectActive = (projectId: string) => pathname.startsWith(`${base}/p/${projectId}`);
 
   const projectPrefix = `${base}/p/`;
@@ -153,7 +166,16 @@ export function WorkspaceSidebar({
               render={<Link href={`${base}/team-members`} />}
               className={isTeamMembers ? "bg-accent" : undefined}
             >
-              Team Members
+              Contacts
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              render={<Link href={`${base}/members`} />}
+              className={isMembers ? "bg-accent" : undefined}
+            >
+              Access
+            </DropdownMenuItem>
+            <DropdownMenuItem render={<Link href="/org" />} className={isOrg ? "bg-accent" : undefined}>
+              Organisation
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {projects.map((project) => (
@@ -162,7 +184,7 @@ export function WorkspaceSidebar({
                   {project.name}
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  {projectTabs(workspaceId, project.id).map((tab) => (
+                  {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                     <DropdownMenuItem
                       key={tab.href}
                       render={<Link href={tab.href} />}
@@ -210,21 +232,38 @@ export function WorkspaceSidebar({
           <PanelLeftClose className="size-4" />
         </Button>
       </div>
-      <div className="px-3">
-        <WorkspaceSwitcher current={current} workspaces={workspaces} />
-      </div>
+      {current ? (
+        <div className="px-3">
+          <WorkspaceSwitcher current={current} workspaces={workspaces} />
+        </div>
+      ) : null}
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
         <div className="space-y-1">
           <div className={SECTION_LABEL}>Workspace</div>
+          {workspaceId ? (
+            <>
           <Link href={base} className={navRowClass(isOverview)}>
             Overview
           </Link>
           <Link href={`${base}/team-members`} className={navRowClass(isTeamMembers)}>
-            Team Members
+            Contacts
+          </Link>
+          <Link href={`${base}/members`} className={navRowClass(isMembers)}>
+            Access
+          </Link>
+            </>
+          ) : (
+            <p className="px-2.5 text-xs text-sidebar-foreground/50">
+              You are not in a workspace yet.
+            </p>
+          )}
+          <Link href="/org" className={navRowClass(isOrg)}>
+            Organisation
           </Link>
         </div>
 
+        {workspaceId ? (
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className={SECTION_LABEL}>Projects</span>
@@ -254,7 +293,7 @@ export function WorkspaceSidebar({
                   </button>
                   {isExpanded ? (
                     <div className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-2.5">
-                      {projectTabs(workspaceId, project.id).map((tab) => (
+                      {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                         <Link key={tab.href} href={tab.href} className={navRowClass(pathname === tab.href)}>
                           {tab.label}
                         </Link>
@@ -266,6 +305,7 @@ export function WorkspaceSidebar({
             })
           )}
         </div>
+        ) : null}
       </nav>
 
       <div className="flex items-center gap-1.5 border-t border-sidebar-border p-3">
@@ -296,27 +336,35 @@ export function WorkspaceSidebar({
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
 
-          <WorkspaceSwitcher current={current} workspaces={workspaces} collapsed />
+          {current ? <WorkspaceSwitcher current={current} workspaces={workspaces} collapsed /> : null}
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
 
+          {workspaceId ? (
           <Link href={base} title="Overview" aria-label="Overview" className={railIconClass(isOverview)}>
             <LayoutDashboard className="size-4" />
           </Link>
+          ) : null}
           <Link
             href={`${base}/team-members`}
-            title="Team Members"
-            aria-label="Team Members"
+            title="Contacts"
+            aria-label="Contacts"
             className={railIconClass(isTeamMembers)}
           >
             <Users className="size-4" />
+          </Link>
+          <Link href={`${base}/members`} title="Access" aria-label="Access" className={railIconClass(isMembers)}>
+            <Shield className="size-4" />
+          </Link>
+          <Link href="/org" title="Organisation" aria-label="Organisation" className={railIconClass(isOrg)}>
+            <Building2 className="size-4" />
           </Link>
 
           <div className="my-1 w-8 border-t border-sidebar-border" />
 
           {/* Each project is a dropdown (not the expanded sidebar's inline
            * disclosure — there's no room to indent sub-items in a 56px
-           * rail) listing the same 5 sub-pages the mobile menu already
+           * rail) listing the same 6 sub-pages the mobile menu already
            * exposes via a submenu, opening to the right of the rail. */}
           <div className="flex w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
             {projects.map((project) => {
@@ -348,7 +396,7 @@ export function WorkspaceSidebar({
                     onMouseEnter={() => setRailOpenProjectId(project.id)}
                     onMouseLeave={closeIfOwn}
                   >
-                    {projectTabs(workspaceId, project.id).map((tab) => (
+                    {projectTabs(workspaceId ?? "", project.id).map((tab) => (
                       <DropdownMenuItem
                         key={tab.href}
                         render={<Link href={tab.href} />}

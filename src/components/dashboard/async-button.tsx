@@ -7,6 +7,17 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 
 interface AsyncButtonProps extends Omit<ComponentProps<typeof Button>, "onClick" | "disabled"> {
+  /**
+   * When set, the button is disabled and this explains why — shown as the
+   * title, so hovering answers "why can't I click this?".
+   *
+   * `disabled` stays omitted from the public props on purpose: the only
+   * legitimate reason to disable one of these is a permission the caller
+   * lacks, and requiring a sentence for it means the UI cannot quietly grey a
+   * control out with no explanation. The action still re-checks server-side —
+   * this is courtesy, never enforcement.
+   */
+  disabledReason?: string;
   /** Must resolve with a message to show in the success toast, or throw with
    * a message to show in the error toast — see integrations/actions.ts and
    * items/actions.ts for the shape every action here already returns. */
@@ -21,13 +32,14 @@ interface AsyncButtonProps extends Omit<ComponentProps<typeof Button>, "onClick"
  * Only safe for actions that don't call redirect(): a form is still the
  * right tool for those (see ConnectSlackButton).
  */
-export function AsyncButton({ action, children, loadingMessage, pendingLabel, ...props }: AsyncButtonProps) {
+export function AsyncButton({ action, children, loadingMessage, pendingLabel, disabledReason, ...props }: AsyncButtonProps) {
   const [isPending, startTransition] = useTransition();
 
   return (
     <Button
       {...props}
-      disabled={isPending}
+      disabled={isPending || Boolean(disabledReason)}
+      title={disabledReason}
       onClick={() => {
         startTransition(async () => {
           await toast

@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { can, projectScope } from "@/lib/authz";
 import { ContextForm } from "./context-form";
 
 export default async function ProjectContextPage({
@@ -26,7 +27,16 @@ export default async function ProjectContextPage({
         </p>
       </div>
 
-      <ContextForm workspaceId={workspaceId} projectId={projectId} initialValue={project?.description ?? ""} />
+      <ContextForm
+        workspaceId={workspaceId}
+        projectId={projectId}
+        initialValue={project?.description ?? ""}
+        disabledReason={
+          (await can("project.manage", projectScope(projectId)))
+            ? undefined
+            : "Only people who can manage this project may edit its context."
+        }
+      />
     </div>
   );
 }

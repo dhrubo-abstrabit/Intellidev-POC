@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { assertProjectScope } from "@/lib/scope";
+import { requirePermission, spaceScope } from "@/lib/authz";
 import { generateActionItems } from "@/services/action-items/generate";
 
 /**
@@ -19,6 +20,12 @@ export async function extractActionItemsForDay(
 ): Promise<{ message: string }> {
   await requireUser();
   const scope = await assertProjectScope(workspaceId, projectId);
+  // generateActionItems() runs through the SERVICE-ROLE client, so no RLS
+  // policy is evaluated anywhere beneath this line — this check is the only
+  // authorization on the path. It also spends real Anthropic tokens and
+  // creates tasks, which is why it asks for sync.trigger (a manual,
+  // out-of-schedule run that costs money) rather than mere membership.
+  await requirePermission("sync.trigger", spaceScope(scope.clientSpaceId));
 
   const result = await generateActionItems(scope.clientSpaceId, date);
   if (result.status === "failed") {

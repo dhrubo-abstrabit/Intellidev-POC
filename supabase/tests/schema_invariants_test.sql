@@ -5,7 +5,7 @@
 -- after a fresh `supabase db reset`.
 
 begin;
-select plan(7);
+select plan(9);
 
 -- 1. Every table in `public` has row level security enabled. A table that
 --    exists for even one migration without RLS is the failure mode this
@@ -32,24 +32,35 @@ select is(
     from information_schema.role_table_grants
     where table_schema = 'public'
       and grantee in ('anon', 'authenticated')
-      and table_name in ('connector_credentials', 'raw_events', 'llm_runs', 'integration_cursors')
+      -- Updated for the v2 schema: connector_credentials and
+      -- integration_cursors no longer exist (a non-existent table contributes
+      -- no rows here, so the stale names made this test quietly weaker than
+      -- it looked). platform_members joins the list — it is default-deny by
+      -- design, with RLS on, zero policies and every grant revoked.
+      and table_name in ('raw_events', 'llm_runs', 'project_connector_cursors',
+                         'platform_members')
   ),
   0,
   'service-role-only tables have no grants to anon or authenticated'
 );
 
--- 3. The three SECURITY DEFINER RLS helpers exist and are owned in a way
---    that lets them bypass RLS on workspace_members (breaking the
---    self-referential recursion described in 20260820100400_tenancy.sql).
+-- 3. The permission resolvers exist and are SECURITY DEFINER, which is what
+--    lets a policy ON workspace_members call a function that READS
+--    workspace_members without tripping "infinite recursion detected in
+--    policy". They replaced the role-name helpers this test used to name
+--    (current_workspace_ids / is_workspace_member / has_workspace_role), all
+--    of which were dropped in 20260901002900_rbac_role_columns.sql once no
+--    policy referenced them.
 select ok(
   (
-    select count(*) = 3
+    select count(*) = 6
     from pg_proc
-    where proname in ('current_workspace_ids', 'is_workspace_member', 'has_workspace_role')
+    where proname in ('tenant_ids_with', 'workspace_ids_with', 'space_ids_with',
+                      'project_ids_with', 'can', 'has_platform_permission')
       and pronamespace = 'public'::regnamespace
       and prosecdef  -- SECURITY DEFINER
   ),
-  'all three RLS helper functions exist and are SECURITY DEFINER'
+  'all six permission resolvers exist and are SECURITY DEFINER'
 );
 
 -- 4. audit_logs is append-only at the trigger level, not just by convention.
@@ -71,8 +82,17 @@ select ok(
 --    project config defaults new tables to NOT auto-exposing any privilege
 --    (see supabase/config.toml `auto_expose_new_tables`), so a policy with
 --    no matching GRANT silently does nothing useful. Assert every table
---    with a permissive SELECT policy for `authenticated` also has the
---    matching table-level SELECT grant.
+--    with a permissive SELECT policy for `authenticated` also has a SELECT
+--    grant of some kind.
+--
+--    "Of some kind" is the correction this test needed: `invitations` and
+--    `space_connections` deliberately carry COLUMN-scoped SELECT grants
+--    rather than table-level ones, because RLS cannot restrict which columns
+--    a SELECT returns and those grants are the only thing keeping
+--    invitations.token_hash and space_connections.secret_ciphertext /
+--    nango_connection_id out of a PostgREST response. Checking only
+--    role_table_grants reported both as violations when they are in fact the
+--    stricter arrangement.
 select is(
   (
     select coalesce(array_agg(distinct pol.tablename::text order by pol.tablename::text), '{}'::text[])
@@ -89,9 +109,17 @@ select is(
           and g.grantee = 'authenticated'
           and g.privilege_type = 'SELECT'
       )
+      and not exists (
+        select 1
+        from information_schema.role_column_grants g
+        where g.table_schema = 'public'
+          and g.table_name = pol.tablename
+          and g.grantee = 'authenticated'
+          and g.privilege_type = 'SELECT'
+      )
   ),
   '{}'::text[],
-  'every table with a permissive SELECT policy for authenticated also has a matching table-level SELECT grant'
+  'every table with a permissive SELECT policy for authenticated also has a matching SELECT grant'
 );
 
 -- 6. connector_provider must contain every provider connectors/registry.ts
@@ -128,6 +156,49 @@ select is(
   (select public from storage.buckets where id = 'attachments'),
   false,
   'the attachments Storage bucket exists and is private'
+);
+
+-- 8. Every membership table's role column is FK'd into public.roles. This is
+--    what replaced the enum types dropped in
+--    20260901002900_rbac_role_columns.sql: the column is still constrained,
+--    but by a row that can be inserted and deleted rather than by a type that
+--    can only be appended to. It also makes deleting a role that someone
+--    still holds impossible, which an enum could not express at all.
+select is(
+  (
+    select count(*)::int
+    from pg_constraint
+    where contype = 'f'
+      and conname in ('tenant_members_role_fkey', 'workspace_members_role_fkey',
+                      'space_members_role_fkey', 'project_members_role_fkey')
+  ),
+  4,
+  'every membership table FKs its role column into public.roles'
+);
+
+-- 9. THE EXTENSIBILITY GUARANTEE, asserted rather than trusted.
+--
+--    The whole point of the RBAC change is that policies ask about
+--    PERMISSIONS and never about roles, so that adding or changing a role is
+--    a data migration and never a schema one. That property is easy to state
+--    and easy to erode — one `and role = 'admin'` slipped into a policy
+--    predicate silently reintroduces the coupling and nothing else would
+--    notice.
+--
+--    The LIKE pattern includes the surrounding quotes on purpose: it matches
+--    the literal 'member' but not the permission 'member.read', which is a
+--    legitimate thing for a policy to contain.
+select is(
+  (
+    select coalesce(string_agg(distinct pol.tablename || '.' || pol.policyname, ', '), '')
+    from pg_policies pol
+    cross join (select distinct key from public.roles) r
+    where pol.schemaname = 'public'
+      and (coalesce(pol.qual, '') || ' ' || coalesce(pol.with_check, ''))
+          like '%''' || r.key || '''%'
+  ),
+  '',
+  'no RLS policy names a role literal — policies ask about permissions only'
 );
 
 select * from finish();

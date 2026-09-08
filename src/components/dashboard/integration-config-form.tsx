@@ -116,12 +116,16 @@ export function IntegrationConfigForm({
   integrationId,
   fields,
   currentValues,
+  disabledReason,
 }: {
   workspaceId: string;
   projectId: string;
   integrationId: string;
   fields: ConfigFieldSpec[];
   currentValues: Record<string, unknown>;
+  /** Set when the viewer cannot configure this project. UI only —
+   * saveIntegrationConfig re-checks project.manage server-side. */
+  disabledReason?: string;
 }) {
   const boundAction = saveIntegrationConfig.bind(null, workspaceId, projectId, integrationId);
   const [state, formAction, isPending] = useActionState<SaveIntegrationConfigResult, FormData>(boundAction, {});
@@ -141,7 +145,14 @@ export function IntegrationConfigForm({
         </p>
       ) : null}
 
-      <Button type="submit" size="sm" variant="outline" disabled={isPending} data-testid="save-config">
+      <Button
+        type="submit"
+        size="sm"
+        variant="outline"
+        disabled={isPending || Boolean(disabledReason)}
+        title={disabledReason}
+        data-testid="save-config"
+      >
         {isPending ? "Saving…" : "Save configuration"}
       </Button>
     </form>
