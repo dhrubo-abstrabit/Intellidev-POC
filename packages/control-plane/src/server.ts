@@ -1337,7 +1337,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
            * unacknowledged and the adapter replays it, rather than acking a half-recorded event.
            */
           const run = await store.getRun(authorisedRunId)
-          if (run) await projectRunEvent(store, run.id, run.taskId, parsed.data)
+          if (run) await projectRunEvent(store, run.id, run.taskId, parsed.data, tokens)
         } catch {
           // Not acked, so the adapter keeps holding it and replays on the next reconnect.
           // Silence here is deliberate: the run must not be told a transient write failure

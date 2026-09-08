@@ -700,6 +700,13 @@ export async function projectRunEvent(
   runId: string,
   taskId: string,
   event: AgentEvent,
+  /**
+   * Optional, so a caller that has not opted into run tokens keeps its behaviour.
+   *
+   * Passed through to `settle` rather than revoked here: settling is the moment a run's
+   * credential stops being needed, and two places deciding that is how one of them stops.
+   */
+  tokens?: { revoke(runId: string): Promise<void> },
 ): Promise<void> {
   // Stage records are rebuilt from the stream rather than taken from a return value, because
   // in container modes there is no return value to take them from — the events are all that
@@ -713,6 +720,37 @@ export async function projectRunEvent(
     await moveTask(store, taskId, 'running')
   }
   if (event.type === 'pr.opened') await store.updateRun(runId, { prUrl: event.data.url })
+  /**
+   * The run says how it ended, and that is what settles it.
+   *
+   * FOUND ON A RUN THAT PARKED AND WAS REPORTED SUCCEEDED. Nothing here handled `run.finished`,
+   * so for a container run the *only* settler was the reconciler reading the ECS stop reason —
+   * which knows how the task stopped and nothing about why. A run that parked for approval
+   * looked like whatever its exit code happened to say: `failed` while the adapter exited 1, and
+   * then `succeeded` once it exited 0, which silently marked the task ready for review with the
+   * approval still outstanding.
+   *
+   * So the report from inside the run is primary and the reconciler stays the safety net for
+   * runs that never reported at all — which is what `settle` declining a decided run already
+   * expresses. It also improves ordinary failures: "the test stage failed twice" instead of
+   * "Essential container in task exited".
+   *
+   * `records` is empty because `recordStage` above has already written them from this same
+   * stream, and `prUrl` because `pr.opened` did. Passing either again would overwrite the
+   * fuller version with a thinner one.
+   */
+  if (event.type === 'run.finished') {
+    await settle(
+      store,
+      runId,
+      taskId,
+      event.data.outcome,
+      [],
+      undefined,
+      event.data.reason,
+      tokens,
+    )
+  }
 }
 
 async function recordStage(store: Store, runId: string, event: AgentEvent): Promise<void> {
@@ -901,8 +939,16 @@ export async function settle(
    */
   if (existing?.status === 'parked') return false
   const succeeded = outcome === 'succeeded'
+  /**
+   * Parking is the run pausing, not the run ending.
+   *
+   * Which makes it unlike every other outcome here, in three ways that were all wrong: the task
+   * must stay where it is rather than move, no failure reason belongs on it, and the container's
+   * token is spent — a resume mints a new one.
+   */
+  const parked = outcome === 'parked'
   await store.updateRun(runId, {
-    status: succeeded ? 'succeeded' : outcome === 'parked' ? 'parked' : 'failed',
+    status: succeeded ? 'succeeded' : parked ? 'parked' : 'failed',
     endedAt: new Date().toISOString(),
     // Only when the caller actually has records: docker mode passes none, and overwriting
     // the stream-derived list with an empty array is how the stage list went blank.
@@ -919,11 +965,21 @@ export async function settle(
      * Guarded here rather than at each caller: there are three, and this is the only place
      * that knows the outcome and the reason together.
      */
-    ...(failureReason && !succeeded ? { failureReason } : {}),
+    ...(failureReason && !succeeded && !parked ? { failureReason } : {}),
   })
-  // A finished run puts the task in review, not done: a human decides whether the PR is
-  // acceptable, which is the whole reason the PR is the boundary.
-  await moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
+  /**
+   * A parked task stays running, because it is.
+   *
+   * `moveTask(…, 'failed')` was the else branch, so a run that stopped for approval marked its
+   * task failed — the task list showed FAILED next to a pipeline that was waiting for someone
+   * to look at it, which is the one moment a person needs to be invited in rather than warned
+   * off.
+   */
+  if (!parked) {
+    // A finished run puts the task in review, not done: a human decides whether the PR is
+    // acceptable, which is the whole reason the PR is the boundary.
+    await moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
+  }
   // Not awaited: settling must not fail because a revoke was slow, and the token expires
   // on its own regardless. Logged rather than silent, so a persistent failure is visible.
   void tokens?.revoke(runId).catch(() => undefined)
