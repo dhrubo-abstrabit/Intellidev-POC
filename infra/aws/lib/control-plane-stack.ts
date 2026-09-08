@@ -21,6 +21,8 @@ export interface ControlPlaneStackProps extends StackProps {
   readonly vpc: ec2.IVpc
   readonly repository: ecr.IRepository
   readonly artifacts: s3.IBucket
+  /** Artifact bodies. A separate bucket; see `ArtifactsStack`. */
+  readonly artifactContent: s3.IBucket
   readonly credentialKey: kms.IKey
   readonly taskEvents: sqs.IQueue
   /** The run cluster's roles, which this service must be able to hand to a task it starts. */
@@ -110,6 +112,17 @@ export class ControlPlaneStack extends Stack {
     // to be readable by the signer for the URL to work.
     props.artifacts.grantReadWrite(taskRole, 'runs/*')
     props.artifacts.grantRead(taskRole, 'bundles/*')
+
+    /**
+     * Artifact bodies. The control plane is the only thing that ever touches them.
+     *
+     * Read *and* write, because both directions go through this process: a stage writes one
+     * over its run's own authenticated channel, and a person reads one back through the API
+     * with the bytes proxied. Nothing is presigned, so no other principal needs a grant here —
+     * and in particular the run task role has none, which is what stops one run reaching
+     * another project's artifacts by guessing a key.
+     */
+    props.artifactContent.grantReadWrite(taskRole, 'artifacts/*')
 
     props.taskEvents.grantConsumeMessages(taskRole)
 

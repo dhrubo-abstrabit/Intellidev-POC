@@ -20,6 +20,15 @@ export interface AwsRuntimeConfig {
   readonly securityGroupIds: readonly string[]
   readonly containerName: string
   readonly artifactBucket: string
+  /**
+   * Where artifact bodies live.
+   *
+   * A different bucket from `artifactBucket`, which holds run specs and bundles. Their
+   * retention and access models are opposite — that one expires objects and hands out
+   * presigned URLs, this one keeps them and never does — so they are not one bucket with two
+   * prefixes. See `ArtifactsStack`.
+   */
+  readonly artifactContentBucket: string
   /** Where ECS task-state-change events land, for C5's reconciler. */
   readonly taskEventsQueueUrl: string
   /**
@@ -40,6 +49,7 @@ const REQUIRED = {
   subnetIds: 'network/public-subnet-ids',
   securityGroupIds: 'network/run-task-security-group-id',
   artifactBucket: 'artifacts/bucket',
+  artifactContentBucket: 'artifact-content/bucket',
   taskEventsQueueUrl: 'runtime/task-events-queue-url',
 } as const
 
@@ -126,6 +136,7 @@ export async function loadAwsConfig(opts: LoadAwsConfigOptions): Promise<AwsRunt
     subnetIds: list(REQUIRED.subnetIds),
     securityGroupIds: list(REQUIRED.securityGroupIds),
     artifactBucket: get(REQUIRED.artifactBucket),
+    artifactContentBucket: get(REQUIRED.artifactContentBucket),
     taskEventsQueueUrl: get(REQUIRED.taskEventsQueueUrl),
     bundles,
   }

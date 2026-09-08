@@ -49,6 +49,8 @@ import {
   type TaskRow,
 } from './store.js'
 import { RunTokenRegistry } from './runs/tokens.js'
+import { chooseStorage } from './store/artifact-blobs.js'
+import type { ArtifactKind } from './store/types.js'
 import { ControlPlaneCredentialBroker, CredentialRefused } from './runs/credentials.js'
 import { AppNotInstalled, gitHubAppFromEnv } from './github/app.js'
 
@@ -762,11 +764,51 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { artifact }
   })
 
+  /**
+   * An artifact's bytes, whatever home they live in.
+   *
+   * **Proxied, never redirected to a presigned URL.** A run spec is presigned because a
+   * container fetches it with no AWS credentials; an artifact is read by a person through this
+   * authenticated route. Proxying costs a hop and means there is no URL anywhere that grants
+   * access to an artifact — so one appearing in a proxy log, a referrer or somebody's history
+   * is worth nothing.
+   */
+  app.get<{ Params: { id: string } }>('/api/artifacts/:id/content', async (request, reply) => {
+    const artifact = await store.getTaskArtifact(request.params.id)
+    if (!artifact || artifact.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such artifact' })
+    }
+    const content = await store.readTaskArtifactContent(artifact.id)
+    // The row exists and the bytes do not, which means the two have diverged. A 404 naming the
+    // artifact says more than a 500 would.
+    if (!content) return reply.code(404).send({ error: 'this artifact has no content stored' })
+
+    return (
+      reply
+        .type(content.contentType)
+        /**
+         * These bytes were written by an agent, so nothing downstream may guess a type for
+         * them, and nothing may render them as a document in this origin.
+         *
+         * `nosniff` stops the type being second-guessed. `attachment` means a browser opening
+         * this URL directly downloads it rather than executing it as a page — the preview reads
+         * it through `fetch` and inlines it, so nothing that should render is affected.
+         */
+        .header('x-content-type-options', 'nosniff')
+        .header('content-disposition', `attachment; filename="${artifact.name}"`)
+        // The content hash, so a browser can revalidate instead of re-fetching a screenshot.
+        .header('etag', `"${content.sha256}"`)
+        .header('cache-control', 'private, max-age=0, must-revalidate')
+        .send(content.bytes)
+    )
+  })
+
   app.delete<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
     const artifact = await store.getTaskArtifact(request.params.id)
     if (!artifact || artifact.projectId !== opts.scope.projectId) {
       return reply.code(404).send({ error: 'no such artifact' })
     }
+    // The object goes with the row; the store owns that, as it does for an overwrite.
     return { deleted: await store.deleteTaskArtifact(artifact.id) }
   })
 
@@ -1310,6 +1352,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
   const ARTIFACT_BODY_LIMIT = 1_048_576
   /**
+   * The ceiling for an artifact whose bytes become an object.
+   *
+   * Higher than an inline body because the column is no longer the constraint, and still a
+   * ceiling because the bytes are proxied through this process rather than presigned — which is
+   * what keeps an artifact from having a URL that grants access to it. 25 MiB is a screenshot,
+   * a diagram export or a small PDF, and is not a build output.
+   */
+  const ARTIFACT_OBJECT_LIMIT = 25 * 1_048_576
+  /** Exactly what the UI can present. A kind nothing renders is a blank pane. */
+  const ARTIFACT_KINDS: readonly ArtifactKind[] = ['html', 'markdown', 'mermaid', 'image', 'file']
+  /**
    * Per task, so one confused stage cannot fill a project with drafts.
    *
    * Generous enough that nobody hits it by working normally, and low enough that a loop stops
@@ -1386,6 +1439,16 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         kind?: unknown
         title?: unknown
         body?: unknown
+        /**
+         * Binary content, base64-encoded.
+         *
+         * A separate field from `body` rather than a mode flag, because the two are different
+         * things and a flag can disagree with the payload. JSON has no way to carry bytes, and
+         * base64 costs a third more on the wire — which is why an image goes to object storage
+         * rather than through a column.
+         */
+        bodyBase64?: unknown
+        contentType?: unknown
         stage?: unknown
       }
 
@@ -1396,19 +1459,68 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
             'starting with a letter or digit — for example "architecture.mmd"',
         })
       }
-      if (body.kind !== 'html' && body.kind !== 'markdown' && body.kind !== 'mermaid') {
-        return reply.code(400).send({ error: 'kind must be one of html, markdown, mermaid' })
+      if (!ARTIFACT_KINDS.includes(body.kind as ArtifactKind)) {
+        return reply.code(400).send({ error: `kind must be one of ${ARTIFACT_KINDS.join(', ')}` })
       }
-      if (typeof body.body !== 'string' || body.body.trim().length === 0) {
-        return reply.code(400).send({ error: 'body must be a non-empty string' })
+      const kind = body.kind as ArtifactKind
+
+      /**
+       * Text or bytes, and exactly one of them.
+       *
+       * Accepting both would leave the server choosing which the writer meant, and choosing
+       * wrongly is an artifact that renders as the wrong thing.
+       */
+      if (typeof body.body === 'string' && typeof body.bodyBase64 === 'string') {
+        return reply.code(400).send({ error: 'send body or bodyBase64, not both' })
       }
-      const bytes = Buffer.byteLength(body.body, 'utf8')
-      if (bytes > ARTIFACT_BODY_LIMIT) {
-        // 413 rather than 400: the request was well formed and simply too big, and the number is
-        // the useful part of the answer.
+
+      let content: string | Buffer
+      if (typeof body.bodyBase64 === 'string') {
+        // Validated by round-tripping: `Buffer.from` accepts almost anything and silently drops
+        // what it cannot decode, so a truncated upload would otherwise be stored as whatever
+        // survived.
+        const decoded = Buffer.from(body.bodyBase64, 'base64')
+        if (
+          decoded.byteLength === 0 ||
+          decoded.toString('base64').replace(/=+$/, '') !==
+            body.bodyBase64.replace(/\s/g, '').replace(/=+$/, '')
+        ) {
+          return reply.code(400).send({ error: 'bodyBase64 is not valid base64' })
+        }
+        content = decoded
+      } else if (typeof body.body === 'string' && body.body.trim().length > 0) {
+        content = body.body
+      } else {
+        return reply
+          .code(400)
+          .send({ error: 'an artifact needs a non-empty body, or bodyBase64 for binary' })
+      }
+
+      const byteLength = Buffer.isBuffer(content)
+        ? content.byteLength
+        : Buffer.byteLength(content, 'utf8')
+      /**
+       * The ceiling depends on where the bytes will live.
+       *
+       * An inline body is capped by the column it goes in; an object is capped by what is
+       * reasonable to hold in memory while proxying it. Both are stated, because "too large"
+       * without a number is an error an agent cannot act on.
+       */
+      const limit =
+        chooseStorage(kind, byteLength) === 'inline' ? ARTIFACT_BODY_LIMIT : ARTIFACT_OBJECT_LIMIT
+      if (byteLength > limit) {
+        // 413 rather than 400: the request was well formed and simply too big.
         return reply.code(413).send({
-          error: `an artifact may be at most ${ARTIFACT_BODY_LIMIT} bytes; this one is ${bytes}`,
+          error: `a ${kind} artifact may be at most ${limit} bytes; this one is ${byteLength}`,
         })
+      }
+
+      if ((kind === 'image' || kind === 'file') && typeof body.contentType !== 'string') {
+        // No single right answer to guess: `image/png` and `image/svg+xml` are both images and
+        // must not be served as each other.
+        return reply
+          .code(400)
+          .send({ error: `a ${kind} artifact must say its contentType, for example image/png` })
       }
       if (typeof body.title !== 'undefined' && typeof body.title !== 'string') {
         return reply.code(400).send({ error: 'title must be a string when given' })
@@ -1434,9 +1546,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         runId: resolved.run.id,
         ...(typeof body.stage === 'string' && body.stage ? { stage: body.stage } : {}),
         name: body.name,
-        kind: body.kind,
+        kind,
         ...(body.title ? { title: body.title } : {}),
-        body: body.body,
+        // `content`, not `body`: the store decides which home the bytes go to, and a caller
+        // that named the column would be a caller that could choose wrongly.
+        content,
+        ...(typeof body.contentType === 'string' && body.contentType
+          ? { contentType: body.contentType }
+          : {}),
       })
       // Without the body: the caller just sent it, and echoing a megabyte back is pure cost.
       const { body: _echoed, ...summary } = saved

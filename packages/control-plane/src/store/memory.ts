@@ -20,7 +20,15 @@ import {
   type TaskArtifactRow,
   type TaskArtifactSummary,
   type TaskArtifactInput,
+  type TaskArtifactContent,
 } from './types.js'
+import {
+  BlobStoreUnavailable,
+  chooseStorage,
+  defaultContentType,
+  sha256Hex,
+  type ArtifactBlobs,
+} from './artifact-blobs.js'
 
 interface Subscription {
   readonly listener: Listener
@@ -50,6 +58,12 @@ interface Subscription {
 export class InMemoryStore implements Store {
   private readonly stageTemplates = new Map<string, StageTemplateRow>()
   private readonly artifacts = new Map<string, TaskArtifactRow>()
+  /** Where non-text artifact bytes go. See `PostgresStore.useArtifactBlobs`. */
+  private blobs: ArtifactBlobs | undefined
+
+  useArtifactBlobs(blobs: ArtifactBlobs | undefined): void {
+    this.blobs = blobs
+  }
   private readonly tasks = new Map<string, TaskRow>()
   private readonly runs = new Map<string, RunRow>()
   private readonly events = new Map<string, AgentEvent[]>()
@@ -189,10 +203,7 @@ export class InMemoryStore implements Store {
     return [...this.artifacts.values()].find((a) => a.taskId === taskId && a.name === name)
   }
 
-  async saveTaskArtifact(
-    scope: ProjectScope,
-    input: TaskArtifactInput,
-  ): Promise<TaskArtifactRow> {
+  async saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow> {
     /**
      * A name is a natural key within a task, so writing the same one again is an edit.
      *
@@ -202,9 +213,35 @@ export class InMemoryStore implements Store {
      * every second save.
      */
     const existing = await this.findTaskArtifact(input.taskId, input.name)
+    const bytes = Buffer.isBuffer(input.content)
+      ? input.content
+      : Buffer.from(input.content, 'utf8')
+    const contentType = input.contentType ?? defaultContentType(input.kind)
+    if (!contentType) {
+      throw new Error(`a ${input.kind} artifact must say what its content type is`)
+    }
+    const storage = chooseStorage(input.kind, bytes.byteLength)
+    // The same refusal Postgres gives, so a test that never touches a bucket still proves the
+    // deployment-without-one case behaves.
+    if (storage === 's3' && !this.blobs) throw new BlobStoreUnavailable(input.kind)
+
+    const id = existing?.id ?? randomUUID()
     const now = new Date().toISOString()
+
+    let storageKey: string | undefined
+    if (storage === 's3') {
+      storageKey = await this.blobs!.put({
+        projectId: scope.projectId,
+        taskId: input.taskId,
+        artifactId: id,
+        name: input.name,
+        contentType,
+        bytes,
+      })
+    }
+
     const row: TaskArtifactRow = {
-      id: existing?.id ?? randomUUID(),
+      id,
       clientSpaceId: scope.clientSpaceId,
       projectId: scope.projectId,
       taskId: input.taskId,
@@ -213,18 +250,44 @@ export class InMemoryStore implements Store {
       name: input.name,
       kind: input.kind,
       ...(input.title ? { title: input.title } : {}),
-      body: input.body,
+      ...(storage === 'inline' ? { body: bytes.toString('utf8') } : {}),
+      contentType,
+      storage,
+      ...(storageKey ? { storageKey } : {}),
+      sha256: sha256Hex(bytes),
       // Bytes, not characters, matching the column's `octet_length` constraint.
-      bytes: Buffer.byteLength(input.body, 'utf8'),
+      bytes: bytes.byteLength,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
+    }
+
+    // The bytes an overwrite replaced, once the new ones are in place.
+    if (existing?.storageKey && existing.storageKey !== storageKey) {
+      await this.blobs?.delete(existing.storageKey).catch(() => undefined)
     }
     this.artifacts.set(row.id, row)
     return row
   }
 
+  async readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined> {
+    const row = this.artifacts.get(id)
+    if (!row) return undefined
+    if (row.storage === 'inline') {
+      return row.body === undefined
+        ? undefined
+        : { contentType: row.contentType, bytes: Buffer.from(row.body, 'utf8'), sha256: row.sha256 }
+    }
+    if (!row.storageKey || !this.blobs) return undefined
+    const bytes = await this.blobs.get(row.storageKey)
+    return bytes ? { contentType: row.contentType, bytes, sha256: row.sha256 } : undefined
+  }
+
   async deleteTaskArtifact(id: string): Promise<boolean> {
-    return this.artifacts.delete(id)
+    // The object goes with the row, as in the Postgres store — so a contract test covers both.
+    const key = this.artifacts.get(id)?.storageKey
+    const removed = this.artifacts.delete(id)
+    if (key) await this.blobs?.delete(key).catch(() => undefined)
+    return removed
   }
 
   async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {

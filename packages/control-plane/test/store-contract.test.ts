@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { AgentEvent } from '@intellidev/shared'
 import { InMemoryStore } from '../src/store/memory.js'
@@ -288,7 +289,8 @@ function contract(
           taskId: '',
           name: 'architecture.mmd',
           kind: 'mermaid' as const,
-          body: 'graph TD\n  A --> B',
+          // `content`, not `body`: which home the bytes go to is the store's decision.
+          content: 'graph TD\n  A --> B',
           ...over,
         })
 
@@ -313,10 +315,30 @@ function contract(
             kind: 'mermaid',
             title: 'How the pieces fit',
             body: 'graph TD\n  A --> B',
+            // Text stays here, in the row. See `chooseStorage`.
+            storage: 'inline',
+            contentType: 'text/plain; charset=utf-8',
           })
           // Bytes, so a list can show a size without reading every body.
           expect(fetched?.bytes).toBe(Buffer.byteLength('graph TD\n  A --> B', 'utf8'))
           expect(fetched?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+          // The hash is derived, not supplied — it cannot be recovered later for bytes that
+          // have moved, so it is written from the start.
+          expect(fetched?.sha256).toBe(
+            createHash('sha256').update('graph TD\n  A --> B').digest('hex'),
+          )
+          expect(fetched?.storageKey).toBeUndefined()
+        })
+
+        it('reads the content back from the row for an inline artifact', async () => {
+          // One method for both homes, so nothing outside the store branches on `storage`.
+          const task = await store.createTask(TASK, scope)
+          const saved = await store.saveTaskArtifact(scope, { ...diagram(), taskId: task.id })
+
+          const content = await store.readTaskArtifactContent(saved.id)
+
+          expect(content?.bytes.toString('utf8')).toBe('graph TD\n  A --> B')
+          expect(content?.contentType).toBe('text/plain; charset=utf-8')
         })
 
         it('counts bytes rather than characters', async () => {
@@ -327,15 +349,15 @@ function contract(
            * the shape of divergence these tests exist to catch.
            */
           const task = await store.createTask(TASK, scope)
-          const body = '→ ✓ é 日本語'
+          const text = '→ ✓ é 日本語'
 
           const saved = await store.saveTaskArtifact(scope, {
-            ...diagram({ body }),
+            ...diagram({ content: text }),
             taskId: task.id,
           })
 
-          expect(saved.bytes).toBe(Buffer.byteLength(body, 'utf8'))
-          expect(saved.bytes).toBeGreaterThan(body.length)
+          expect(saved.bytes).toBe(Buffer.byteLength(text, 'utf8'))
+          expect(saved.bytes).toBeGreaterThan(text.length)
         })
 
         it('replaces an artifact of the same name rather than adding a second', async () => {
@@ -344,11 +366,11 @@ function contract(
           const task = await store.createTask(TASK, scope)
 
           const first = await store.saveTaskArtifact(scope, {
-            ...diagram({ body: 'graph TD\n  A --> B' }),
+            ...diagram({ content: 'graph TD\n  A --> B' }),
             taskId: task.id,
           })
           const second = await store.saveTaskArtifact(scope, {
-            ...diagram({ body: 'graph TD\n  A --> C' }),
+            ...diagram({ content: 'graph TD\n  A --> C' }),
             taskId: task.id,
           })
 
@@ -364,8 +386,8 @@ function contract(
           const one = await store.createTask(TASK, scope)
           const two = await store.createTask(TASK, scope)
 
-          await store.saveTaskArtifact(scope, { ...diagram({ body: 'one' }), taskId: one.id })
-          await store.saveTaskArtifact(scope, { ...diagram({ body: 'two' }), taskId: two.id })
+          await store.saveTaskArtifact(scope, { ...diagram({ content: 'one' }), taskId: one.id })
+          await store.saveTaskArtifact(scope, { ...diagram({ content: 'two' }), taskId: two.id })
 
           expect((await store.listTaskArtifacts(one.id))[0]?.taskId).toBe(one.id)
           expect((await store.findTaskArtifact(two.id, 'architecture.mmd'))?.body).toBe('two')
@@ -433,6 +455,186 @@ function contract(
           expect(attributed).toMatchObject({ runId: run.id, stage: 'design' })
           expect(byHand.runId).toBeUndefined()
           expect(byHand.stage).toBeUndefined()
+        })
+
+        describe('bytes that do not belong in a column', () => {
+          /**
+           * The extension this schema was shaped for.
+           *
+           * A diagram is text and belongs in the row; a screenshot is not and does not. What
+           * matters is that nothing outside the store can tell the difference — `saveTaskArtifact`
+           * takes content and `readTaskArtifactContent` returns content, and where the bytes went
+           * is a routing decision recorded on the row.
+           */
+          /** A blob store that records what it holds, standing in for the bucket. */
+          function fakeBlobs() {
+            const objects = new Map<string, Buffer>()
+            const deleted: string[] = []
+            return {
+              objects,
+              deleted,
+              blobs: {
+                async put(input: {
+                  projectId: string
+                  taskId: string
+                  name: string
+                  contentType: string
+                  bytes: Buffer
+                }) {
+                  const key = `artifacts/${input.projectId}/${input.taskId}/${input.name}`
+                  objects.set(key, input.bytes)
+                  return key
+                },
+                async get(key: string) {
+                  return objects.get(key)
+                },
+                async delete(key: string) {
+                  deleted.push(key)
+                  objects.delete(key)
+                },
+              },
+            }
+          }
+
+          // A one-pixel PNG, so the bytes are genuinely binary rather than text pretending.
+          const png = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64',
+          )
+
+          it('sends an image to the blob store and reads it back byte for byte', async () => {
+            const { blobs, objects } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            const task = await store.createTask(TASK, scope)
+
+            const saved = await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'screenshot.png',
+              kind: 'image',
+              contentType: 'image/png',
+              content: png,
+            })
+
+            expect(saved.storage).toBe('s3')
+            expect(saved.storageKey).toBeTruthy()
+            // Never in the row: base64 in a text column costs a third more and is the wrong
+            // instrument besides.
+            expect(saved.body).toBeUndefined()
+            expect(saved.bytes).toBe(png.byteLength)
+            expect(objects.size).toBe(1)
+
+            const content = await store.readTaskArtifactContent(saved.id)
+            expect(content?.contentType).toBe('image/png')
+            // Byte for byte, which is the only assertion that means anything for binary.
+            expect(content?.bytes.equals(png)).toBe(true)
+            store.useArtifactBlobs(undefined)
+          })
+
+          it('keeps a diagram inline however large it gets', async () => {
+            /**
+             * `mermaid` and `markdown` are read back *as text* by a later stage, so a round trip
+             * through object storage to answer `read_artifact` would be latency for nothing.
+             * Size does not change that.
+             */
+            const { blobs, objects } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            const task = await store.createTask(TASK, scope)
+
+            const saved = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: `graph TD\n${'  A --> B\n'.repeat(2000)}` }),
+              taskId: task.id,
+            })
+
+            expect(saved.storage).toBe('inline')
+            expect(objects.size).toBe(0)
+            store.useArtifactBlobs(undefined)
+          })
+
+          it('refuses an image when the deployment has no blob store', async () => {
+            /**
+             * Refused on the *write*, naming what is missing. Accepting it and failing later
+             * would produce an artifact that exists in every list and cannot be opened, which
+             * is the failure that takes a day to understand.
+             */
+            store.useArtifactBlobs(undefined)
+            const task = await store.createTask(TASK, scope)
+
+            await expect(
+              store.saveTaskArtifact(scope, {
+                taskId: task.id,
+                name: 'screenshot.png',
+                kind: 'image',
+                contentType: 'image/png',
+                content: png,
+              }),
+            ).rejects.toThrow(/no object storage is configured/)
+          })
+
+          it('requires a content type for bytes it cannot guess one for', async () => {
+            // `image/png` and `image/svg+xml` are both images and must not be served as each
+            // other. Guessing is how an SVG becomes a download.
+            const { blobs } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            const task = await store.createTask(TASK, scope)
+
+            await expect(
+              store.saveTaskArtifact(scope, {
+                taskId: task.id,
+                name: 'unknown.bin',
+                kind: 'file',
+                content: png,
+              }),
+            ).rejects.toThrow(/content type/)
+            store.useArtifactBlobs(undefined)
+          })
+
+          it('removes the previous object when an artifact is overwritten', async () => {
+            // Otherwise the bucket grows for ever with objects nothing references.
+            const { blobs, objects, deleted } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            const task = await store.createTask(TASK, scope)
+            const first = await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'screenshot.png',
+              kind: 'image',
+              contentType: 'image/png',
+              content: png,
+            })
+
+            const second = await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'screenshot.png',
+              kind: 'image',
+              contentType: 'image/png',
+              content: Buffer.concat([png, Buffer.from([0])]),
+            })
+
+            expect(second.id).toBe(first.id)
+            // One object for one artifact, whatever it has been through.
+            expect(objects.size).toBe(1)
+            expect(second.bytes).toBe(png.byteLength + 1)
+            expect(
+              deleted.length + (first.storageKey === second.storageKey ? 1 : 0),
+            ).toBeGreaterThan(0)
+            store.useArtifactBlobs(undefined)
+          })
+
+          it('takes the object with the row when an artifact is deleted', async () => {
+            const { blobs, objects } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            const task = await store.createTask(TASK, scope)
+            const saved = await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'screenshot.png',
+              kind: 'image',
+              contentType: 'image/png',
+              content: png,
+            })
+
+            expect(await store.deleteTaskArtifact(saved.id)).toBe(true)
+            expect(objects.size).toBe(0)
+            store.useArtifactBlobs(undefined)
+          })
         })
 
         it('deletes one by id', async () => {
@@ -740,6 +942,15 @@ contract(
   'InMemoryStore',
   new Proxy({} as Store, {
     get: (_target, prop) => Reflect.get(memory as object, prop, memory),
+    /**
+     * Writes go to the instance too.
+     *
+     * FOUND BY A STORE METHOD THAT SETS A FIELD. Without this trap, a method invoked through the
+     * proxy runs with `this` bound to the *proxy*, so `this.blobs = …` landed on the dead target
+     * object and every later read saw nothing — a store configured in a test and behaving as
+     * though it had not been.
+     */
+    set: (_target, prop, value) => Reflect.set(memory as object, prop, value),
   }),
   MEMORY_SCOPE,
   {

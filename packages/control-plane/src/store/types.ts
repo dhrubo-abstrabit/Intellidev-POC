@@ -1,4 +1,5 @@
 import type { StageTemplate } from '@intellidev/shared'
+import type { ArtifactBlobs } from './artifact-blobs.js'
 import type { AgentEvent, HarnessId, RunStatus, StageRecord, TaskStatus } from '@intellidev/shared'
 
 /**
@@ -85,7 +86,18 @@ export interface StageTemplateRow {
  * and a content-type string admits a hundred values meaning the same thing and several meaning
  * "execute this".
  */
-export type ArtifactKind = 'html' | 'markdown' | 'mermaid'
+/**
+ * How an artifact is presented, which is not the same question as what its bytes are.
+ *
+ * A closed set, still: a kind nothing can render is a blank pane, and the write should fail
+ * rather than a person discover it a day later. `contentType` carries what the bytes actually
+ * are, because `image/png` and `image/svg+xml` are both `image` and must not be served as each
+ * other.
+ */
+export type ArtifactKind = 'html' | 'markdown' | 'mermaid' | 'image' | 'file'
+
+/** Where an artifact's bytes live. See `chooseStorage`. */
+export type ArtifactStorage = 'inline' | 's3'
 
 export interface TaskArtifactRow {
   id: string
@@ -99,7 +111,21 @@ export interface TaskArtifactRow {
   name: string
   kind: ArtifactKind
   title?: string
-  body: string
+  /**
+   * The bytes, when they live in this row.
+   *
+   * Absent for an artifact stored as an object — an image, or an html body too large for a
+   * column. Read those through `readTaskArtifactContent`, which answers for both homes.
+   */
+  body?: string
+  /** What the bytes are, for serving them. */
+  contentType: string
+  storage: ArtifactStorage
+  /** The object's key, when `storage` is `s3`. */
+  storageKey?: string
+  /** Content hash, so "did this change" is answerable without reading the body. */
+  sha256: string
+  /** The size of the content, wherever it lives. */
   bytes: number
   createdAt: string
   updatedAt: string
@@ -113,10 +139,32 @@ export interface TaskArtifactRow {
  */
 export type TaskArtifactSummary = Omit<TaskArtifactRow, 'body'>
 
-export type TaskArtifactInput = Omit<
-  TaskArtifactRow,
-  'id' | 'createdAt' | 'updatedAt' | 'bytes' | 'clientSpaceId' | 'projectId'
->
+/**
+ * What a caller supplies. The store decides the rest.
+ *
+ * `content` rather than `body`, and a Buffer or a string: which home the bytes end up in, their
+ * hash and their size are all derived — a caller that had to choose would be a caller that can
+ * choose wrongly, and the routing rule would live in as many places as there are writers.
+ */
+export interface TaskArtifactInput {
+  taskId: string
+  runId?: string
+  stage?: string
+  name: string
+  kind: ArtifactKind
+  title?: string
+  content: string | Buffer
+  /** Required for `image` and `file`, where there is no single right answer to guess. */
+  contentType?: string
+}
+
+/** An artifact's bytes, from whichever home they live in. */
+export interface TaskArtifactContent {
+  contentType: string
+  bytes: Buffer
+  /** For a caller that wants to set an ETag or compare without re-reading. */
+  sha256: string
+}
 
 export type StageTemplateInput = Omit<StageTemplateRow, 'id' | 'createdAt' | 'updatedAt'> & {
   id?: string
@@ -280,6 +328,24 @@ export interface Store {
    * replace it — and two rows with one name leave nothing to say which is current.
    */
   saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow>
+  /**
+   * The bytes, wherever they live.
+   *
+   * One method for both homes, so nothing outside the store branches on `storage`. That is the
+   * whole point of recording it: callers ask for content and get content.
+   */
+  readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined>
+  /**
+   * Where non-text artifact bytes go, set at boot.
+   *
+   * On the interface rather than only on the Postgres store because the choice belongs to the
+   * deployment, not to the storage engine — and because the in-memory store needs one too, so
+   * the contract tests can cover binary artifacts on both.
+   *
+   * `undefined` is a deployment with no object storage: text artifacts work, and the kinds that
+   * need a bucket are refused on write.
+   */
+  useArtifactBlobs(blobs: ArtifactBlobs | undefined): void
   deleteTaskArtifact(id: string): Promise<boolean>
   /**
    * Removes a repository from a project's allowlist.

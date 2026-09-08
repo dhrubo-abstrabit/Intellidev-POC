@@ -26,6 +26,8 @@ export interface ArtifactsStackProps extends StackProps {
  */
 export class ArtifactsStack extends Stack {
   readonly bucket: s3.Bucket
+  /** Artifact bodies. A separate bucket, for the reasons on the property below. */
+  readonly contentBucket: s3.Bucket
 
   constructor(scope: Construct, id: string, props: ArtifactsStackProps) {
     super(scope, id, props)
@@ -65,6 +67,64 @@ export class ArtifactsStack extends Stack {
           abortIncompleteMultipartUploadAfter: Duration.days(1),
         },
       ],
+    })
+
+    /**
+     * Artifact bodies — what a stage drew, for the people reviewing it.
+     *
+     * A second bucket rather than a prefix on the first, and the reasons are the two properties
+     * that are *opposite* to everything above:
+     *
+     *  - **Retention.** A run spec expires after thirty days and a bundle version after seven,
+     *    because both are reproducible. An artifact is the output — the diagram, the note, the
+     *    screenshot — and must never expire. A lifecycle rule scoped by prefix would work until
+     *    somebody widened one, and the failure is silent data loss discovered much later.
+     *  - **Removal.** The bucket above is `DESTROY` with `autoDeleteObjects`, because losing a
+     *    cache of reproducible objects when a stack is torn down is fine. Losing a project's
+     *    artifacts is not, so this one is `RETAIN`: a `cdk destroy` leaves it behind.
+     *
+     * A third reason is the access model. That bucket exists to hand out presigned URLs, and
+     * this one must never have one — an artifact is read through the authenticated API and its
+     * bytes are proxied, so there is no URL that grants access to it. Two rules that opposite
+     * do not belong on one bucket, where the next person to widen a policy has to know which
+     * prefix meant what.
+     */
+    this.contentBucket = new s3.Bucket(this, 'ArtifactContent', {
+      bucketName: resourceName(env.name, 'artifact-content', this.account),
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      /*
+       * Versioned, so an overwrite or a delete is recoverable.
+       *
+       * Saving an artifact under an existing name replaces it, and a delete is a button in the
+       * UI. Neither should be the last word on something a person may have spent a run
+       * producing — thirty days is long enough to notice and ask.
+       */
+      versioned: true,
+      // Kept when the stack goes. This is the one bucket here holding anything a person would
+      // miss.
+      removalPolicy: RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          id: 'expire-superseded-artifact-versions',
+          // Only *non-current* versions. Nothing expires the artifact itself, deliberately —
+          // there is no rule here that can delete a live object, which is the point of the
+          // separate bucket.
+          noncurrentVersionExpiration: Duration.days(30),
+        },
+        {
+          id: 'abort-incomplete-uploads',
+          abortIncompleteMultipartUploadAfter: Duration.days(1),
+        },
+      ],
+    })
+
+    new ssm.StringParameter(this, 'ArtifactContentBucketParam', {
+      parameterName: ssmPath(env.name, 'artifact-content', 'bucket'),
+      stringValue: this.contentBucket.bucketName,
+      description:
+        'Artifact bodies. Never presigned — read through the authenticated API and proxied.',
     })
 
     new ssm.StringParameter(this, 'ArtifactBucketParam', {

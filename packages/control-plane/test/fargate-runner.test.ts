@@ -12,6 +12,7 @@ const CONFIG: AwsRuntimeConfig = {
   securityGroupIds: ['sg-1'],
   containerName: 'adapter',
   artifactBucket: 'bkt',
+  artifactContentBucket: 'artifact-content',
   taskEventsQueueUrl: 'https://sqs/q',
   bundles: {},
 }
@@ -225,6 +226,8 @@ describe('loadAwsConfig', () => {
           ['/intellidev/dev/network/public-subnet-ids', 'subnet-a,subnet-b'],
           ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
           ['/intellidev/dev/artifacts/bucket', 'bkt'],
+          ['/intellidev/dev/artifact-content/bucket', 'content-bkt'],
+          ['/intellidev/dev/artifact-content/bucket', 'content-bkt'],
           ['/intellidev/dev/runtime/task-events-queue-url', 'https://sqs/q'],
         ]),
     }
@@ -244,6 +247,9 @@ describe('loadAwsConfig', () => {
     ['/intellidev/dev/network/public-subnet-ids', 'subnet-a'],
     ['/intellidev/dev/network/run-task-security-group-id', 'sg-1'],
     ['/intellidev/dev/artifacts/bucket', 'bkt'],
+    // A different bucket from the one above: artifact bodies are kept and never presigned,
+    // run specs expire and are. See `ArtifactsStack`.
+    ['/intellidev/dev/artifact-content/bucket', 'content-bkt'],
     ['/intellidev/dev/runtime/task-events-queue-url', 'https://sqs/q'],
   ]
 

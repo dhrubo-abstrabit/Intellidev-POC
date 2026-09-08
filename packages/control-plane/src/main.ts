@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildServer } from './server.js'
 import { loadAwsConfig } from './aws/config.js'
+import { S3ArtifactBlobs } from './aws/artifact-blobs-s3.js'
 import { LifecycleReconciler } from './lifecycle/reconciler.js'
 import { InMemoryStore, PostgresStore, type ProjectScope, type Store } from './store.js'
 import { LocalSecretCipher } from './secrets/cipher.js'
@@ -122,6 +123,21 @@ const store: Store = databaseUrl
       onDiagnostic: (message) => process.stderr.write(`${message}\n`),
     })
   : new InMemoryStore()
+
+/**
+ * Where artifact bytes go when a text column is the wrong instrument.
+ *
+ * Only when there is a bucket. Without one, text artifacts work exactly as they do and an
+ * `image` is refused on the *write* naming what is missing — rather than accepted and then
+ * unreadable, which is the failure that would take a day to understand.
+ *
+ * The same bucket as run specs and bundles, under its own `artifacts/` prefix: a second bucket
+ * would be another thing to provision, grant and lifecycle for no isolation that the
+ * project-scoped prefix does not already give.
+ */
+store.useArtifactBlobs(
+  aws ? new S3ArtifactBlobs({ bucket: aws.artifactContentBucket, region: aws.region }) : undefined,
+)
 
 // Opens the LISTEN connection before serving, so the first request cannot race it.
 if (store instanceof PostgresStore) await store.start()

@@ -296,7 +296,15 @@ export const taskArtifacts = runner.table(
     /** Exactly what the preview can render: html, markdown or mermaid. */
     kind: text('kind').notNull(),
     title: text('title'),
-    body: text('body').notNull(),
+    /** Null when the bytes are an object; see `storage`. */
+    body: text('body'),
+    /** What the bytes are, for serving them — distinct from `kind`, which is how to show them. */
+    contentType: text('content_type').notNull(),
+    /** `inline` (the bytes are in `body`) or `s3` (`storageKey` names the object). */
+    storage: text('storage').notNull(),
+    storageKey: text('storage_key'),
+    sha256: text('sha256').notNull(),
+    /** The size of the content, wherever it lives. */
     bytes: integer('bytes').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

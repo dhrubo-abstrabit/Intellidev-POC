@@ -25,7 +25,16 @@ import {
   type TaskArtifactRow,
   type TaskArtifactSummary,
   type TaskArtifactInput,
+  type TaskArtifactContent,
+  type ArtifactStorage,
 } from './types.js'
+import {
+  BlobStoreUnavailable,
+  chooseStorage,
+  defaultContentType,
+  sha256Hex,
+  type ArtifactBlobs,
+} from './artifact-blobs.js'
 import {
   productTasks,
   projectRepos,
@@ -100,6 +109,20 @@ export interface PostgresStoreOptions {
 }
 
 export class PostgresStore implements Store {
+  /**
+   * Where artifact bytes go when a text column is the wrong instrument.
+   *
+   * Optional, so a deployment without object storage keeps working for everything except the
+   * kinds that need it — and those fail on the *write*, naming what is missing, rather than
+   * storing something that cannot be read back.
+   */
+  private blobs: ArtifactBlobs | undefined
+
+  /** Set after construction, because the bucket is discovered from AWS config at boot. */
+  useArtifactBlobs(blobs: ArtifactBlobs | undefined): void {
+    this.blobs = blobs
+  }
+
   private readonly pool: pg.Pool
   private readonly db: NodePgDatabase
   /**
@@ -519,54 +542,137 @@ export class PostgresStore implements Store {
     return row ? toArtifact(row) : undefined
   }
 
-  async saveTaskArtifact(
-    scope: ProjectScope,
-    input: TaskArtifactInput,
-  ): Promise<TaskArtifactRow> {
+  async saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow> {
+    const bytes = Buffer.isBuffer(input.content)
+      ? input.content
+      : Buffer.from(input.content, 'utf8')
+    const contentType = input.contentType ?? defaultContentType(input.kind)
+    if (!contentType) {
+      // `image` and `file` have no single right answer to guess, and guessing is how an SVG
+      // becomes a download. Refused here rather than stored wrong.
+      throw new Error(`a ${input.kind} artifact must say what its content type is`)
+    }
+    const storage = chooseStorage(input.kind, bytes.byteLength)
+    if (storage === 's3' && !this.blobs) throw new BlobStoreUnavailable(input.kind)
+
     /**
-     * A name is a natural key within a task, so writing the same one again is an edit.
+     * The row is written first, then the object, then the row is pointed at it.
      *
-     * Expressed as an upsert on the unique index this time rather than a lookup: the index is a
-     * plain `(task_id, name)` unique, so there is no partial predicate to restate — which was
-     * the only reason `saveStageTemplate` does it the long way.
+     * Two writes for an object-backed artifact, and the order is what makes a failure
+     * recoverable: a row that exists with no object is a visible artifact that fails to load,
+     * which is diagnosable — an object with no row is a bucket that silently grows for ever.
+     *
+     * The id is needed before the key, because the key includes it: overwriting a name must
+     * write a *new* object rather than mutate one a half-finished read is streaming.
      */
+    const common = {
+      clientSpaceId: scope.clientSpaceId,
+      projectId: scope.projectId,
+      taskId: input.taskId,
+      runId: input.runId ?? null,
+      stage: input.stage ?? null,
+      name: input.name,
+      kind: input.kind,
+      title: input.title ?? null,
+      contentType,
+      sha256: sha256Hex(bytes),
+      bytes: bytes.byteLength,
+    }
+
+    const previous = await this.findTaskArtifact(input.taskId, input.name)
+
     const [row] = await this.db
       .insert(taskArtifacts)
-      .values({
-        clientSpaceId: scope.clientSpaceId,
-        projectId: scope.projectId,
-        taskId: input.taskId,
-        runId: input.runId ?? null,
-        stage: input.stage ?? null,
-        name: input.name,
-        kind: input.kind,
-        title: input.title ?? null,
-        body: input.body,
-        // Bytes, not characters: the column is checked against `octet_length`, and multi-byte
-        // text would otherwise disagree with the constraint and be rejected on write.
-        bytes: Buffer.byteLength(input.body, 'utf8'),
-      })
+      .values(
+        storage === 'inline'
+          ? { ...common, storage, body: bytes.toString('utf8'), storageKey: null }
+          : // A placeholder key, replaced below once the object is written. The constraint
+            // requires a key whenever `storage` is `s3`, and satisfying it with the row's own
+            // id keeps the invariant true at every instant rather than only at the end.
+            { ...common, storage, body: null, storageKey: `pending/${randomUUID()}` },
+      )
       .onConflictDoUpdate({
         target: [taskArtifacts.taskId, taskArtifacts.name],
-        set: {
-          kind: input.kind,
-          title: input.title ?? null,
-          body: input.body,
-          bytes: Buffer.byteLength(input.body, 'utf8'),
-          runId: input.runId ?? null,
-          stage: input.stage ?? null,
-          updatedAt: new Date(),
-        },
+        set:
+          storage === 'inline'
+            ? {
+                ...common,
+                storage,
+                body: bytes.toString('utf8'),
+                storageKey: null,
+                updatedAt: new Date(),
+              }
+            : { ...common, storage, body: null, updatedAt: new Date() },
       })
       .returning()
-    return toArtifact(row!)
+
+    if (storage === 'inline') {
+      // An artifact that used to be an object and is now inline leaves its bytes behind.
+      if (previous?.storageKey) await this.blobs?.delete(previous.storageKey).catch(() => undefined)
+      return toArtifact(row!)
+    }
+
+    // The key the blob store chose, not one computed here: whoever writes the object names it.
+    const key = await this.blobs!.put({
+      projectId: scope.projectId,
+      taskId: input.taskId,
+      artifactId: row!.id,
+      name: input.name,
+      contentType,
+      bytes,
+    })
+    const [pointed] = await this.db
+      .update(taskArtifacts)
+      .set({ storageKey: key })
+      .where(eq(taskArtifacts.id, row!.id))
+      .returning()
+
+    /**
+     * The previous object goes only once the new one is in place and referenced.
+     *
+     * The other order would leave a window where the row points at a key that has been
+     * deleted — an artifact that exists and cannot be read, which is the one failure this
+     * sequence is arranged to avoid.
+     */
+    if (previous?.storageKey && previous.storageKey !== key) {
+      await this.blobs!.delete(previous.storageKey).catch(() => undefined)
+    }
+    return toArtifact(pointed!)
+  }
+
+  async readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined> {
+    const row = await this.getTaskArtifact(id)
+    if (!row) return undefined
+    if (row.storage === 'inline') {
+      return row.body === undefined
+        ? undefined
+        : {
+            contentType: row.contentType,
+            bytes: Buffer.from(row.body, 'utf8'),
+            sha256: row.sha256,
+          }
+    }
+    if (!row.storageKey || !this.blobs) return undefined
+    const bytes = await this.blobs.get(row.storageKey)
+    // Absent rather than an error: the row is the source of truth for existence, so a missing
+    // object means the two have diverged, and the caller's 404 says more than a 500 would.
+    return bytes ? { contentType: row.contentType, bytes, sha256: row.sha256 } : undefined
   }
 
   async deleteTaskArtifact(id: string): Promise<boolean> {
     const deleted = await this.db
       .delete(taskArtifacts)
       .where(eq(taskArtifacts.id, id))
-      .returning({ id: taskArtifacts.id })
+      .returning({ id: taskArtifacts.id, storageKey: taskArtifacts.storageKey })
+    /**
+     * The object goes after the row, and a failure to remove it is not a failure to delete.
+     *
+     * An object with no row is a bucket that grows for ever with nothing referencing it, but
+     * the artifact is gone as far as anyone can tell — whereas failing the delete because a
+     * bucket call timed out would leave a row somebody has already been told is deleted.
+     */
+    const key = deleted[0]?.storageKey
+    if (key) await this.blobs?.delete(key).catch(() => undefined)
     return deleted.length > 0
   }
 
@@ -1186,6 +1292,10 @@ const ARTIFACT_SUMMARY_COLUMNS = {
   name: taskArtifacts.name,
   kind: taskArtifacts.kind,
   title: taskArtifacts.title,
+  contentType: taskArtifacts.contentType,
+  storage: taskArtifacts.storage,
+  storageKey: taskArtifacts.storageKey,
+  sha256: taskArtifacts.sha256,
   bytes: taskArtifacts.bytes,
   createdAt: taskArtifacts.createdAt,
   updatedAt: taskArtifacts.updatedAt,
@@ -1202,6 +1312,10 @@ function toArtifactSummary(row: {
   name: string
   kind: string
   title: string | null
+  contentType: string
+  storage: string
+  storageKey: string | null
+  sha256: string
   bytes: number
   createdAt: Date
   updatedAt: Date
@@ -1220,12 +1334,21 @@ function toArtifactSummary(row: {
     // outside the set cannot be in the database to begin with.
     kind: row.kind as ArtifactKind,
     ...(row.title ? { title: row.title } : {}),
+    contentType: row.contentType,
+    // Narrowed here, not asserted at the edge: both columns have CHECK constraints, so a value
+    // outside the set cannot be in the database to begin with.
+    storage: row.storage as ArtifactStorage,
+    ...(row.storageKey ? { storageKey: row.storageKey } : {}),
+    sha256: row.sha256,
     bytes: row.bytes,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
 }
 
-function toArtifact(row: Parameters<typeof toArtifactSummary>[0] & { body: string }): TaskArtifactRow {
-  return { ...toArtifactSummary(row), body: row.body }
+function toArtifact(
+  row: Parameters<typeof toArtifactSummary>[0] & { body: string | null },
+): TaskArtifactRow {
+  // Absent rather than null, matching every other optional field here.
+  return { ...toArtifactSummary(row), ...(row.body === null ? {} : { body: row.body }) }
 }

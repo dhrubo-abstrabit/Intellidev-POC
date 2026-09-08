@@ -130,6 +130,7 @@ export function buildApp(overrides: BuildAppOverrides = {}): BuiltApp {
     vpc: network.vpc,
     repository: registry.controlPlaneRepository,
     artifacts: artifacts.bucket,
+    artifactContent: artifacts.contentBucket,
     credentialKey: secrets.key,
     taskEvents: runtime.taskEvents,
     runTaskRole: runtime.taskRole,
