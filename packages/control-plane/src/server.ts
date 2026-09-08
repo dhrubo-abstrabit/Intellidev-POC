@@ -1168,6 +1168,178 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { state: run.engineState, seqHwm: run.seqHwm }
   })
 
+  /**
+   * Artifacts a run's stages write, and read back.
+   *
+   * On the run's own authenticated channel rather than through S3, for the same reason the
+   * state store is: a container holds one credential — its run token — and adding bucket
+   * permissions to a run would be a standing grant for the sake of kilobytes.
+   *
+   * Limits are enforced here rather than in the adapter, so there is one source of truth and
+   * the agent learns from the tool result instead of from a row rejected later by a CHECK
+   * constraint it cannot see.
+   */
+  const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
+  const ARTIFACT_BODY_LIMIT = 1_048_576
+  /**
+   * Per task, so one confused stage cannot fill a project with drafts.
+   *
+   * Generous enough that nobody hits it by working normally, and low enough that a loop stops
+   * being free. Overwriting a name is not a new artifact, so a stage that re-renders the same
+   * diagram never approaches it.
+   */
+  const ARTIFACT_COUNT_LIMIT = 50
+
+  /** Resolves the run's own artifact scope, or explains why it cannot. */
+  async function artifactScope(
+    authorization: string | undefined,
+    runId: string,
+  ): Promise<
+    | { ok: true; run: { id: string; taskId: string }; scope: ProjectScope }
+    | { ok: false; status: number; error: string }
+  > {
+    let authorised: string
+    try {
+      authorised = await broker.authenticate(String(authorization ?? ''))
+    } catch (error) {
+      return {
+        ok: false,
+        status: error instanceof CredentialRefused ? error.status : 500,
+        error: 'not this run',
+      }
+    }
+    if (authorised !== runId) return { ok: false, status: 403, error: 'not this run' }
+
+    const run = await store.getRun(runId)
+    if (!run) return { ok: false, status: 404, error: 'no such run' }
+    const task = await store.getTask(run.taskId)
+    // A run's task carries the tenancy. Taking it from the run rather than the request is what
+    // stops a container writing an artifact into another project.
+    if (!task) return { ok: false, status: 404, error: 'no such task' }
+    return {
+      ok: true,
+      run: { id: run.id, taskId: run.taskId },
+      scope: {
+        projectId: task.projectId,
+        clientSpaceId: task.clientSpaceId,
+        workspaceId: opts.scope.workspaceId,
+      },
+    }
+  }
+
+  app.put<{ Params: { id: string } }>(
+    '/internal/runs/:id/artifacts',
+    {
+      /**
+       * Room for a 1 MiB artifact inside a JSON envelope.
+       *
+       * FOUND BY WRITING ONE AT THE LIMIT. Fastify's default body limit is 1 MiB, so an
+       * artifact of exactly the size this endpoint advertises could never reach the handler:
+       * the envelope and JSON escaping push it over, and Fastify answered with its own
+       * "Request body is too large" — a limit nobody documented, reported in a way that told
+       * the agent nothing about how much to cut.
+       *
+       * Doubled rather than nudged, because escaping is what inflates it: a body of newlines
+       * and quotes roughly doubles on the wire. The real cap stays the check below, applied to
+       * the decoded string — so a body over 1 MiB gets an answer that names both numbers, and
+       * only something absurd meets this.
+       *
+       * Raised for this route alone. The default protects every other endpoint, none of which
+       * has any business accepting a megabyte.
+       */
+      bodyLimit: 2 * 1_048_576,
+    },
+    async (request, reply) => {
+      const resolved = await artifactScope(request.headers['authorization'], request.params.id)
+      if (!resolved.ok) return reply.code(resolved.status).send({ error: resolved.error })
+
+      const body = (request.body ?? {}) as {
+        name?: unknown
+        kind?: unknown
+        title?: unknown
+        body?: unknown
+        stage?: unknown
+      }
+
+      if (typeof body.name !== 'string' || !ARTIFACT_NAME.test(body.name)) {
+        return reply.code(400).send({
+          error:
+            'name must be 1–120 characters of letters, digits, dot, dash or underscore, ' +
+            'starting with a letter or digit — for example "architecture.mmd"',
+        })
+      }
+      if (body.kind !== 'html' && body.kind !== 'markdown' && body.kind !== 'mermaid') {
+        return reply.code(400).send({ error: 'kind must be one of html, markdown, mermaid' })
+      }
+      if (typeof body.body !== 'string' || body.body.trim().length === 0) {
+        return reply.code(400).send({ error: 'body must be a non-empty string' })
+      }
+      const bytes = Buffer.byteLength(body.body, 'utf8')
+      if (bytes > ARTIFACT_BODY_LIMIT) {
+        // 413 rather than 400: the request was well formed and simply too big, and the number is
+        // the useful part of the answer.
+        return reply.code(413).send({
+          error: `an artifact may be at most ${ARTIFACT_BODY_LIMIT} bytes; this one is ${bytes}`,
+        })
+      }
+      if (typeof body.title !== 'undefined' && typeof body.title !== 'string') {
+        return reply.code(400).send({ error: 'title must be a string when given' })
+      }
+
+      /**
+       * The count is checked against names that already exist, not against the total.
+       *
+       * Overwriting is not a new artifact, so a stage re-rendering its diagram must never be
+       * refused for being at the limit — which is exactly what a naive count would do.
+       */
+      const existing = await store.listTaskArtifacts(resolved.run.taskId)
+      if (!existing.some((a) => a.name === body.name) && existing.length >= ARTIFACT_COUNT_LIMIT) {
+        return reply.code(409).send({
+          error:
+            `this task already has ${ARTIFACT_COUNT_LIMIT} artifacts; ` +
+            'overwrite one by using its name, or delete one first',
+        })
+      }
+
+      const saved = await store.saveTaskArtifact(resolved.scope, {
+        taskId: resolved.run.taskId,
+        runId: resolved.run.id,
+        ...(typeof body.stage === 'string' && body.stage ? { stage: body.stage } : {}),
+        name: body.name,
+        kind: body.kind,
+        ...(body.title ? { title: body.title } : {}),
+        body: body.body,
+      })
+      // Without the body: the caller just sent it, and echoing a megabyte back is pure cost.
+      const { body: _echoed, ...summary } = saved
+      return reply.code(201).send({ artifact: summary })
+    },
+  )
+
+  app.get<{ Params: { id: string } }>('/internal/runs/:id/artifacts', async (request, reply) => {
+    const resolved = await artifactScope(request.headers['authorization'], request.params.id)
+    if (!resolved.ok) return reply.code(resolved.status).send({ error: resolved.error })
+    return { artifacts: await store.listTaskArtifacts(resolved.run.taskId) }
+  })
+
+  /**
+   * One artifact, with its body, by the name a stage refers to it by.
+   *
+   * This is the half that makes artifacts more than a viewer: the stage after `design` can read
+   * what `design` drew, which prose in an event log cannot give it.
+   */
+  app.get<{ Params: { id: string; name: string } }>(
+    '/internal/runs/:id/artifacts/:name',
+    async (request, reply) => {
+      const resolved = await artifactScope(request.headers['authorization'], request.params.id)
+      if (!resolved.ok) return reply.code(resolved.status).send({ error: resolved.error })
+
+      const found = await store.findTaskArtifact(resolved.run.taskId, request.params.name)
+      if (!found) return reply.code(404).send({ error: `no artifact named ${request.params.name}` })
+      return { artifact: found }
+    },
+  )
+
   app.put<{ Params: { id: string } }>('/internal/runs/:id/state', async (request, reply) => {
     let runId: string
     try {

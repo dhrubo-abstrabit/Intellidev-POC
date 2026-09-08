@@ -25,7 +25,7 @@ import { CodexDriver } from '../driver/codex/driver.js'
 import { OpencodeDriver } from '../driver/opencode/driver.js'
 import type { HarnessDriver } from '../driver/types.js'
 import { EventBus } from '../events/bus.js'
-import { buildBuiltinTools } from '../gateway/builtins.js'
+import { buildBuiltinTools, type ArtifactStore } from '../gateway/builtins.js'
 import { Gateway } from '../gateway/gateway.js'
 import { GatewayHttpServer } from '../gateway/http.js'
 import { ToolRegistry } from '../gateway/registry.js'
@@ -75,6 +75,14 @@ export interface RunOptions {
   /** Overridden in tests; real runs use the three CLIs. */
   drivers?: Partial<Record<HarnessId, HarnessDriver>>
   store?: RunStateStore
+  /**
+   * Where a stage's diagrams and notes go.
+   *
+   * Supplied by the caller, because it needs the run's bearer and the control plane's URL —
+   * the same two things the state store needs, and known in the same place. Absent for a local
+   * run, which is why the tools are only offered when it is present.
+   */
+  artifacts?: ArtifactStore
   /**
    * The first event sequence this container may use.
    *
@@ -203,6 +211,7 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       onStageOutput: (s, output) => outputs.set(s, output),
       onQuestion: (question) => questions.push(question),
       perCheckTimeoutSec: spec.limits.perStageTimeoutSec,
+      ...(opts.artifacts ? { artifacts: opts.artifacts } : {}),
     }),
     upstream,
     stage: () => stage ?? spec.stageTemplate.stages[0]!.id,

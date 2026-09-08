@@ -29,6 +29,29 @@ export interface BuiltinContext {
   /** Recorded so an unattended run's open questions are visible afterwards. */
   onQuestion: (question: string) => void
   perCheckTimeoutSec?: number
+  /**
+   * Where artifacts go, when there is a control plane to keep them.
+   *
+   * Optional: the engine is also driven in tests and locally with no plane behind it, and a
+   * tool that cannot work is better absent than present and failing — an agent that sees
+   * `write_artifact` will use it.
+   */
+  artifacts?: ArtifactStore
+}
+
+/** The three calls the artifact tools need, so tests can stand in for the client. */
+export interface ArtifactStore {
+  put(input: {
+    name: string
+    kind: 'html' | 'markdown' | 'mermaid'
+    body: string
+    title?: string
+    stage?: string
+  }): Promise<{ name: string; kind: string; bytes: number }>
+  list(): Promise<
+    Array<{ name: string; kind: string; title?: string; stage?: string; bytes: number }>
+  >
+  read(name: string): Promise<{ name: string; kind: string; body: string } | undefined>
 }
 
 export interface BuiltinTool extends Omit<RegisteredTool, 'origin'> {
@@ -232,6 +255,139 @@ export function buildBuiltinTools(ctx: BuiltinContext): BuiltinTool[] {
           'so proceed with your best judgement and state the assumption you made in your ' +
           'summary so a reviewer can check it.'
         )
+      },
+    },
+
+    /**
+     * Artifacts, only when there is somewhere to keep them.
+     *
+     * Spread rather than listed, because a tool an agent can see is a tool it will use: with no
+     * control plane behind it — a local run, a test — `write_artifact` would accept a diagram
+     * and lose it, which is worse than not offering it.
+     */
+    ...(ctx.artifacts ? artifactTools(ctx, ctx.artifacts) : []),
+  ]
+}
+
+/**
+ * Writing something down that is not code.
+ *
+ * The gap: a run produces an event log and a pull request, so a diagram the design stage worked
+ * out survives only as prose — and the stage after it cannot read prose. These give it a name.
+ */
+function artifactTools(ctx: BuiltinContext, artifacts: ArtifactStore): BuiltinTool[] {
+  return [
+    {
+      name: 'write_artifact',
+      description:
+        'Save a diagram, note or comparison under a name, for the later stages and for the ' +
+        'people reviewing this task. Use mermaid for diagrams, markdown for notes, and html ' +
+        'only when the layout itself matters. Writing the same name again replaces it.',
+      inputSchema: {
+        type: 'object',
+        required: ['name', 'kind', 'body'],
+        properties: {
+          name: {
+            type: 'string',
+            description:
+              'How later stages refer to it, like a filename — "architecture.mmd", ' +
+              '"theme-comparison.md". Letters, digits, dot, dash and underscore.',
+          },
+          kind: { type: 'string', enum: ['mermaid', 'markdown', 'html'] },
+          body: {
+            type: 'string',
+            description:
+              'For mermaid, the diagram source on its own — no markdown fence around it.',
+          },
+          title: { type: 'string', description: 'A human-readable heading. Optional.' },
+        },
+      },
+      stages: [],
+      handler: async (input) => {
+        const name = String(input['name'] ?? '').trim()
+        const kind = String(input['kind'] ?? '')
+        const body = typeof input['body'] === 'string' ? input['body'] : ''
+        if (!name) return 'error: write_artifact requires a name'
+        if (kind !== 'html' && kind !== 'markdown' && kind !== 'mermaid') {
+          return 'error: kind must be one of mermaid, markdown, html'
+        }
+        if (!body.trim()) return 'error: write_artifact requires a non-empty body'
+
+        try {
+          const saved = await artifacts.put({
+            name,
+            kind,
+            body,
+            ...(typeof input['title'] === 'string' && input['title']
+              ? { title: input['title'] }
+              : {}),
+            // Taken from the engine, not from the agent: which stage wrote something is a fact
+            // about the run, and asking would invite a wrong answer.
+            stage: ctx.stage(),
+          })
+          return `Saved ${saved.name} (${saved.kind}, ${saved.bytes} bytes). Later stages can read it with read_artifact.`
+        } catch (error) {
+          /**
+           * The control plane's own message, verbatim.
+           *
+           * It explains its limits in terms the agent can act on — "at most 1048576 bytes;
+           * this one is 2200000" — and a generic failure here would leave it retrying the
+           * same oversized body.
+           */
+          return `error: ${error instanceof Error ? error.message : String(error)}`
+        }
+      },
+    },
+
+    {
+      name: 'list_artifacts',
+      description:
+        'The artifacts already saved for this task, with their names and kinds. Read one ' +
+        'with read_artifact before assuming what it contains.',
+      inputSchema: { type: 'object', properties: {} },
+      stages: [],
+      handler: async () => {
+        try {
+          const listed = await artifacts.list()
+          if (listed.length === 0) {
+            return 'No artifacts yet for this task.'
+          }
+          // Without bodies: an agent deciding what to read does not need a megabyte of
+          // markdown to make that decision.
+          return JSON.stringify(listed, null, 2)
+        } catch (error) {
+          return `error: ${error instanceof Error ? error.message : String(error)}`
+        }
+      },
+    },
+
+    {
+      name: 'read_artifact',
+      description:
+        'Read an artifact saved earlier in this task — for example the diagram the design ' +
+        'stage produced. This is how a later stage builds on an earlier one.',
+      inputSchema: {
+        type: 'object',
+        required: ['name'],
+        properties: { name: { type: 'string' } },
+      },
+      stages: [],
+      handler: async (input) => {
+        const name = String(input['name'] ?? '').trim()
+        if (!name) return 'error: read_artifact requires a name'
+        try {
+          const found = await artifacts.read(name)
+          if (!found) {
+            // Naming what is there, so the next call is right rather than another guess.
+            const available = await artifacts.list().catch(() => [])
+            return available.length > 0
+              ? `error: no artifact named "${name}". Available: ${available.map((a) => a.name).join(', ')}`
+              : `error: no artifact named "${name}", and this task has none yet.`
+          }
+          return found.body
+        } catch (error) {
+          return `error: ${error instanceof Error ? error.message : String(error)}`
+        }
       },
     },
   ]

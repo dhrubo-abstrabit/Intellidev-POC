@@ -13,6 +13,7 @@ import {
 } from '../bootstrap/providers.js'
 import { ControlPlaneProvider } from '../credentials/control-plane.js'
 import { ControlPlaneStateStore } from '../stages/control-plane-state.js'
+import { ArtifactClient } from '../gateway/artifacts.js'
 import { FileStateStore } from '../stages/state.js'
 import { materialiseBundle } from '../bootstrap/bundle.js'
 import { WebSocketEventSink } from '../bootstrap/ws-sink.js'
@@ -200,10 +201,31 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
   }
   if (startSeq > 0) io.stderr(`resuming the event stream at seq ${startSeq}\n`)
 
+  /**
+   * Where a stage's diagrams and notes go.
+   *
+   * Same two prerequisites as the state store — the run's bearer and a control plane to talk
+   * to — so it is built here, beside it, rather than discovered halfway down the engine.
+   *
+   * Absent for a local run, and deliberately so: the artifact tools are only offered when
+   * there is somewhere to keep what they write, because an agent that can see `write_artifact`
+   * will use it, and accepting a diagram then losing it is worse than not offering.
+   */
+  const artifacts =
+    runToken && spec.controlPlaneUrl
+      ? new ArtifactClient({
+          baseUrl: spec.controlPlaneUrl,
+          runId: spec.runId,
+          runAuth: runToken,
+        })
+      : undefined
+  io.stderr(`artifacts → ${artifacts ? 'control plane' : 'not available (no control plane)'}\n`)
+
   const result = await runAdapter({
     spec,
     credentials,
     ...(stateStore ? { store: stateStore } : {}),
+    ...(artifacts ? { artifacts } : {}),
     ...(startSeq > 0 ? { startSeq } : {}),
     sink: multiSink(
       consoleSink({ ...(args.verbose ? { verbose: true } : {}) }),
