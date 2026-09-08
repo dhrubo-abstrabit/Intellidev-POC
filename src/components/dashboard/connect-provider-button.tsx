@@ -21,6 +21,9 @@ const NANGO_CONNECT_URL = process.env.NEXT_PUBLIC_NANGO_CONNECT_URL;
 
 interface ConnectProviderButtonProps {
   provider: string;
+  /** Disables the button and says why on hover. UI courtesy only — the
+   * connect action re-checks connection.manage server-side. */
+  disabledReason?: string;
   workspaceId: string;
   projectId: string;
   /** Passed down as a plain Server Action reference (not wrapped in a new
@@ -47,6 +50,7 @@ interface ConnectProviderButtonProps {
  */
 export function ConnectProviderButton({
   provider,
+  disabledReason,
   workspaceId,
   projectId,
   createConnectSession,
@@ -126,7 +130,13 @@ export function ConnectProviderButton({
   };
 
   return (
-    <Button size="sm" disabled={isPending} onClick={handleClick} data-testid={`connect-${provider}`}>
+    <Button
+      size="sm"
+      disabled={isPending || Boolean(disabledReason)}
+      title={disabledReason}
+      onClick={handleClick}
+      data-testid={`connect-${provider}`}
+    >
       {isPending ? (
         <>
           <Loader2Icon className="animate-spin" aria-hidden="true" />

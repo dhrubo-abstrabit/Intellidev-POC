@@ -23,6 +23,8 @@ interface ConfirmActionButtonProps {
   title: string;
   description: string;
   triggerVariant?: "default" | "outline" | "ghost";
+  /** Disables the trigger and explains why on hover. See AsyncButton. */
+  disabledReason?: string;
   size?: "xs" | "sm" | "default";
   "data-testid"?: string;
 }
@@ -40,6 +42,7 @@ export function ConfirmActionButton({
   title,
   description,
   triggerVariant = "outline",
+  disabledReason,
   size = "sm",
   ...rest
 }: ConfirmActionButtonProps) {
@@ -61,7 +64,17 @@ export function ConfirmActionButton({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant={triggerVariant} size={size} disabled={isPending} {...rest} />}>
+      <DialogTrigger
+        render={
+          <Button
+            variant={triggerVariant}
+            size={size}
+            disabled={isPending || Boolean(disabledReason)}
+            title={disabledReason}
+            {...rest}
+          />
+        }
+      >
         {isPending ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
         {triggerLabel}
       </DialogTrigger>

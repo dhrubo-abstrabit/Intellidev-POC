@@ -33,5 +33,11 @@ describe("loadPdfParse", () => {
     } finally {
       await parser.destroy();
     }
-  });
+  }, 30_000);
+  // Explicit 30s timeout, well above vitest's 5s default. Not a slow
+  // assertion — the work itself takes ~400ms warm. It is the one-off dynamic
+  // import of pdfjs-dist inside loadPdfParse(): on a cold filesystem cache
+  // (a fresh CI runner, or locally right after a build has evicted it) that
+  // import alone was measured at over 7s, so the default timeout made this
+  // test fail intermittently for reasons unrelated to what it verifies.
 });

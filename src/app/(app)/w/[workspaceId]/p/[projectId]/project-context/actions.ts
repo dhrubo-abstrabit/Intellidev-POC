@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
+import { requirePermission, projectScope } from "@/lib/authz";
 import { loadPdfParse } from "@/lib/pdf/load";
 import { createClient } from "@/lib/supabase/server";
 
@@ -11,17 +12,28 @@ export async function updateProjectContext(
   description: string,
 ): Promise<{ message: string }> {
   await requireUser();
+  await requirePermission("project.manage", projectScope(projectId));
 
-  // projects grants full update to any workspace member (no column
-  // restriction, unlike action_items) — user-scoped client is sufficient.
+  // User-scoped client: projects_update (project.manage) is the boundary. The
+  // comment this replaces said projects "grants full update to any workspace
+  // member", which stopped being true when that policy moved to a permission.
+  //
+  // The zero-row guard matters as much as the gate: RLS refuses an UPDATE by
+  // matching no rows and returning no error, so without it this reported
+  // "Project context saved" to someone whose write had been rejected.
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("projects")
     .update({ description: description.trim() || null })
     .eq("id", projectId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Could not save project context: ${error.message}`);
+  }
+  if (!row) {
+    throw new Error("Could not save project context. Only people who can manage this project may edit it.");
   }
 
   revalidatePath(`/w/${workspaceId}/p/${projectId}/project-context`);

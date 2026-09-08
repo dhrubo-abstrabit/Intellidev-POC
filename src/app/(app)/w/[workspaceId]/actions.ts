@@ -2,6 +2,11 @@
 
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+// Creating a project provisions a client space above it, so the gate is
+// space.create at the workspace — the same permission client_spaces_insert
+// asks for. Checked here too so the failure is a sentence rather than a
+// generic "could not create project".
+import { requirePermission, workspaceScope } from "@/lib/authz";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { createProjectSchema, slugify } from "@/lib/validation/workspace";
@@ -19,6 +24,7 @@ export async function createProject(
   formData: FormData,
 ): Promise<CreateProjectResult> {
   const user = await requireUser();
+  await requirePermission("space.create", workspaceScope(workspaceId));
 
   const parsed = createProjectSchema.safeParse({
     name: formData.get("name"),
