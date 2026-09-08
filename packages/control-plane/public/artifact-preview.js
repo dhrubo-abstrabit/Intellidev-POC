@@ -110,9 +110,18 @@ async function render() {
     return
   }
 
-  // `html`, which is served with `script-src 'none'` — so this branch is reached only when the
-  // parent has already decided nothing in it may run.
-  target.innerHTML = artifact.body
+  /**
+   * Everything else is already on the page.
+   *
+   * FOUND BY OPENING AN IMAGE. This used to fall through to `innerHTML = artifact.body` for any
+   * other kind — and an image's bytes are an object, not a body, so it wrote the string
+   * "undefined" over the `<img>` the parent had just placed. The pane showed the word
+   * `undefined` where the picture should have been.
+   *
+   * There was never anything for this branch to do: `html` and `image` are both inlined into
+   * the document by the parent before the frame loads. Only mermaid and markdown need turning
+   * into HTML, which is the whole reason this file is loaded at all.
+   */
 }
 
 void render()

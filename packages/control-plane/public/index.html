@@ -806,6 +806,7 @@
       </div>
       <div class="sheet-foot">
         <span class="hint" id="artifactSource" style="flex: 1"></span>
+        <button type="button" id="artifactDownload" class="secondary" hidden>Download</button>
         <button type="button" id="artifactRaw" class="secondary">View source</button>
         <button type="button" id="artifactDelete" class="secondary">Delete</button>
         <button type="button" id="closeArtifact" class="secondary">Close</button>
@@ -2405,6 +2406,8 @@
         mermaid: 'diagram',
         markdown: 'note',
         html: 'page',
+        image: 'image',
+        file: 'file',
       }
 
       function renderArtifactList(artifacts) {
@@ -2527,7 +2530,22 @@
       </style>
       </head>
       <body>
-      <div id="artifact">${artifact.kind === 'html' ? artifact.body : ''}</div>
+      <div id="artifact">${
+        artifact.kind === 'html'
+          ? artifact.body
+          : artifact.kind === 'image'
+            ? /**
+               * A data URI, built by the parent.
+               *
+               * The frame cannot fetch the bytes itself: its origin is opaque, so a request to
+               * the content endpoint would be cross-origin and would not carry the bearer —
+               * and putting a token in the URL is the thing this design avoids. So the parent
+               * fetches with its own credential and inlines the result, which `img-src data:`
+               * already allows.
+               */
+              `<img src="${artifact.dataUri}" alt="${escapeAttr(artifact.title || artifact.name)}">`
+            : ''
+      }</div>
       <script type="application/json" id="artifact-source">${source}<\/script>
       </body>
       </html>`
@@ -2538,6 +2556,32 @@
         if (!res.ok) return
         const { artifact } = await res.json()
         state.artifact = artifact
+
+        /**
+         * The bytes, for the kinds whose body is not in the row.
+         *
+         * An image and a file live as objects, so the row carries metadata only. Fetched here
+         * with the page's bearer — the frame has no credential of its own and must not be given
+         * one — and turned into a data URI the frame can show, or a blob the footer can offer.
+         */
+        if (artifact.storage !== 'inline') {
+          const bytes = await fetch(`/api/artifacts/${id}/content`)
+          if (!bytes.ok) {
+            $('artifactSource').textContent = 'could not load this artifact’s content'
+            return
+          }
+          const blob = await bytes.blob()
+          state.artifactBlob = blob
+          if (artifact.kind === 'image') {
+            artifact.dataUri = await new Promise((resolve) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result)
+              reader.readAsDataURL(blob)
+            })
+          }
+        } else {
+          state.artifactBlob = null
+        }
 
         $('artifactTitle').textContent = artifact.title || artifact.name
         $('artifactMeta').textContent =
@@ -2557,8 +2601,28 @@
          * Authorization header, and a token in a URL ends up in a proxy log. See
          * `artifactDocument`.
          */
+        /**
+         * A `file` is offered rather than rendered.
+         *
+         * The kind exists for the things there is no sensible preview of — an export, an
+         * archive — and pretending otherwise would be a pane of mojibake. The download comes
+         * from the parent, which already holds the bytes, so nothing in the frame needs a
+         * credential.
+         */
+        $('artifactDownload').hidden = !state.artifactBlob
+        $('artifactRaw').hidden = artifact.kind === 'image' || artifact.kind === 'file'
+
         $('artifactDialog').showModal()
-        $('artifactFrame').srcdoc = artifactDocument(artifact)
+        $('artifactFrame').srcdoc =
+          artifact.kind === 'file'
+            ? artifactDocument({
+                kind: 'markdown',
+                body:
+                  `**${artifact.name}** — ${artifact.contentType}, ` +
+                  `${Math.max(1, Math.round(artifact.bytes / 1024))} KB.\n\n` +
+                  'There is no preview for this kind. Use Download to open it.',
+              })
+            : artifactDocument(artifact)
       }
 
       $('closeArtifact').onclick = () => {
@@ -2584,6 +2648,24 @@
           body: '```\n' + artifact.body + '\n```',
         })
         $('artifactSource').textContent = 'showing the source'
+      }
+
+      $('artifactDownload').onclick = () => {
+        /**
+         * From a blob the parent already holds, not from the content URL.
+         *
+         * A link to the endpoint would open a request the browser makes without our bearer, so
+         * it would simply 401. The bytes are here already.
+         */
+        const blob = state.artifactBlob
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = state.artifact?.name ?? 'artifact'
+        link.click()
+        // Released on the next turn, once the click has been handled.
+        setTimeout(() => URL.revokeObjectURL(url), 0)
       }
 
       $('artifactDelete').onclick = async () => {
