@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApprovalRefused, decideRun, settle } from '../src/dispatch.js'
+import { canTransitionTask } from '@intellidev/shared'
 import { InMemoryStore } from '../src/store/memory.js'
 import { allowTestRepo, TEST_SCOPE, TEST_REPO_URL } from './fixtures.js'
 import type { Store } from '../src/store/types.js'
@@ -204,6 +205,77 @@ describe('stages pinned to one task', () => {
     // Back to following: absent means the same thing it meant before anyone edited.
     expect((await store.getTask(task.id))?.stages).toBeUndefined()
   })
+})
+
+describe('what the board says while a run waits', () => {
+  /**
+   * FOUND BY LOOKING AT THE TASK LIST. A task whose run had parked showed RUNNING, and nothing
+   * was running: the container is destroyed at the gate, which is how waiting costs nothing.
+   *
+   * Before that it showed FAILED, because `failed` was the else branch of "succeeded" — a
+   * warning at the one moment somebody is being invited to look at the work. `blocked` is the
+   * status that already means "waiting on something outside the system", and both steps —
+   * into it and back out — are legal transitions, so nothing had to be added.
+   */
+  it('moves the task to blocked when its run parks', async () => {
+    const store = new InMemoryStore()
+    const { runId, task } = await runningRun(store)
+
+    await settle(store, runId, task.id, 'parked', [], undefined, 'awaiting approval')
+
+    expect((await store.getRun(runId))?.status).toBe('parked')
+    expect((await store.getTask(task.id))?.status).toBe('blocked')
+  })
+
+  it('moves it out of blocked as soon as a decision is made', async () => {
+    // `dispatched`, not `running`: that is the legal step out of `blocked`, and it is honest —
+    // a container has been asked for and has not started yet.
+    const store = new InMemoryStore()
+    const { runId, task } = await runningRun(store)
+    await settle(store, runId, task.id, 'parked', [])
+    expect((await store.getTask(task.id))?.status).toBe('blocked')
+
+    await store.setTaskStatus(task.id, 'dispatched')
+
+    expect((await store.getTask(task.id))?.status).toBe('dispatched')
+  })
+
+  it('leaves a task that is still running alone', async () => {
+    /**
+     * A run that parked *before* parking started setting `blocked` has a task on `running`, and
+     * `running → dispatched` is not legal. Approving one of those must not log a refused
+     * transition on every attempt — `running` is already where the resumed container's own
+     * event would put it.
+     */
+    const store = new InMemoryStore()
+    const { task } = await runningRun(store)
+
+    expect((await store.getTask(task.id))?.status).toBe('running')
+    // The guard is `task.status === 'blocked'`, so this transition is never attempted.
+    expect(canTransitionTask('running', 'dispatched')).toBe(false)
+  })
+
+  /** A task with a run, both mid-flight. */
+  async function runningRun(store: Store) {
+    await allowTestRepo(store)
+    const task = await store.createTask(
+      {
+        title: 't',
+        description: 'd',
+        acceptanceCriteria: ['a'],
+        harness: 'claude-code',
+        repoUrl: TEST_REPO_URL,
+        baseBranch: 'main',
+        mcpServerIds: [],
+      },
+      TEST_SCOPE,
+    )
+    await store.setTaskStatus(task.id, 'dispatched')
+    await store.setTaskStatus(task.id, 'running')
+    const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+    await store.updateRun(run.id, { status: 'running' })
+    return { task, runId: run.id }
+  }
 })
 
 describe('a stopped container cannot decide a parked run', () => {

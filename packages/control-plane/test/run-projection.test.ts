@@ -149,11 +149,14 @@ describe('a run says how it ended, and that is what settles it', () => {
 
     expect((await store.getRun(run.id))?.status).toBe('parked')
     /**
-     * The task must not move. `failed` was the else branch of "succeeded", so a run waiting for
-     * a person showed FAILED in the task list — a warning at the one moment somebody is being
-     * invited to look.
+     * `blocked`, which is what it is: waiting on something outside the system.
+     *
+     * `failed` was the else branch of "succeeded", so a run waiting for a person showed FAILED —
+     * a warning at the one moment somebody is being invited to look. Leaving it `running` fixed
+     * that and replaced it with a milder untruth, since nothing is running and the container is
+     * gone.
      */
-    expect((await store.getTask(task.id))?.status).toBe('running')
+    expect((await store.getTask(task.id))?.status).toBe('blocked')
     // And no failure reason: a parked run carrying one is what made a working pipeline look
     // broken.
     expect((await store.getRun(run.id))?.failureReason).toBeUndefined()

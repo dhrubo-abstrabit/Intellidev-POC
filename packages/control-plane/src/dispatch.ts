@@ -361,6 +361,20 @@ export async function decideRun(args: {
     },
   })
 
+  /**
+   * The task leaves `blocked` the moment the decision is made.
+   *
+   * `dispatched` rather than `running`, because that is the legal step out of `blocked` and it
+   * is also honest: a container has been asked for and has not started yet. The resumed
+   * container's own `run.started` moves it to `running`, exactly as the first one's did.
+   *
+   * Only from `blocked`, though. A run that parked *before* parking started setting that status
+   * has a task still on `running`, and `running → dispatched` is not a legal step — attempting
+   * it would log a refused transition on every such approval for no benefit, since `running` is
+   * already where the resumed container's own event would put it.
+   */
+  if (task.status === 'blocked') await moveTask(store, run.taskId, 'dispatched')
+
   const servers = await resolveMcpServers(task, mcp)
   const seat = await accounts.material({ clientSpaceId: task.clientSpaceId }, task.harness)
   const stages = await resolveStages({
@@ -406,16 +420,14 @@ export async function decideRun(args: {
      * the idempotency token exists for.
      */
     launchKey: `${runId}-resume-${state.cursor ?? 0}`,
-  }).catch(
-    (error: unknown) => {
-      void store.updateRun(runId, {
-        status: 'failed',
-        endedAt: new Date().toISOString(),
-        failureReason: error instanceof Error ? error.message : String(error),
-      })
-      void moveTask(store, task.id, 'failed')
-    },
-  )
+  }).catch((error: unknown) => {
+    void store.updateRun(runId, {
+      status: 'failed',
+      endedAt: new Date().toISOString(),
+      failureReason: error instanceof Error ? error.message : String(error),
+    })
+    void moveTask(store, task.id, 'failed')
+  })
 
   return { runId, status: 'provisioning' }
 }
@@ -781,16 +793,7 @@ export async function projectRunEvent(
    * fuller version with a thinner one.
    */
   if (event.type === 'run.finished') {
-    await settle(
-      store,
-      runId,
-      taskId,
-      event.data.outcome,
-      [],
-      undefined,
-      event.data.reason,
-      tokens,
-    )
+    await settle(store, runId, taskId, event.data.outcome, [], undefined, event.data.reason, tokens)
   }
 }
 
@@ -1047,15 +1050,21 @@ export async function settle(
      */
     ...(failureReason && !succeeded && !parked ? { failureReason } : {}),
   })
-  /**
-   * A parked task stays running, because it is.
-   *
-   * `moveTask(…, 'failed')` was the else branch, so a run that stopped for approval marked its
-   * task failed — the task list showed FAILED next to a pipeline that was waiting for someone
-   * to look at it, which is the one moment a person needs to be invited in rather than warned
-   * off.
-   */
-  if (!parked) {
+  if (parked) {
+    /**
+     * A parked task is blocked, which is what it is.
+     *
+     * `failed` was the else branch here, so a run stopping for approval marked its task failed —
+     * a warning at the one moment a person is being invited in. Leaving it `running` fixed that
+     * and replaced it with a milder untruth: nothing is running, the container is gone, and the
+     * board said otherwise.
+     *
+     * `blocked` already exists and means exactly this — waiting on something outside the
+     * system. `running → blocked` and `blocked → dispatched` are both legal, so nothing has to
+     * be added and the way back out is the resume.
+     */
+    await moveTask(store, taskId, 'blocked')
+  } else {
     // A finished run puts the task in review, not done: a human decides whether the PR is
     // acceptable, which is the whole reason the PR is the boundary.
     await moveTask(store, taskId, succeeded ? 'in_review' : 'failed')
