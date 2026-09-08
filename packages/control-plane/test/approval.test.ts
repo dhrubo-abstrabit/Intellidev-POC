@@ -299,3 +299,124 @@ describe('a stopped container cannot decide a parked run', () => {
     expect(settledRun?.failureReason).toBe('task vanished')
   })
 })
+
+describe('an outcome belongs to a container, not to a run', () => {
+  /**
+   * FOUND BY APPROVING A PARKED RUN — three times, because each fix revealed the next layer.
+   *
+   * A run has more than one container: parking destroys the first and the approval starts a
+   * second under the same run id. Every settler speaks for exactly one of them — `execute`
+   * waits on the container it launched, the reconciler reads the ARN a run held — and none of
+   * them said which.
+   *
+   * So: the first container parks and exits 0, ECS takes a few seconds to report it, and the
+   * approval starts a second container in that window. The first container's poll then lands
+   * and settles the *run* succeeded, revoking the token the second was booting with. That
+   * container died on "could not load run state (401)" having done nothing, and the run showed
+   * `succeeded` with no pull request. Approving was the thing that broke it.
+   */
+  async function runOnItsSecondContainer(store: Store) {
+    await allowTestRepo(store)
+    const task = await store.createTask(
+      {
+        title: 't',
+        description: 'd',
+        acceptanceCriteria: ['a'],
+        harness: 'claude-code',
+        repoUrl: TEST_REPO_URL,
+        baseBranch: 'main',
+        mcpServerIds: [],
+      },
+      TEST_SCOPE,
+    )
+    await store.setTaskStatus(task.id, 'dispatched')
+    await store.setTaskStatus(task.id, 'running')
+    const run = await store.createRun(task.id, 'claude-code', 'feat/x')
+    // Where the run is a moment after an approval: provisioning, on a new container.
+    await store.updateRun(run.id, { status: 'provisioning', handle: 'arn:container-2' })
+    return { task, runId: run.id }
+  }
+
+  it('ignores a clean exit reported by a container the run has left', async () => {
+    const store = new InMemoryStore()
+    const { runId, task } = await runOnItsSecondContainer(store)
+    const revoked: string[] = []
+    const tokens = {
+      async revoke(id: string) {
+        revoked.push(id)
+      },
+    }
+
+    const settled = await settle(
+      store,
+      runId,
+      task.id,
+      'succeeded',
+      [],
+      undefined,
+      undefined,
+      tokens,
+      'arn:container-1',
+    )
+
+    expect(settled).toBe(false)
+    expect((await store.getRun(runId))?.status).toBe('provisioning')
+    // The part that actually killed the run: the token the *new* container needs.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(revoked).toEqual([])
+  })
+
+  it('ignores a failure reported by a container the run has left', async () => {
+    // Both directions. A stale failure would mark a healthy run failed just as wrongly.
+    const store = new InMemoryStore()
+    const { runId, task } = await runOnItsSecondContainer(store)
+
+    const settled = await settle(
+      store,
+      runId,
+      task.id,
+      'failed',
+      [],
+      undefined,
+      'adapter exited 1',
+      undefined,
+      'arn:container-1',
+    )
+
+    expect(settled).toBe(false)
+    expect((await store.getRun(runId))?.status).toBe('provisioning')
+  })
+
+  it('settles when the outcome is from the container the run is on', async () => {
+    // The ordinary case, which the guard must leave alone.
+    const store = new InMemoryStore()
+    const { runId, task } = await runOnItsSecondContainer(store)
+
+    const settled = await settle(
+      store,
+      runId,
+      task.id,
+      'succeeded',
+      [],
+      undefined,
+      undefined,
+      undefined,
+      'arn:container-2',
+    )
+
+    expect(settled).toBe(true)
+    expect((await store.getRun(runId))?.status).toBe('succeeded')
+  })
+
+  it('still settles a caller that names no container', async () => {
+    // A cancellation, or a dispatch that never launched one. Naming a container is how a
+    // settler says which one it speaks for, not a requirement to have had one.
+    const store = new InMemoryStore()
+    const { runId, task } = await runOnItsSecondContainer(store)
+
+    expect(await settle(store, runId, task.id, 'failed', [], undefined, 'never launched')).toBe(
+      true,
+    )
+    expect((await store.getRun(runId))?.status).toBe('failed')
+  })
+})

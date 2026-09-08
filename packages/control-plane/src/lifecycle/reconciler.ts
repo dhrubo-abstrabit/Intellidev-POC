@@ -159,6 +159,9 @@ export class LifecycleReconciler {
       undefined,
       reason,
       this.opts.tokens,
+      // The container this message is about. Found by that ARN, so it matches today — passed
+      // anyway, because a run whose handle has since moved on must not be settled from it.
+      arn,
     )
     if (settled) this.log(`reconciler: settled ${run.id} from the queue — ${reason}`)
     return true
@@ -230,6 +233,7 @@ export class LifecycleReconciler {
               undefined,
               reason,
               this.opts.tokens,
+              run.handle!,
             )
           ) {
             settledRuns.push({ runId: run.id, reason, via: 'sweep' })
@@ -261,6 +265,9 @@ export class LifecycleReconciler {
             undefined,
             reason,
             this.opts.tokens,
+            // The container observed, not the run. A sweep between a container exiting and the
+            // next one starting would otherwise settle the run from the old one's exit code.
+            run.handle!,
           )
         ) {
           settledRuns.push({ runId: run.id, reason, via: 'sweep' })

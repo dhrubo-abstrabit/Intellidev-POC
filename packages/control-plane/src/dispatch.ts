@@ -671,6 +671,9 @@ async function executeInDocker(args: {
         ? `exceeded ${spec.limits.wallClockSec}s wall clock`
         : (result.reason ?? undefined),
       config.tokens,
+      // This outcome is about the container that was launched here, and nothing else. By the
+      // time ECS reports its exit the run may already be on another one.
+      started.handle,
     )
   } finally {
     tail.stop()
@@ -949,8 +952,34 @@ export async function settle(
   failureReason?: string,
   /** Revoked on settle: a token that outlives its run is a standing credential. */
   tokens?: { revoke(runId: string): Promise<void> },
+  /**
+   * The container this outcome is about.
+   *
+   * FOUND BY APPROVING A PARKED RUN. A run gets more than one container, and every settler here
+   * speaks for exactly one of them: `execute` waits on the container it launched, and the
+   * reconciler reads the ARN a run held. None of them said so, so an outcome for a container
+   * that had already finished was applied to the run as a whole.
+   *
+   * Concretely: the first container parks and exits 0, ECS takes a few seconds to report it,
+   * and in that window the approval starts a second container. `execute`'s poll then lands and
+   * settles the run `succeeded` — revoking the token the new container was booting with, which
+   * died on "could not load run state (401)" having done nothing. The approval was the thing
+   * that broke the run.
+   *
+   * Optional so a caller with no container in mind — a cancellation, a dispatch that never
+   * launched — is unaffected.
+   */
+  expectHandle?: string,
 ): Promise<boolean> {
   const existing = await store.getRun(runId)
+  /**
+   * An outcome for a container the run has moved on from is stale, and says nothing about it.
+   *
+   * Compared against the run's *current* handle, which is cleared when a container is gone and
+   * replaced when another starts — so this covers both "the run parked" and "the run is on its
+   * next container".
+   */
+  if (expectHandle && existing && existing.handle !== expectHandle) return false
   // `isRunTerminal`, not `!== 'running'`. There are four non-terminal statuses — queued,
   // provisioning, running, parked — and a run killed while its task was still PROVISIONING
   // sits in `provisioning`. Guarding on `running` alone meant exactly the leak this
