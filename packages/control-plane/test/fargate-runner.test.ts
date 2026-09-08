@@ -59,6 +59,47 @@ describe('FargateRunner.start', () => {
     expect(ecs.sent[0]?.['clientToken']).toBe('run-run_dup')
   })
 
+  it('lets a resume launch a second container for the same run', async () => {
+    /**
+     * FOUND BY APPROVING A PARKED RUN. Parking destroys the container, so a resume is a second
+     * launch under the same run id — and with the token keyed on the run alone, ECS refused it:
+     * "The RunTask request could not be processed due to conflicts". The approval was accepted
+     * and the run then failed *because* it had been approved, which made the gate unusable at
+     * the one moment it matters.
+     */
+    const ecs = fakeEcs([{ tasks: [{ taskArn: 'arn:2' }] }, stopped(0)])
+    const runner = new FargateRunner({ config: CONFIG, client: ecs.client, pollIntervalMs: 1 })
+    const handle = await runner.start({
+      runId: 'run_dup',
+      launchKey: 'run_dup-resume-3',
+      image: 'i',
+      args: ['run'],
+    })
+    await handle.outcome
+    // Different from the dispatch above, which is the whole point.
+    expect(ecs.sent[0]?.['clientToken']).toBe('run-run_dup-resume-3')
+  })
+
+  it('still refuses a second container when the same launch is retried', async () => {
+    // The property the token exists for, which the fix must not trade away: a retried resume
+    // after a throttle reuses its key and so cannot start a second container.
+    const ecs = fakeEcs([{ tasks: [{ taskArn: 'arn:3' }] }, stopped(0)])
+    const runner = new FargateRunner({ config: CONFIG, client: ecs.client, pollIntervalMs: 1 })
+    for (const _ of [1, 2]) {
+      // Two calls, one key. AWS collapses them; here the assertion is that we send the same
+      // token both times rather than inventing a fresh one per attempt.
+      const handle = await runner
+        .start({ runId: 'r', launchKey: 'r-resume-1', image: 'i', args: ['run'] })
+        .catch(() => undefined)
+      await handle?.outcome.catch(() => undefined)
+    }
+    // Only the launches. `sent` also holds the DescribeTasks polls, which carry no token.
+    const tokens = ecs.sent.map((c) => c['clientToken']).filter(Boolean)
+    expect(tokens.length).toBeGreaterThan(1)
+    expect(new Set(tokens).size).toBe(1)
+    expect(tokens[0]).toBe('run-r-resume-1')
+  })
+
   it('assigns a public IP, which is what replaces the NAT gateway', async () => {
     const ecs = fakeEcs([{ tasks: [{ taskArn: 'arn:1' }] }, stopped(0)])
     const runner = new FargateRunner({ config: CONFIG, client: ecs.client, pollIntervalMs: 1 })

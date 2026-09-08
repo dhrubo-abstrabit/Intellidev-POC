@@ -12,6 +12,20 @@
  */
 export interface RunLaunchSpec {
   runId: string
+  /**
+   * Distinguishes one container launch of a run from another.
+   *
+   * A run gets more than one container: parking for approval destroys the first and the
+   * approval starts a second under the same run id. Fargate's idempotency token was keyed on
+   * the run id alone, so the resume collided with the original dispatch and ECS refused it —
+   * "The RunTask request could not be processed due to conflicts". Approving a run could never
+   * start anything.
+   *
+   * Optional and defaulted, so retry-safety is unchanged for callers that launch once: two
+   * calls with the same key still cannot produce two containers, which is the property the
+   * token exists for.
+   */
+  launchKey?: string
   /** Golden image reference, pinned by tag or digest. */
   image: string
   /** Argv for the adapter entrypoint. */

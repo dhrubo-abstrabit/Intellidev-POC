@@ -54,9 +54,16 @@ export class FargateRunner implements Runner {
       taskDefinition: config.taskDefinitionArn,
       launchType: 'FARGATE',
       count: 1,
-      // Idempotency keyed on runId, so a retried call after a throttle or a socket timeout
-      // cannot launch a second container for one run. AWS holds these for hours.
-      clientToken: `run-${spec.runId}`,
+      /**
+       * Idempotency keyed on the *launch*, not the run.
+       *
+       * A retried call after a throttle or a socket timeout still cannot launch a second
+       * container, which is what this is for — AWS holds these for hours. Keying it on the run
+       * id alone also made that true of a resume, which is a deliberate second container: the
+       * approval was accepted, RunTask was refused with "could not be processed due to
+       * conflicts", and the run failed on the strength of having been approved.
+       */
+      clientToken: `run-${spec.launchKey ?? spec.runId}`,
       // Tagged so a stray task can be attributed to a run without reading its logs, and so
       // E3 can attribute cost per project.
       tags: [

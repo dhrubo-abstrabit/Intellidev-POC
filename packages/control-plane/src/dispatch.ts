@@ -389,7 +389,24 @@ export async function decideRun(args: {
     stageTemplate: stages.template,
   })
 
-  void execute({ store, runId, taskId: task.id, spec, config, servers, seat }).catch(
+  void execute({
+    store,
+    runId,
+    taskId: task.id,
+    spec,
+    config,
+    servers,
+    seat,
+    /**
+     * Distinct per resume, and stable if the same resume is retried.
+     *
+     * The cursor is the honest discriminator: it has advanced past the gated stage, so it
+     * differs from the dispatch that parked and from any earlier resume — while a retry of
+     * *this* resume reuses it and is still refused a second container, which is the property
+     * the idempotency token exists for.
+     */
+    launchKey: `${runId}-resume-${state.cursor ?? 0}`,
+  }).catch(
     (error: unknown) => {
       void store.updateRun(runId, {
         status: 'failed',
@@ -411,6 +428,14 @@ async function execute(args: {
   config: DispatchConfig
   servers: readonly ResolvedMcpServer[]
   seat: Record<string, unknown> | undefined
+  /**
+   * Which launch of this run this is, for the runner's idempotency token.
+   *
+   * A resume is a second container under the same run id, so keying the token on the run alone
+   * made ECS refuse it as a duplicate. Supplied by the caller because only it knows: a dispatch
+   * is the first launch, and a resume is one per approval.
+   */
+  launchKey?: string
 }): Promise<void> {
   const { store, runId, taskId, spec, config, servers, seat } = args
   await store.updateRun(runId, { status: 'provisioning' })
@@ -460,7 +485,17 @@ async function execute(args: {
     return
   }
 
-  await executeInDocker({ store, runId, taskId, spec, config, sink, servers, seat })
+  await executeInDocker({
+    store,
+    runId,
+    taskId,
+    spec,
+    config,
+    sink,
+    servers,
+    seat,
+    ...(args.launchKey ? { launchKey: args.launchKey } : {}),
+  })
 }
 
 /**
@@ -480,6 +515,8 @@ async function executeInDocker(args: {
   sink: (event: AgentEvent) => void
   servers: readonly ResolvedMcpServer[]
   seat: Record<string, unknown> | undefined
+  /** Threaded through to the runner's idempotency token. See `execute`. */
+  launchKey?: string
 }): Promise<void> {
   const { store, runId, taskId, spec, config, sink, servers, seat } = args
 
@@ -529,6 +566,7 @@ async function executeInDocker(args: {
   try {
     const started = await runner.start({
       runId,
+      ...(args.launchKey ? { launchKey: args.launchKey } : {}),
       image: config.image,
       args: remote
         ? // No --bundle: the adapter materialises it from the spec and verifies the digest
