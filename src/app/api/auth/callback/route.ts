@@ -15,11 +15,24 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get("code");
   const next = searchParams.get("next") ?? "/";
 
+  // Behind a reverse proxy (AWS Amplify's SSR compute in front of `next
+  // start`), the Node process sees `Host: localhost:<port>` — the internal
+  // bind address — not the public domain, so `origin` above resolves to
+  // `http://localhost:3000` even in production. The real public host only
+  // survives in `x-forwarded-host`/`x-forwarded-proto`, set by the proxy.
+  // Vercel's proxy preserves Host correctly, so this only kicks in when
+  // those headers are actually present.
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto") ?? "https";
+  const redirectOrigin = forwardedHost
+    ? `${forwardedProto}://${forwardedHost}`
+    : origin;
+
   if (code) {
     const supabase = await createClient();
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
-      return NextResponse.redirect(`${origin}${next}`);
+      return NextResponse.redirect(`${redirectOrigin}${next}`);
     }
     // Swallowing this used to leave "auth_callback_failed" as the only
     // signal — logging the real cause (commonly a PKCE code-verifier
@@ -28,5 +41,5 @@ export async function GET(request: NextRequest) {
     console.error("Auth callback code exchange failed:", error.message);
   }
 
-  return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  return NextResponse.redirect(`${redirectOrigin}/login?error=auth_callback_failed`);
 }
