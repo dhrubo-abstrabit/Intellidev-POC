@@ -81,6 +81,7 @@ const noBuiltins: BuiltinActions = {
     head: 'feat/x',
     base: 'main',
   }),
+  preserveWork: async () => ({ sha: 'abc1234', branch: 'feat/x' }),
 }
 
 function outputs(map: Partial<Record<StageId, unknown>> = {}): StageOutputSink {
@@ -104,6 +105,7 @@ function harness(opts: {
   maxTotalStageRuns?: number
   defaultHarness?: HarnessId
   worktreeStatus?: (cwd: string) => Promise<string[]>
+  builtins?: BuiltinActions
 }) {
   const template = StageTemplate.parse(opts.template)
   const events: EventBodyInput[] = []
@@ -127,7 +129,7 @@ function harness(opts: {
     defaultHarness: opts.defaultHarness ?? 'claude-code',
     drivers: opts.drivers ?? { 'claude-code': new FakeDriver('claude-code') },
     commands: opts.commands ?? new ScriptedCommands([]),
-    builtins: noBuiltins,
+    builtins: opts.builtins ?? noBuiltins,
     outputs: opts.outputs ?? outputs(),
     store,
     bus,
@@ -976,5 +978,130 @@ describe('a stage that needs approval', () => {
       },
     })
     expect((await engine.run()).outcome).toBe('succeeded')
+  })
+})
+
+describe('the work survives the pause', () => {
+  /**
+   * FOUND BY APPROVING A PARKED RUN, END TO END, ON FARGATE.
+   *
+   * Parking destroys the container — that is how waiting for a person costs nothing — and the
+   * natural place for a gate is between `code` and `commit`: review the change before it is
+   * committed. So the thing at risk is precisely the work that is not committed yet.
+   *
+   * The run parked, the container was destroyed, and the container that resumed cloned the
+   * branch fresh and found nothing. `commit` committed nothing, `pr` reported "no files
+   * changed", and approving produced an empty run every single time. The mechanism was right
+   * and the outcome was worthless.
+   */
+  const template = {
+    name: 't',
+    stages: [
+      {
+        id: 'code',
+        kind: 'agent',
+        prompt: 'do it',
+        tools: { mode: 'full' },
+        requiresApproval: true,
+      },
+      { id: 'commit', kind: 'builtin', action: 'git.commit' },
+    ],
+  } as const
+
+  function spyBuiltins(over: Partial<BuiltinActions> = {}) {
+    const calls: string[] = []
+    const builtins: BuiltinActions = {
+      ...noBuiltins,
+      commit: async () => {
+        calls.push('commit')
+        return { sha: 'abc1234', filesChanged: 1 }
+      },
+      preserveWork: async () => {
+        calls.push('preserveWork')
+        return { sha: 'abc1234', branch: 'feat/x' }
+      },
+      ...over,
+    }
+    return { calls, builtins }
+  }
+
+  it('preserves the work before parking', async () => {
+    const { calls, builtins } = spyBuiltins()
+    const { engine } = harness({ template, builtins })
+
+    const { outcome } = await engine.run()
+
+    expect(outcome).toBe('parked')
+    // Before the pause, not after: after is a container that no longer exists.
+    expect(calls).toEqual(['preserveWork'])
+  })
+
+  it('parks anyway when there was nothing to preserve', async () => {
+    // A gate after a read-only stage. Nothing was written, so nothing needs pushing, and that
+    // must not be treated as a failure to preserve.
+    const { builtins } = spyBuiltins({ preserveWork: async () => null })
+    const { engine } = harness({ template, builtins })
+
+    const { outcome, state } = await engine.run()
+
+    expect(outcome).toBe('parked')
+    expect(state.cursor).toBe(1)
+  })
+
+  it('fails rather than parking when the work cannot be preserved', async () => {
+    /**
+     * Parking with the work lost is the worst outcome available: it asks somebody to approve
+     * something that no longer exists, and then resumes into nothing. The run fails either
+     * way — this way it says so before spending a person's attention.
+     */
+    const { builtins } = spyBuiltins({
+      preserveWork: async () => {
+        throw new Error('push rejected')
+      },
+    })
+    const { engine, events } = harness({ template, builtins })
+
+    const { outcome, state } = await engine.run()
+
+    expect(outcome).toBe('failed')
+    expect(state.failureReason).toMatch(/could not preserve the work of "code"/)
+    expect(state.failureReason).toMatch(/push rejected/)
+    expect(events.some((e) => e.type === 'approval.requested')).toBe(false)
+  })
+
+  it('leaves the cursor on the stage whose work was lost', async () => {
+    // Not past it. A retry has to re-run the stage whose output went missing, and an advanced
+    // cursor would skip straight to committing nothing.
+    const { builtins } = spyBuiltins({
+      preserveWork: async () => {
+        throw new Error('push rejected')
+      },
+    })
+    const { engine } = harness({ template, builtins })
+
+    const { state } = await engine.run()
+
+    expect(state.cursor).toBe(0)
+  })
+
+  it('does not preserve when the stage needs no approval', async () => {
+    // The ordinary path stays untouched: `commit` is a stage, and pushing behind its back
+    // would commit work the pipeline had not got to yet.
+    const { calls, builtins } = spyBuiltins()
+    const { engine } = harness({
+      template: {
+        name: 't',
+        stages: [
+          { id: 'code', kind: 'agent', prompt: 'do it', tools: { mode: 'full' } },
+          { id: 'commit', kind: 'builtin', action: 'git.commit' },
+        ],
+      },
+      builtins,
+    })
+
+    const { outcome } = await engine.run()
+
+    expect(outcome).toBe('succeeded')
+    expect(calls).toEqual(['commit'])
   })
 })

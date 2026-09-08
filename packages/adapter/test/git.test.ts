@@ -92,6 +92,60 @@ describe('RunRepo against real git', () => {
     expect(await readFile(join(worktree, 'README.md'), 'utf8')).toContain('# seed')
   })
 
+  it('checks out a branch that already exists rather than cutting a new one', async () => {
+    /**
+     * FOUND BY APPROVING A PARKED RUN. Parking destroys the container, so the work is committed
+     * and pushed before it stops — and the container that resumes has to arrive on *that*
+     * branch. `worktree add -b <branch> <baseSha>` cannot: the ref is already in the mirror,
+     * which fetches every ref, so it either refuses or cuts a fresh branch from the base and
+     * discards everything the approved stage produced.
+     *
+     * Exercised against real git because the whole question is what git does with a ref that
+     * exists, which no double can answer for it.
+     */
+    await repo.ensureMirror(origin, { partial: false })
+    const baseSha = await repo.resolve('main')
+    await repo.createWorktree('feat/resumed', baseSha)
+
+    // The first container's work: committed and pushed, then the container goes away.
+    await writeFile(join(worktree, 'NEW.md'), '# from the first container\n')
+    const commit = await repo.commitAll('work before the approval')
+    expect(commit).not.toBeNull()
+    await repo.push('feat/resumed')
+
+    // The second container: a fresh mirror and worktree, same branch name.
+    const second = new RunRepo(git, {
+      mirror: join(root, 'mirror2.git'),
+      worktree: join(root, 'work2'),
+    })
+    await second.ensureMirror(origin, { partial: false })
+    await second.createWorktree('feat/resumed', baseSha)
+
+    // The work is there, which is the entire point.
+    expect(await readFile(join(root, 'work2', 'NEW.md'), 'utf8')).toContain('first container')
+    expect(await second.resolve('feat/resumed')).toBe(commit!.sha)
+  })
+
+  it('still cuts a new branch when none exists', async () => {
+    // The ordinary first container. Reusing must not become "never create".
+    await repo.ensureMirror(origin, { partial: false })
+    const baseSha = await repo.resolve('main')
+
+    const created = await repo.createWorktree('feat/brand-new', baseSha)
+
+    expect(created.branch).toBe('feat/brand-new')
+    expect(await repo.resolve('feat/brand-new')).toBe(baseSha)
+  })
+
+  it('knows whether the mirror holds a branch', async () => {
+    // The check the resume turns on. A missing branch must read as absent rather than as a git
+    // failure, or every first container would look broken.
+    await repo.ensureMirror(origin, { partial: false })
+
+    expect(await repo.branchExists('main')).toBe(true)
+    expect(await repo.branchExists('feat/never-existed')).toBe(false)
+  })
+
   it('reports no changes on a fresh worktree', async () => {
     await repo.ensureMirror(origin, { partial: false })
     await repo.createWorktree('feat/x', await repo.resolve('main'))

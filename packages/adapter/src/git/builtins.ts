@@ -66,6 +66,31 @@ export class GitBuiltins implements BuiltinActions {
     return commit
   }
 
+  /**
+   * Commit and push, so the next container can pick up where this one stopped.
+   *
+   * Exactly the argument `commit` above makes for a template with no `pr` stage — the edits
+   * live in the worktree and die with the container — applied to the case nobody applied it
+   * to: a run that parks for approval. The container is destroyed while it waits.
+   *
+   * Pushed as well as committed, because a commit in a destroyed container's worktree is no
+   * more durable than the worktree. The push also puts the change where the person deciding
+   * can read it, which is what a review gate is for.
+   *
+   * Deliberately not a pull request: whether one is wanted is the `pr` stage's business, and a
+   * gate can sit anywhere.
+   */
+  async preserveWork(ctx: StageContext): Promise<{ sha: string; branch: string } | null> {
+    const commit = await this.commit(ctx)
+    // Nothing changed — a gate after a read-only stage, say. Nothing to preserve, and pushing
+    // an unchanged branch would be a wasted round trip.
+    if (!commit) return null
+
+    await this.opts.repo.push(this.opts.branch)
+    this.opts.bus.emit({ type: 'git.pushed', data: { branch: this.opts.branch, remote: 'origin' } })
+    return { sha: commit.sha, branch: this.opts.branch }
+  }
+
   async openPullRequest(
     ctx: StageContext,
   ): Promise<{ number: number; url: string; head: string; base: string }> {

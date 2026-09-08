@@ -110,11 +110,48 @@ export class RunRepo {
     baseSha: string,
   ): Promise<{ branch: string; baseSha: string }> {
     await mkdir(this.paths.worktree, { recursive: true })
+
+    /**
+     * An existing branch is checked out, not recreated from the base.
+     *
+     * FOUND BY APPROVING A PARKED RUN. Parking destroys the container, so the work a stage did
+     * is committed and pushed before it stops — and the container that resumes has to arrive on
+     * *that* branch. `-b … <baseSha>` would either refuse (the ref is already in the mirror,
+     * which fetches every ref) or, worse, quietly cut a fresh branch from the base and discard
+     * everything the approved stage produced.
+     *
+     * The same is true of a re-dispatch: a task run twice reuses its branch name, and the
+     * second run would previously have failed on the first one's leftover ref.
+     */
+    if (await this.branchExists(branch)) {
+      await this.git.run(
+        ['worktree', 'add', '--force', this.paths.worktree, branch],
+        this.paths.mirror,
+      )
+      // The base is reported as asked rather than recomputed: it is what the run started from,
+      // and the diff against it is still the right diff.
+      return { branch, baseSha }
+    }
+
     await this.git.run(
       ['worktree', 'add', '--force', '-b', branch, this.paths.worktree, baseSha],
       this.paths.mirror,
     )
     return { branch, baseSha }
+  }
+
+  /**
+   * Whether the mirror already holds this branch.
+   *
+   * `show-ref` rather than `rev-parse --verify`: it exits non-zero for a missing ref without
+   * writing to stderr, so a normal "no such branch" does not look like a git failure in the
+   * logs.
+   */
+  async branchExists(branch: string): Promise<boolean> {
+    const result = await this.git
+      .run(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], this.paths.mirror)
+      .catch(() => undefined)
+    return result?.exitCode === 0
   }
 
   /**

@@ -194,7 +194,7 @@ export class StageEngine {
     if (!stage.gate) {
       this.record(state, stage, visits, 'passed', startedAt, harness, null)
       this.exitStage(stage, visits, 'passed', startedAt)
-      return await this.advance(stage, state)
+      return await this.advance(stage, state, ctx)
     }
 
     const gate = await evaluateGate({
@@ -210,7 +210,7 @@ export class StageEngine {
     if (gate.passed) {
       this.record(state, stage, visits, 'passed', startedAt, harness, true, gate.detail)
       this.exitStage(stage, visits, 'passed', startedAt)
-      return await this.advance(stage, state)
+      return await this.advance(stage, state, ctx)
     }
 
     // A human gate is not a failure — it is a pause with a decision outstanding.
@@ -310,12 +310,49 @@ export class StageEngine {
    * non-terminal stop with a decision outstanding. The reconciler, `settle`, and the product
    * status projection all understand it, and adding a synonym would mean teaching them twice.
    */
-  private async advance(stage: StageDefinition, state: RunState): Promise<RunResult | null> {
+  private async advance(
+    stage: StageDefinition,
+    state: RunState,
+    /** The stage's own context, so `preserveWork` runs against the same worktree it did. */
+    ctx: StageContext,
+  ): Promise<RunResult | null> {
     state.cursor++
 
     if (!stage.requiresApproval || state.approvals?.[stage.id] === 'approved') {
       await this.deps.store.save(state)
       return null
+    }
+
+    /**
+     * The work is made durable *before* the run parks.
+     *
+     * Parking destroys the container, so anything left in the worktree is gone — and the
+     * natural place for a gate is between `code` and `commit`, where the work is precisely
+     * what has not been committed yet. Without this, approving a run produced an empty one:
+     * `commit` committed nothing and `pr` reported "no files changed".
+     *
+     * Failing rather than parking when this does not work. A run that parks having lost the
+     * work would ask somebody to approve something that no longer exists, and then resume into
+     * nothing — the failure is the same either way, but this one says so before wasting a
+     * person's attention on it.
+     */
+    if (this.deps.builtins.preserveWork) {
+      const cursorAtGate = state.cursor
+      try {
+        // No event of its own: `preserveWork` commits and pushes, and both already announce
+        // themselves as `git.committed` and `git.pushed`. A third event saying the same thing
+        // would be one more shape for the control plane to validate and keep in step.
+        await this.deps.builtins.preserveWork(ctx)
+      } catch (error) {
+        // The cursor is put back: the stage is over, but the run is not parked, and leaving it
+        // advanced would make a retry skip the stage whose output was lost.
+        state.cursor = cursorAtGate - 1
+        return this.fail(
+          state,
+          `could not preserve the work of "${stage.id}" before pausing for approval: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
 
     state.status = 'parked'

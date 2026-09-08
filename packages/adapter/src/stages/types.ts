@@ -27,6 +27,22 @@ export interface BuiltinActions {
   openPullRequest(
     ctx: StageContext,
   ): Promise<{ number: number; url: string; head?: string; base?: string }>
+  /**
+   * Make the work done so far survive this container.
+   *
+   * Called before a run parks for approval, because parking *destroys the container* — that is
+   * how waiting for a person costs nothing — and the worktree goes with it.
+   *
+   * FOUND BY APPROVING A PARKED RUN. The gate sat between `code` and `commit`, which is the
+   * natural place for it: review the change before it is committed. `code` edited a file, the
+   * run parked, the container was destroyed, and the container that resumed cloned the branch
+   * fresh and found nothing — `commit` committed nothing and `pr` reported "no files changed".
+   * Approving produced an empty run, every time.
+   *
+   * Null when there was nothing to preserve, which is the ordinary case for a gate after a
+   * read-only stage.
+   */
+  preserveWork(ctx: StageContext): Promise<{ sha: string; branch: string } | null>
 }
 
 /**
