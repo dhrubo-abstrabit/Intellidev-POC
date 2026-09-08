@@ -89,7 +89,7 @@ select is(
 );
 
 -- 7, 8, 9 & 10. The three schedules exist with the expected cadence.
---    sync_tick (20260904000100_sync_tick_every_minute.sql) replaced the old
+--    sync_tick (20260904000150_sync_tick_every_minute.sql) replaced the old
 --    once-a-day `daily_tick` so project_connectors.sync_interval_seconds is
 --    actually honored down to its 60-second CHECK floor — before that
 --    migration, any interval under ~24h was indistinguishable from 24h,

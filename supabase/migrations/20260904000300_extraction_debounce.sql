@@ -1,7 +1,7 @@
 -- Debounces the "late arrival" extraction trigger in
 -- src/services/sync/batch.ts (the alreadySettled && eventsWritten > 0 branch
 -- in src/services/sync/run-sync.ts) now that the tick runs every minute
--- instead of once a day (20260904000100_sync_tick_every_minute.sql). That
+-- instead of once a day (20260904000150_sync_tick_every_minute.sql). That
 -- branch exists for the occasional manual "Sync now" landing after the day's
 -- batch already fired — at a once-a-minute tick it becomes the ordinary case
 -- for any connector on a sub-daily schedule, and every call sweeps up to 30
