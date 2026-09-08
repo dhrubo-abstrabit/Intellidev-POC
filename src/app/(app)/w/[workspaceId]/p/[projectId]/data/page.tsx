@@ -150,6 +150,7 @@ export default async function ProjectDataPage({
         sizeBytes: row.size_bytes,
         status: row.status as AttachmentSummary["status"],
         skipReason: row.skip_reason,
+        pageNumber: null,
       });
       attachmentsByEvent.set(row.normalized_event_id, list);
     }

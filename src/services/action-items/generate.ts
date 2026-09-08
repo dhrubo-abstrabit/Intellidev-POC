@@ -3,19 +3,16 @@ import { createHash } from "node:crypto";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getLLMProvider } from "@/lib/llm/factory";
 import { estimateCostUsd } from "@/lib/llm/pricing";
+import { PROMPT_VERSION } from "@/lib/llm/prompt";
 import { uuidv7 } from "@/lib/db/uuid";
 import { projectDayKey, utcWindowForDay } from "@/lib/date/project-day";
-import type { ActionItemContext, DraftForConsolidation, LLMUsage, OpenActionItemSummary } from "@/lib/llm/types";
-import type { ActionItemDraft } from "@/lib/llm/schema";
+import { fetchRelatedContext } from "@/services/action-items/related-context";
+import type { ActionItemContext, DraftForConsolidation, LLMUsage, OpenActionItemSummary, RelatedContextChunk } from "@/lib/llm/types";
+import type { ActionItemConsolidation, ActionItemDraft } from "@/lib/llm/schema";
 import type { Database } from "@/lib/db/database.types";
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
 
-// Bumped to v3: NEW EVENTS now carries extracted attachment text (see
-// renderNewEvents in lib/llm/anthropic.ts) — prompt_version is how llm_runs
-// rows are compared over time, and this is a real change to what the model
-// is shown, not a formatting tweak.
-const PROMPT_VERSION = "action-items-v3";
 // Per-call cap on how many of the day's events go into a single extraction
 // call; a day with more than this across all connectors is split into
 // multiple chunks run in parallel (see generateActionItems) rather than
@@ -30,6 +27,15 @@ const EVENT_FETCH_PAGE_SIZE = 1000;
 // .in(normalized_event_id) lookup — well under max_rows and under whatever
 // URL-length ceiling Kong (Supabase's gateway) enforces for a large batch.
 const ATTACHMENT_FETCH_CHUNK_SIZE = 150;
+// Same trap as EVENT_FETCH_PAGE_SIZE above, applied to loadContext's
+// open-items query below — that query had no limit at all until now, which
+// meant PostgREST's max_rows was already silently truncating it past 1000
+// open tasks with nothing to notice. Made explicit (not paged, unlike
+// events) because a client space anywhere near this many open tasks is not
+// a case this pipeline has had to handle yet; a logged warning is enough for
+// that to surface rather than silently shrinking the OPEN ITEMS list the
+// model is shown.
+const MAX_OPEN_ITEMS_FOR_PROMPT = 1000;
 
 export interface GenerateActionItemsResult {
   status: "succeeded" | "skipped" | "failed";
@@ -109,7 +115,7 @@ async function fetchUnprocessedEventsForDay(
 
 type ExtractedAttachmentRow = Pick<
   Database["public"]["Tables"]["event_attachments"]["Row"],
-  "normalized_event_id" | "filename" | "mime_type" | "extracted_text" | "text_truncated"
+  "id" | "normalized_event_id" | "filename" | "mime_type" | "extracted_text" | "text_truncated"
 >;
 
 /** Batch-fetches every EXTRACTED attachment for a set of events, keyed by
@@ -129,7 +135,7 @@ async function fetchExtractedAttachments(
   for (const idChunk of chunkArray(eventIds, ATTACHMENT_FETCH_CHUNK_SIZE)) {
     const { data, error } = await service
       .from("event_attachments")
-      .select("normalized_event_id, filename, mime_type, extracted_text, text_truncated")
+      .select("id, normalized_event_id, filename, mime_type, extracted_text, text_truncated")
       .in("normalized_event_id", idChunk)
       .eq("status", "extracted");
     if (error) throw new Error(`event_attachments fetch failed: ${error.message}`);
@@ -174,7 +180,14 @@ async function loadContext(service: ServiceClient, ctx: ClientSpaceProjectContex
     .from("tasks")
     .select("id, title, kind, priority")
     .eq("client_space_id", clientSpaceId)
-    .in("status", ["pending", "in_progress"]);
+    .in("status", ["pending", "in_progress"])
+    .order("generated_at", { ascending: false })
+    .limit(MAX_OPEN_ITEMS_FOR_PROMPT);
+  if (openItems?.length === MAX_OPEN_ITEMS_FOR_PROMPT) {
+    console.warn(
+      `[llm] client space ${clientSpaceId}: open-items query hit its ${MAX_OPEN_ITEMS_FOR_PROMPT}-row limit — the oldest open tasks may be missing from this run's OPEN ITEMS list`,
+    );
+  }
 
   const { data: recentSummaries } = await service
     .from("daily_summaries")
@@ -190,27 +203,48 @@ async function loadContext(service: ServiceClient, ctx: ClientSpaceProjectContex
     priority: i.priority,
   }));
 
+  const events: ActionItemContext["newEvents"] = eventRows.map((e) => ({
+    id: e.id,
+    type: e.type,
+    actorDisplay: e.actor_display ?? e.actor,
+    title: e.title,
+    body: e.body,
+    occurredAt: e.occurred_at,
+    attachments: attachmentsByEvent.get(e.id)?.map((a) => ({
+      filename: a.filename,
+      mimeType: a.mime_type,
+      text: a.extracted_text ?? "",
+      truncated: a.text_truncated,
+    })),
+  }));
+
+  // Best-effort retrieval — must NEVER be able to fail extraction, same
+  // posture this codebase already applies to Google Chat sender resolution
+  // ("it must never be able to fail a sync"). A missing/empty result here
+  // just means the prompt has no RELATED CONTEXT section this run, not a
+  // failed run.
+  let relatedContext: RelatedContextChunk[] = [];
+  try {
+    relatedContext = await fetchRelatedContext(service, {
+      clientSpaceId,
+      projectId: project.id,
+      events,
+      excludeSourceIds: eventRows.map((e) => e.id),
+      excludeAttachmentIds: [...attachmentsByEvent.values()].flat().map((a) => a.id),
+    });
+  } catch (err) {
+    console.warn(`[llm] related-context retrieval failed for ${clientSpaceId}:`, err);
+  }
+
   return {
     base: {
       project: { id: project.id, name: project.name, description: project.description, timezone },
       openActionItems,
       recentSummaries: (recentSummaries ?? []).map((s) => ({ date: s.summary_date, summary: s.summary })),
+      relatedContext,
     },
     openActionItems,
-    events: eventRows.map((e) => ({
-      id: e.id,
-      type: e.type,
-      actorDisplay: e.actor_display ?? e.actor,
-      title: e.title,
-      body: e.body,
-      occurredAt: e.occurred_at,
-      attachments: attachmentsByEvent.get(e.id)?.map((a) => ({
-        filename: a.filename,
-        mimeType: a.mime_type,
-        text: a.extracted_text ?? "",
-        truncated: a.text_truncated,
-      })),
-    })),
+    events,
     eventIds: eventRows.map((e) => e.id),
   };
 }
@@ -224,6 +258,43 @@ interface ResolvedItem {
   confidence: number;
   ownerHint?: string;
   sourceEventIds: string[];
+}
+
+/**
+ * Resolves consolidateActionItems' output into per-group ResolvedItems —
+ * matching each group's echoed matchesOpenItemId against the REAL open
+ * items list (never trusting it blindly: an id the model invented, or one
+ * that isn't in openItemById, falls back to treating the group as new) and
+ * reusing the matched item's STORED title rather than the model's
+ * canonicalTitle, which is what keeps dedupe_hash correct on a merge.
+ *
+ * Pure — no I/O — so this is testable without a live service client or LLM
+ * call; exported for unit testing, mirroring related-context.ts's
+ * buildQueryTexts.
+ */
+export function resolveConsolidationGroups(
+  groups: ActionItemConsolidation["groups"],
+  draftByKey: Map<string, ActionItemDraft>,
+  openItemById: Map<string, OpenActionItemSummary>,
+): ResolvedItem[] {
+  return groups.map((group) => {
+    const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
+    const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
+    // Never trust the model's echoed id/title pairing blindly — an id it
+    // invented or that no longer matches falls back to treating the group
+    // as new, same as sourceEventIds is validated below.
+    const matchedOpen = group.matchesOpenItemId ? openItemById.get(group.matchesOpenItemId) : undefined;
+    return {
+      matchesOpenItemId: matchedOpen?.id ?? null,
+      title: matchedOpen ? matchedOpen.title : group.canonicalTitle,
+      kind: group.kind,
+      description: group.mergedDescription,
+      priority: group.priority,
+      confidence: group.confidence,
+      ownerHint: group.ownerHint,
+      sourceEventIds,
+    };
+  });
 }
 
 /**
@@ -276,6 +347,12 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
   }
   const { base, openActionItems, events, eventIds } = loaded;
 
+  // Resolved before the llm_runs insert, not inside the try block below —
+  // an env-validation failure (e.g. a missing OPENAI_API_KEY) now surfaces
+  // before an orphaned status:'running' row is ever created, and the
+  // actual model is known up front so it never has to be hardcoded.
+  const provider = getLLMProvider();
+
   const { data: run, error: runError } = await service
     .from("llm_runs")
     .insert({
@@ -289,8 +366,12 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       // which is what distinguishes it from reconcile/daily_summary/embed.
       kind: "extract",
       status: "running",
-      model: "claude-haiku-4-5",
-      provider: "anthropic",
+      // Read from the provider, never hardcoded — llm_runs used to name
+      // "claude-haiku-4-5"/"anthropic" unconditionally here regardless of
+      // which provider actually ran, which made the audit trail lie the
+      // moment a second provider existed.
+      model: provider.model,
+      provider: provider.id,
       prompt_version: PROMPT_VERSION,
       // llm_runs.input_event_ids is gone. It was an immutable uuid[] audit of
       // which events fed a run; task_sources now records the same linkage
@@ -307,12 +388,19 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
   }
 
   try {
-    const provider = getLLMProvider();
     const chunks = chunkArray(events, MAX_EVENTS_PER_CHUNK);
 
     const extractions = await Promise.all(
       chunks.map((chunk) => provider.generateActionItems({ ...base, newEvents: chunk })),
     );
+
+    // Sanity guard, not a functional check: every call in one run goes
+    // through the same provider instance, so a mismatch here would mean the
+    // provider itself returned a model string that disagrees with its own
+    // declared .model — worth knowing about, not worth failing the run over.
+    if (extractions.some((e) => e.model !== provider.model)) {
+      console.warn(`[llm] provider ${provider.id} returned a result whose model didn't match its declared model "${provider.model}"`);
+    }
 
     const allDrafts: ActionItemDraft[] = extractions.flatMap((e) => e.items);
     const usages: LLMUsage[] = extractions.map((e) => e.usage);
@@ -322,7 +410,17 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
     let consolidationPromptLog: unknown = null;
     let consolidationResponseLog: unknown = null;
 
-    if (allDrafts.length > 1) {
+    // Consolidation is where ALL semantic matching against already-open
+    // tasks lives — not just "dedupe several drafts against each other."
+    // A single draft still needs it whenever an open item exists it might be
+    // the same issue as; skipping the call whenever there was ≤1 draft was
+    // the actual bug behind two different-but-related messages on different
+    // days each becoming their own task (see this function's own doc
+    // comment). Only skip when there's genuinely nothing to compare against
+    // in either direction: 0-1 drafts AND no open items at all.
+    const needsConsolidation = allDrafts.length > 1 || (allDrafts.length === 1 && openActionItems.length > 0);
+
+    if (needsConsolidation) {
       const draftsForConsolidation: DraftForConsolidation[] = allDrafts.map((draft, i) => ({
         key: `d${i + 1}`,
         draft,
@@ -335,24 +433,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       const draftByKey = new Map(draftsForConsolidation.map((d) => [d.key, d.draft]));
       const openItemById = new Map(openActionItems.map((i) => [i.id, i]));
 
-      resolvedItems = consolidationResult.consolidation.groups.map((group) => {
-        const groupDrafts = group.draftKeys.map((k) => draftByKey.get(k)).filter((d): d is ActionItemDraft => Boolean(d));
-        const sourceEventIds = [...new Set(groupDrafts.flatMap((d) => d.sourceEventIds))];
-        // Never trust the model's echoed id/title pairing blindly — an id
-        // it invented or that no longer matches falls back to treating the
-        // group as new, same as sourceEventIds is validated below.
-        const matchedOpen = group.matchesOpenItemId ? openItemById.get(group.matchesOpenItemId) : undefined;
-        return {
-          matchesOpenItemId: matchedOpen?.id ?? null,
-          title: matchedOpen ? matchedOpen.title : group.canonicalTitle,
-          kind: group.kind,
-          description: group.mergedDescription,
-          priority: group.priority,
-          confidence: group.confidence,
-          ownerHint: group.ownerHint,
-          sourceEventIds,
-        };
-      });
+      resolvedItems = resolveConsolidationGroups(consolidationResult.consolidation.groups, draftByKey, openItemById);
     } else {
       resolvedItems = allDrafts.map((draft) => ({
         matchesOpenItemId: null,
@@ -412,6 +493,13 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             task_id: existingId,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
+            // The task already existed before this event linked to it —
+            // 'created_from' is reserved for the task's originating
+            // event(s) below. Set explicitly: PostgREST's bulk-insert path
+            // (json_populate_recordset) writes a literal NULL for a key
+            // missing from the JSON row rather than applying the column's
+            // default, which the not-null role column then rejects.
+            role: "mentioned" as const,
           })),
         );
         continue;
@@ -471,6 +559,9 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
             task_id: conflictRow.id,
             normalized_event_id: eventId,
             client_space_id: clientSpaceId,
+            // See the existingId merge branch above for why this is
+            // explicit rather than left for the column default.
+            role: "mentioned" as const,
           })),
         );
         continue;
@@ -483,6 +574,10 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
           task_id: newId,
           normalized_event_id: eventId,
           client_space_id: clientSpaceId,
+          // These are the event(s) that generated the task itself, as
+          // opposed to a later merge onto an already-open task (see the
+          // merge branches above, which use 'mentioned' instead).
+          role: "created_from" as const,
         })),
       );
     }
@@ -491,10 +586,17 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
       // (task_id, normalized_event_id) is the primary key — a
       // redelivered/rerun job citing the same event again is a harmless
       // no-op, not a duplicate-key error, as long as we ignore conflicts.
-      await service.from("task_sources").upsert(sourceLinks, {
+      const { error: sourceLinksError } = await service.from("task_sources").upsert(sourceLinks, {
         onConflict: "task_id,normalized_event_id",
         ignoreDuplicates: true,
       });
+      // Never thrown: losing provenance links must not fail extraction
+      // itself (the tasks above are already committed) — but a silently
+      // ignored error here is exactly how this went undetected before:
+      // tasks existed with zero task_sources rows and nothing surfaced it.
+      if (sourceLinksError) {
+        console.error(`[llm] task_sources upsert failed for client space ${clientSpaceId}, date ${date}:`, sourceLinksError);
+      }
     }
 
     // Mark every event this run looked at as processed, whether or not it
@@ -504,6 +606,16 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
     await service.from("normalized_events").update({ processed_at: nowIso }).in("id", eventIds);
 
     const usage = sumUsage(usages);
+    // Priced PER CALL, then summed as dollars — never on the aggregated
+    // usage above. gpt-5.6-luna re-rates a WHOLE request once its total
+    // input exceeds 272K tokens; summing several ordinary-sized chunks
+    // first and pricing the total once would wrongly bill everything at
+    // the long-context rate the moment the sum crosses that threshold, even
+    // though no single call actually reasoned over that much text. A null
+    // from any call (unknown model) propagates rather than being silently
+    // treated as $0 — see estimateCostUsd's own doc comment.
+    const perCallCosts = usages.map((u) => estimateCostUsd(u, provider.model));
+    const costUsd = perCallCosts.some((c) => c === null) ? null : perCallCosts.reduce((sum, c) => sum! + c!, 0);
     await service
       .from("llm_runs")
       .update({
@@ -521,7 +633,7 @@ export async function generateActionItems(clientSpaceId: string, date: string): 
         completion_tokens: usage.completionTokens,
         cache_read_tokens: usage.cacheReadTokens,
         cache_creation_tokens: usage.cacheCreationTokens,
-        cost_usd: estimateCostUsd(usage),
+        cost_usd: costUsd,
       })
       .eq("id", run.id);
 

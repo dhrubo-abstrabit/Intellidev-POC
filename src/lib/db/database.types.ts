@@ -1200,11 +1200,12 @@ export type Database = {
           embed_error: string | null
           embed_status: Database["public"]["Enums"]["embed_status"]
           embedded_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           fts: unknown
           id: string
           occurred_at: string
+          page_number: number | null
           project_id: string | null
           provider: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -1223,11 +1224,12 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
           occurred_at: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id: string
@@ -1246,11 +1248,12 @@ export type Database = {
           embed_error?: string | null
           embed_status?: Database["public"]["Enums"]["embed_status"]
           embedded_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           fts?: unknown
           id?: string
           occurred_at?: string
+          page_number?: number | null
           project_id?: string | null
           provider?: Database["public"]["Enums"]["connector_provider"] | null
           source_id?: string
@@ -1585,6 +1588,7 @@ export type Database = {
           chunk_id: string | null
           client_space_id: string
           linked_at: string
+          linked_by: string | null
           llm_run_id: string | null
           normalized_event_id: string
           relevance: number | null
@@ -1595,6 +1599,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id: string
           relevance?: number | null
@@ -1605,6 +1610,7 @@ export type Database = {
           chunk_id?: string | null
           client_space_id?: string
           linked_at?: string
+          linked_by?: string | null
           llm_run_id?: string | null
           normalized_event_id?: string
           relevance?: number | null
@@ -1624,6 +1630,13 @@ export type Database = {
             columns: ["client_space_id"]
             isOneToOne: false
             referencedRelation: "client_spaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "task_sources_linked_by_fkey"
+            columns: ["linked_by"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
           {
@@ -1659,7 +1672,7 @@ export type Database = {
           dedupe_hash: string
           description: string | null
           due_at: string | null
-          embedding: unknown
+          embedding: string | null
           embedding_model: string | null
           embedding_src_hash: string | null
           for_date: string
@@ -1687,7 +1700,7 @@ export type Database = {
           dedupe_hash: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date: string
@@ -1715,7 +1728,7 @@ export type Database = {
           dedupe_hash?: string
           description?: string | null
           due_at?: string | null
-          embedding?: unknown
+          embedding?: string | null
           embedding_model?: string | null
           embedding_src_hash?: string | null
           for_date?: string
@@ -2226,6 +2239,31 @@ export type Database = {
       }
       manageable_client_space_ids: { Args: never; Returns: string[] }
       manageable_project_ids: { Args: never; Returns: string[] }
+      match_search_chunks: {
+        Args: {
+          p_client_space_id: string
+          p_embedding: string
+          p_embedding_model?: string
+          p_exclude_source_ids?: string[]
+          p_limit?: number
+          p_max_distance?: number
+          p_one_per_source?: boolean
+          p_project_id?: string
+        }
+        Returns: {
+          chunk_id: string
+          citable_event_id: string
+          content: string
+          distance: number
+          occurred_at: string
+          page_number: number
+          provider: Database["public"]["Enums"]["connector_provider"]
+          source_id: string
+          source_kind: Database["public"]["Enums"]["chunk_source"]
+          source_url: string
+          title: string
+        }[]
+      }
       my_permissions: {
         Args: {
           p_scope_id: string
@@ -2289,6 +2327,7 @@ export type Database = {
         | "daily_summary"
         | "embed"
         | "backfill"
+        | "enrich_task"
       llm_run_status: "queued" | "running" | "succeeded" | "failed"
       project_role: "member" | "viewer"
       project_visibility: "space" | "restricted"
@@ -2466,6 +2505,7 @@ export const Constants = {
         "daily_summary",
         "embed",
         "backfill",
+        "enrich_task",
       ],
       llm_run_status: ["queued", "running", "succeeded", "failed"],
       project_role: ["member", "viewer"],

@@ -8,11 +8,23 @@ import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogT
 import { AttachmentRow } from "@/components/items/attachment-row";
 import { cn } from "@/lib/utils";
 import { formatItemDate } from "@/components/items/format";
-import type { ActionItemRow, AssigneeOption, SourceEvent } from "@/components/items/types";
+import type { ActionItemRow, AssigneeOption, SourceEvent, TaskSourceRole } from "@/components/items/types";
 import { StatusPicker } from "./status-picker";
 import { PriorityPicker } from "./priority-picker";
 import { AssigneePicker } from "./assignee-picker";
 import { SnoozeButton } from "./snooze-button";
+import { UnlinkSourceButton } from "./unlink-source-button";
+import { FindRelatedPanel } from "./find-related-panel";
+
+// role is a check-constrained text column, not a real Postgres enum (see
+// its own migration comment) — this is the display label table every
+// reader of it should share, mirroring STATUS_LABEL/PRIORITY_LABEL in
+// components/items/types.ts.
+const SOURCE_ROLE_LABEL: Record<TaskSourceRole, string> = {
+  created_from: "created from",
+  mentioned: "mentioned",
+  enriched: "enriched",
+};
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -127,8 +139,18 @@ export function TaskDetailSheet({
                   {sourceEvents.map((event) => (
                     <div key={event.id} className="rounded-md bg-muted/50 p-2 text-sm">
                       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <span>{event.actorDisplay ?? event.actor ?? "Unknown"}</span>
-                        <span>{formatItemDate(event.occurredAt)}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate">{event.actorDisplay ?? event.actor ?? "Unknown"}</span>
+                          <Badge variant="outline" className="shrink-0">
+                            {event.linkedBy ? `linked by ${event.linkedBy.name ?? "a teammate"}` : SOURCE_ROLE_LABEL[event.role]}
+                          </Badge>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {formatItemDate(event.occurredAt)}
+                          {event.linkedBy ? (
+                            <UnlinkSourceButton workspaceId={workspaceId} projectId={projectId} itemId={item.id} normalizedEventId={event.id} />
+                          ) : null}
+                        </span>
                       </div>
                       <p className="mt-1 whitespace-pre-wrap break-words text-foreground">
                         {event.body ?? event.title ?? "(no content)"}
@@ -141,6 +163,10 @@ export function TaskDetailSheet({
                 </div>
               </Field>
             ) : null}
+
+            <Field label="Enrich">
+              <FindRelatedPanel workspaceId={workspaceId} projectId={projectId} itemId={item.id} />
+            </Field>
 
             <DialogFooter className="sm:justify-between">
               <SnoozeButton workspaceId={workspaceId} projectId={projectId} itemId={item.id} />

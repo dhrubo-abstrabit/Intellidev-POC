@@ -15,6 +15,12 @@ import { ListView } from "./list-view";
 import { BoardView } from "./board-view";
 import { TaskDetailSheet } from "./task-detail-sheet";
 
+// The "Link" Server Action (actions.ts's linkTaskSource) calls the LLM
+// provider synchronously to rewrite the task's description — same rationale
+// as data/page.tsx's own maxDuration: a Server Action inherits the invoking
+// route segment's config, and this route has one that can call Anthropic.
+export const maxDuration = 60;
+
 export default async function TaskManagementPage({
   params,
   searchParams,
@@ -153,13 +159,43 @@ export default async function TaskManagementPage({
   if (openItem) {
     const { data: sourceRows } = await supabase
       .from("task_sources")
-      .select("normalized_events(id, type, actor, actor_display, title, body, occurred_at)")
+      .select(
+        "chunk_id, role, linked_by, linked_by_user:users!task_sources_linked_by_fkey(id, full_name), search_chunks(source_kind, source_id, page_number), normalized_events(id, type, actor, actor_display, title, body, occurred_at)",
+      )
       .eq("task_id", openItem.id);
+
+    // (task_id, normalized_event_id) is task_sources' primary key, so at
+    // most one row per event — this map is exact, not a best-effort
+    // last-write-wins the way pageNumberByAttachmentId below has to be.
+    const roleAndLinkerByEventId = new Map<string, { role: SourceEvent["role"]; linkedBy: SourceEvent["linkedBy"] }>();
+    for (const row of sourceRows ?? []) {
+      const eventId = row.normalized_events?.id;
+      if (!eventId) continue;
+      roleAndLinkerByEventId.set(eventId, {
+        role: row.role as SourceEvent["role"],
+        linkedBy: row.linked_by_user ? { id: row.linked_by_user.id, name: row.linked_by_user.full_name } : null,
+      });
+    }
 
     const eventRows = (sourceRows ?? [])
       .map((row) => row.normalized_events)
       .filter((event): event is NonNullable<typeof event> => event !== null);
     const eventIds = eventRows.map((event) => event.id);
+
+    // A task_sources row's chunk_id may resolve to a search_chunks row whose
+    // source_kind is 'event_attachment' — its source_id IS the attachment's
+    // own id (see search_chunks' own schema comment). That's the only case
+    // page_number ever means anything, so this map is keyed by attachment
+    // id, not event id: DOCX/Slack/plain-text chunks carry page_number null,
+    // and a chunk_id resolving to a 'normalized_event' chunk has no
+    // attachment to attach a page to at all.
+    const pageNumberByAttachmentId = new Map<string, number>();
+    for (const row of sourceRows ?? []) {
+      const chunk = row.search_chunks;
+      if (chunk?.source_kind === "event_attachment" && chunk.page_number != null) {
+        pageNumberByAttachmentId.set(chunk.source_id, chunk.page_number);
+      }
+    }
 
     // Same shape as the Project Data tab's per-day attachment fetch — a
     // handful of source events per item, so one unchunked .in() is fine.
@@ -178,22 +214,31 @@ export default async function TaskManagementPage({
           sizeBytes: row.size_bytes,
           status: row.status as AttachmentSummary["status"],
           skipReason: row.skip_reason,
+          pageNumber: pageNumberByAttachmentId.get(row.id) ?? null,
         });
         attachmentsByEvent.set(row.normalized_event_id, list);
       }
     }
 
     sourceEvents = eventRows
-      .map((event) => ({
-        id: event.id,
-        type: event.type,
-        actor: event.actor,
-        actorDisplay: event.actor_display,
-        title: event.title,
-        body: event.body,
-        occurredAt: event.occurred_at,
-        attachments: attachmentsByEvent.get(event.id) ?? [],
-      }))
+      .map((event) => {
+        // Always present in practice (every eventRow came from a
+        // task_sources row this same query joined) — the fallback is
+        // defensive, not an expected path.
+        const roleAndLinker = roleAndLinkerByEventId.get(event.id) ?? { role: "mentioned" as const, linkedBy: null };
+        return {
+          id: event.id,
+          type: event.type,
+          actor: event.actor,
+          actorDisplay: event.actor_display,
+          title: event.title,
+          body: event.body,
+          occurredAt: event.occurred_at,
+          role: roleAndLinker.role,
+          linkedBy: roleAndLinker.linkedBy,
+          attachments: attachmentsByEvent.get(event.id) ?? [],
+        };
+      })
       .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   }
 

@@ -1,21 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { loadPdfParse } from "./load";
-
-// Minimal hand-built single-page PDF containing the text "Hello PDF" — small
-// enough to inline rather than adding a binary-fixture convention this
-// codebase doesn't otherwise have. Verified locally to parse before relying
-// on it here.
-const MINIMAL_PDF = `%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj
-4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
-5 0 obj<</Length 44>>stream
-BT /F1 24 Tf 10 40 Td (Hello PDF) Tj ET
-endstream
-endobj
-trailer<</Size 6/Root 1 0 R>>
-%%EOF`;
+import { createPdfLoader, loadPdfParse, preparePdfGlobals } from "./load";
+import { MINIMAL_PDF } from "./__fixtures__/minimal-pdf";
 
 describe("loadPdfParse", () => {
   it("resolves pdf-parse and extracts real text through pdfjs's fake-worker fallback", async () => {
@@ -40,4 +25,19 @@ describe("loadPdfParse", () => {
   // (a fresh CI runner, or locally right after a build has evicted it) that
   // import alone was measured at over 7s, so the default timeout made this
   // test fail intermittently for reasons unrelated to what it verifies.
+});
+
+describe("createPdfLoader", () => {
+  it("extracts real text and per-page metadata through the public loader API", async () => {
+    // Exercises the same pdf-parse/pdfjs path as loadPdfParse above, but
+    // through createPdfLoader's per-page splitting — the shape every real
+    // caller (extractFileText, parseAttachmentText) actually consumes.
+    await preparePdfGlobals();
+    const loader = await createPdfLoader(new Blob([Buffer.from(MINIMAL_PDF, "latin1")]));
+    const docs = await loader.load();
+    expect(docs).toHaveLength(1);
+    expect(docs[0].pageContent).toContain("Hello PDF");
+    expect(docs[0].metadata.loc?.pageNumber).toBe(1);
+    expect(docs[0].metadata.pdf?.totalPages).toBe(1);
+  });
 });

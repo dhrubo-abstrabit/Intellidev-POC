@@ -191,6 +191,22 @@ const BACKFILL_DAY_CAP = 30;
 // BACKFILL_DAY_CAP distinct days within this many rows just means the rest
 // get picked up by a later sweep, not silently dropped forever.
 const BACKFILL_SCAN_ROW_LIMIT = 5000;
+// dispatch_jobs() (20260901001500_pgmq_pg_cron.sql) drains up to 25 queued
+// messages per 5-second tick via an async net.http_post per message, with no
+// wait between them — enqueueing every swept day's LLM job at once (as this
+// used to) could fire up to 25 concurrent generateActionItems runs for the
+// SAME client space, each reading its own stale openActionItems snapshot
+// before any sibling's writes land. That's exactly the condition that lets a
+// paraphrased duplicate slip past the semantic consolidation matcher (see
+// generate.ts) — the exact-hash unique index is the only thing that would
+// still catch it, and paraphrases defeat that by design. Staggering spreads
+// the dispatcher's per-tick batch back out so one day's job is very likely
+// dispatched (and often finished) before the next day's job even becomes
+// visible to read. Not a hard guarantee — a day with heavy event volume can
+// still run past this many seconds — but it turns "up to 25 concurrent" into
+// "at most a couple, briefly," which is the failure mode this exists to
+// remove.
+const DAY_JOB_STAGGER_SECONDS = 30;
 
 /**
  * Fires the LLM job for a client space's batchDate once its batch is
@@ -236,8 +252,8 @@ export async function triggerDailyExtraction(service: ServiceClient, clientSpace
   }
 
   await Promise.allSettled(
-    [...dates].map((d) =>
-      enqueueJob("/api/jobs/llm", { clientSpaceId, date: d }).catch((err) => {
+    [...dates].map((d, i) =>
+      enqueueJob("/api/jobs/llm", { clientSpaceId, date: d }, { delaySeconds: i * DAY_JOB_STAGGER_SECONDS }).catch((err) => {
         console.error(`[sync] failed to enqueue LLM job for client space ${clientSpaceId} (date ${d}):`, err);
       }),
     ),

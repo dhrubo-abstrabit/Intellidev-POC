@@ -17,9 +17,69 @@ const cronSchema = z.object({
   CRON_SECRET: z.string().min(1),
 });
 
-const llmSchema = z.object({
-  LLM_PROVIDER: z.enum(["anthropic"]).default("anthropic"),
-  ANTHROPIC_API_KEY: z.string().min(1),
+/** process.env carries "" for an unset var far more often than `undefined`
+ * (dotenv, Vercel, and .env.example's own `KEY=` lines all produce it), and
+ * `.optional()` alone only skips `undefined` — a present-but-blank value
+ * still fails `.min(1)`. Normalize blank to absent so a conditionally
+ * unused key doesn't fail validation just because it's declared empty in
+ * .env.local. */
+const optionalSecret = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+  z.string().min(1).optional(),
+);
+
+/**
+ * The CHAT provider config only — which model answers generateActionItems/
+ * consolidateActionItems, and its credential. Deliberately does NOT cover
+ * OPENAI_API_KEY's embeddings use (see embeddingSchema below): embeddings
+ * always call OpenAI regardless of which chat provider is selected, so
+ * bundling that requirement in here would make every llmEnv() caller —
+ * including the plain Anthropic chat path — demand an OpenAI key it has no
+ * use for.
+ *
+ * Plain object, not `.superRefine()`'d — serverSchema below composes this
+ * via `.shape`, and in zod v4 a `.superRefine()`'d schema has no `.shape`.
+ * The refinement itself is applied twice (once to the exported `llmSchema`,
+ * once as part of `serverSchema`) via the shared refineLlmKeys function
+ * below, so the two can't drift.
+ *
+ * Each API key is conditional on LLM_PROVIDER selecting that provider,
+ * enforced below rather than at the field level (Zod object fields can't
+ * see their siblings).
+ */
+const llmSchemaBase = z.object({
+  LLM_PROVIDER: z.enum(["anthropic", "openai"]).default("anthropic"),
+  ANTHROPIC_API_KEY: optionalSecret,
+  OPENAI_API_KEY: optionalSecret,
+});
+
+function refineLlmKeys(
+  env: { LLM_PROVIDER: "anthropic" | "openai"; ANTHROPIC_API_KEY?: string; OPENAI_API_KEY?: string },
+  ctx: z.RefinementCtx,
+) {
+  const required = env.LLM_PROVIDER === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  if (!env[required]) {
+    ctx.addIssue({ code: "custom", path: [required], message: `required when LLM_PROVIDER="${env.LLM_PROVIDER}"` });
+  }
+}
+
+const llmSchema = llmSchemaBase.superRefine(refineLlmKeys);
+
+/**
+ * OpenAI credential for EMBEDDINGS (services/search/embed.ts,
+ * text-embedding-3-small) — unconditionally required, independent of
+ * llmSchema/LLM_PROVIDER above. Retrieval-augmented extraction always
+ * embeds via OpenAI even when the chat/extraction provider is Anthropic,
+ * so this is its own concern, not folded into llmSchema (see that schema's
+ * own doc comment for why bundling them would be wrong).
+ *
+ * Same OPENAI_API_KEY env var as llmSchema's optional field above — OpenAI
+ * issues one key per project, so there's no reason to ask for two. The two
+ * schemas simply apply different requiredness rules to it for their own
+ * purposes; embeddingEnv() is what embed.ts actually calls.
+ */
+const embeddingSchema = z.object({
+  OPENAI_API_KEY: z.string().min(1),
 });
 
 /**
@@ -58,8 +118,10 @@ const sesSchema = z.object({
 
 const serverSchema = supabaseServerSchema
   .extend(cronSchema.shape)
-  .extend(llmSchema.shape)
-  .extend(nangoSchema.shape);
+  .extend(llmSchemaBase.shape)
+  .extend(embeddingSchema.shape)
+  .extend(nangoSchema.shape)
+  .superRefine(refineLlmKeys);
 
 const publicSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -118,6 +180,13 @@ export function cronEnv() {
 /** Just the LLM provider config. */
 export function llmEnv() {
   return parseWith(llmSchema, "LLM");
+}
+
+/** Just the OpenAI embeddings credential — always required, independent of
+ * which chat provider llmEnv() resolves. Call this from services/search/
+ * embed.ts, never llmEnv(), which has no opinion on embeddings at all. */
+export function embeddingEnv() {
+  return parseWith(embeddingSchema, "embedding");
 }
 
 /** Just the self-hosted Nango server URL + secret key. Never import from a

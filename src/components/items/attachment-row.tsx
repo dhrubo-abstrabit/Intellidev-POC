@@ -41,7 +41,10 @@ export function AttachmentRow({
   return (
     <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
       <PaperclipIcon className="size-3 shrink-0" aria-hidden="true" />
-      <span className="truncate">{label}</span>
+      <span className="truncate">
+        {label}
+        {attachment.pageNumber != null ? ` · page ${attachment.pageNumber}` : ""}
+      </span>
       {attachment.status === "extracted" ? (
         <button
           type="button"
