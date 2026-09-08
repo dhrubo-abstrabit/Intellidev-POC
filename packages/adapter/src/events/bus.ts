@@ -15,7 +15,7 @@ import {
  * keeps them until the control plane acknowledges receipt.
  */
 export class EventBus {
-  private seq = 0
+  private seq: number
   private stage: StageId | null = null
   private readonly buffer: AgentEvent[] = []
   private ackedThrough = -1
@@ -30,7 +30,18 @@ export class EventBus {
      * this log outlives the run.
      */
     private readonly redactor: Redactor = noopRedactor,
-  ) {}
+    /**
+     * Where to start numbering.
+     *
+     * Zero for a run's first container. A resumed run continues from what the control plane
+     * already holds, because `seq` is per *run* and a resume is a new container for the same
+     * one — starting at zero again produced events the store discarded as duplicates of the
+     * first container's, so everything after an approval was invisible.
+     */
+    startSeq = 0,
+  ) {
+    this.seq = startSeq
+  }
 
   /** Bootstrap events carry a null stage; everything after is stamped. */
   enterStage(stage: StageId | null): void {

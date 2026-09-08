@@ -42,6 +42,19 @@ export class ControlPlaneStateStore implements RunStateStore {
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
 
+  /**
+   * The highest event sequence this run has already recorded, from the last `load`.
+   *
+   * Read by the bootstrap to seed the event bus. A resume is a new container for the same run,
+   * and sequence numbers are per run — so a bus starting at zero produced events that the store
+   * dropped as duplicates of the first container's.
+   */
+  seqHwm(): number | undefined {
+    return this.lastSeqHwm
+  }
+
+  private lastSeqHwm: number | undefined
+
   async load(): Promise<RunState | null> {
     /**
      * A missing state is a first run, not an error.
@@ -57,7 +70,8 @@ export class ControlPlaneStateStore implements RunStateStore {
       // happened, which for a parked run means redoing work somebody already approved.
       throw new Error(`could not load run state (${res.status})`)
     }
-    const body = (await res.json()) as { state: RunState | null }
+    const body = (await res.json()) as { state: RunState | null; seqHwm?: number }
+    if (typeof body.seqHwm === 'number') this.lastSeqHwm = body.seqHwm
     return body.state ?? null
   }
 

@@ -144,8 +144,13 @@ export interface RunRow {
   records: StageRecord[]
   prUrl?: string
   failureReason?: string
-  /** Runtime handle: container name locally, task ARN on Fargate. */
-  handle?: string
+  /**
+   * Runtime handle: container name locally, task ARN on Fargate.
+   *
+   * The *current* container, so it is cleared when that container is gone. `null` in a patch
+   * clears it; `undefined` leaves it alone, like every other field here.
+   */
+  handle?: string | null
   /**
    * The stage engine's state, as the container last wrote it.
    *

@@ -75,6 +75,14 @@ export interface RunOptions {
   /** Overridden in tests; real runs use the three CLIs. */
   drivers?: Partial<Record<HarnessId, HarnessDriver>>
   store?: RunStateStore
+  /**
+   * The first event sequence this container may use.
+   *
+   * Supplied by the caller because only it has talked to the control plane yet: the engine's
+   * own state load happens later, and the bus has to be numbered before it emits
+   * `run.provisioning`. See `EventBus`.
+   */
+  startSeq?: number
   /** Wire everything up and stop before running a model. */
   dryRun?: boolean
   now?: () => Date
@@ -151,6 +159,9 @@ export async function runAdapter(opts: RunOptions): Promise<RunResultSummary> {
       boundSink?.(event)
     },
     opts.now,
+    // The redactor keeps its default; `startSeq` is what this call site needs to set.
+    undefined,
+    opts.startSeq ?? 0,
   )
   boundSink = opts.bindSink?.({
     replayFrom: (seq) => bus.replayFrom(seq),

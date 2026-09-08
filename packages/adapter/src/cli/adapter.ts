@@ -169,10 +169,42 @@ export async function runAdapterCli(argv: readonly string[], io: CliIo): Promise
       : undefined
   io.stderr(`run state → ${stateStore ? 'control plane' : 'local file'}\n`)
 
+  /**
+   * Where this container's events start.
+   *
+   * FOUND BY APPROVING A RUN. `seq` is unique per run, and a resume is a *second container* for
+   * the same run — so a bus starting at zero emitted sequences the control plane already held
+   * and every one of them was dropped as a duplicate. The live log stopped at the approval, the
+   * stages after the gate never appeared, and the pull request went unrecorded.
+   *
+   * Loaded here rather than inside the engine because the bus is numbered before it emits its
+   * first event, which is long before the engine reads its state. The extra GET is once per
+   * container, and a failure is not fatal: starting at zero is what a first container does, so
+   * a fresh run is unaffected and a resume degrades to the behaviour it had.
+   */
+  let startSeq = 0
+  if (stateStore) {
+    try {
+      await stateStore.load()
+      const hwm = stateStore.seqHwm()
+      // `seqHwm` is the last sequence stored, so the next free one is the one after it. -1 is
+      // the control plane's "nothing yet", which correctly yields 0.
+      if (typeof hwm === 'number' && hwm >= 0) startSeq = hwm + 1
+    } catch (error) {
+      io.stderr(
+        `could not read the event high-water mark (${
+          error instanceof Error ? error.message : String(error)
+        }); numbering from 0\n`,
+      )
+    }
+  }
+  if (startSeq > 0) io.stderr(`resuming the event stream at seq ${startSeq}\n`)
+
   const result = await runAdapter({
     spec,
     credentials,
     ...(stateStore ? { store: stateStore } : {}),
+    ...(startSeq > 0 ? { startSeq } : {}),
     sink: multiSink(
       consoleSink({ ...(args.verbose ? { verbose: true } : {}) }),
       fileSink(eventLog),

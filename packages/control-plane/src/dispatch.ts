@@ -987,6 +987,19 @@ export async function settle(
   const parked = outcome === 'parked'
   await store.updateRun(runId, {
     status: succeeded ? 'succeeded' : parked ? 'parked' : 'failed',
+    /**
+     * A parked run names no container, because its container is gone.
+     *
+     * FOUND BY APPROVING ONE. The reconciler's sweep describes whatever ARN a run holds and
+     * settles the run if that task has stopped — which, after an approval, was the *previous*
+     * container: stopped, exit 0. So the sweep marked the run succeeded and revoked its token
+     * while the resumed container was still booting, and that container then died on
+     * "could not load run state (401)" having done nothing.
+     *
+     * Cleared here rather than only on resume, because the window opens the moment the first
+     * container exits — not when somebody gets round to approving.
+     */
+    ...(parked ? { handle: null } : {}),
     endedAt: new Date().toISOString(),
     // Only when the caller actually has records: docker mode passes none, and overwriting
     // the stream-derived list with an empty array is how the stage list went blank.

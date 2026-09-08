@@ -1155,7 +1155,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     // 404 rather than a null body: a run's first load is always a miss, and the store treats
     // that as "start clean" — an empty 200 would be indistinguishable from a corrupted save.
     if (!run?.engineState) return reply.code(404).send({ error: 'no state yet' })
-    return { state: run.engineState }
+    /**
+     * `seqHwm` travels with the state, so a resumed run keeps numbering where it stopped.
+     *
+     * FOUND BY APPROVING A RUN. Event sequence is per run and enforced by a unique
+     * `(run_id, seq)`, but the adapter's bus starts at zero — and a resume is a *new container*
+     * for the same run. So every event from the second container collided with the first's and
+     * was dropped as a duplicate: the live log went silent at the approval, the stages after
+     * the gate never appeared, and `pr.opened` was discarded, leaving the run's pull request
+     * unrecorded.
+     */
+    return { state: run.engineState, seqHwm: run.seqHwm }
   })
 
   app.put<{ Params: { id: string } }>('/internal/runs/:id/state', async (request, reply) => {

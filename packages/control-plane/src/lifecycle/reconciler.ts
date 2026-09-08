@@ -173,6 +173,14 @@ export class LifecycleReconciler {
   async sweep(): Promise<SettledRun[]> {
     let candidates
     try {
+      /**
+       * Only runs that name a live container.
+       *
+       * A run with no handle is one whose container is gone and which has already said what
+       * happened — a parked run awaiting approval, or one between an approval and its next
+       * container. Describing a stale ARN there settled the run from the *previous*
+       * container's exit and revoked the token the new one was about to use.
+       */
       candidates = (await this.opts.store.listUnsettledRuns()).filter((run) =>
         run.handle?.startsWith('arn:aws:ecs:'),
       )
