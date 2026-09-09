@@ -71,6 +71,41 @@ describe('the deploy role', () => {
     expect(sub).not.toContain('*')
   })
 
+  it('trusts the immutable spelling of that repository too', () => {
+    /**
+     * FOUND BY A DEPLOY THAT COULD NOT ASSUME THE ROLE, THREE TIMES. GitHub can issue the
+     * subject with immutable identifiers — `repo:owner@321390717/name@1322693945:ref:...` — so
+     * a rename cannot hand trust to whoever claims the old name. An organisation with that
+     * setting on sends *only* that form, and this policy matched nothing: `Not authorized to
+     * perform sts:AssumeRoleWithWebIdentity`, which names neither the claim nor the condition
+     * that rejected it. Every value printable from the workflow's own context looked right;
+     * it took decoding the token to see.
+     *
+     * Both spellings are listed so the trust survives the setting being toggled either way.
+     */
+    const sub = trust('owner@321390717/name@1322693945').StringEquals?.[
+      'token.actions.githubusercontent.com:sub'
+    ] as unknown as string[]
+
+    expect(sub).toEqual([
+      'repo:owner@321390717/name@1322693945:ref:refs/heads/main',
+      'repo:owner/name:ref:refs/heads/main',
+    ])
+    // An IAM condition given a list matches any member, so every member has to be as tight as
+    // a single value would have been: exact, and pinned to one branch.
+    for (const value of sub) {
+      expect(value).not.toContain('*')
+      expect(value.endsWith(':ref:refs/heads/main')).toBe(true)
+    }
+  })
+
+  it('does not list a second subject when there are no identifiers to strip', () => {
+    // Otherwise the name-based case would carry a duplicate, which reads like two things are
+    // trusted when only one is.
+    const sub = trust().StringEquals?.['token.actions.githubusercontent.com:sub']
+    expect(Array.isArray(sub)).toBe(false)
+  })
+
   it('checks the audience too', () => {
     // Without it, a token minted for a different audience by another GitHub feature would be
     // accepted by this role.
@@ -85,6 +120,10 @@ describe('the deploy role', () => {
     expect(() => cicd('*')).toThrow(/owner\/name/)
     expect(() => cicd('ayush-abstrabit')).toThrow(/owner\/name/)
     expect(() => cicd('owner/name/extra')).toThrow(/owner\/name/)
+    // Allowing `@<id>` must not have opened the door to anything else.
+    expect(() => cicd('owner@*/name')).toThrow(/owner\/name/)
+    expect(() => cicd('owner@abc/name')).toThrow(/owner\/name/)
+    expect(() => cicd('owner@/name')).toThrow(/owner\/name/)
   })
 
   it("deploys by assuming CDK's roles rather than holding their power", () => {

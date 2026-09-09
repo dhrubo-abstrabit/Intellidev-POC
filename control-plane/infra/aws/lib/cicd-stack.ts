@@ -46,14 +46,41 @@ export class CicdStack extends Stack {
     super(scope, id, props)
     const env = props.environment
 
-    if (!/^[\w.-]+\/[\w.-]+$/.test(props.githubRepo)) {
+    /**
+     * `owner/name`, each half optionally carrying `@<id>`.
+     *
+     * FOUND BY A DEPLOY THAT COULD NOT ASSUME THE ROLE. GitHub can issue the subject claim with
+     * immutable identifiers — `repo:owner@321390717/name@1322693945:ref:...` — so that renaming
+     * a repository or an organisation cannot silently hand its trust to whoever takes the old
+     * name. An organisation with that on sends *only* that form, and a policy pinned to the
+     * name-based form matches nothing, failing as `Not authorized to perform
+     * sts:AssumeRoleWithWebIdentity`: an error that names neither the claim nor the condition.
+     */
+    if (!/^[\w.-]+(@\d+)?\/[\w.-]+(@\d+)?$/.test(props.githubRepo)) {
       // Thrown at synth rather than producing a trust policy nobody meant: `*` in the wrong
       // position here would trust every repository on GitHub.
       throw new Error(
-        `githubRepo must look like "owner/name", got "${props.githubRepo}". ` +
-          'Pass it with -c githubRepo=owner/name.',
+        `githubRepo must look like "owner/name", optionally "owner@id/name@id", got ` +
+          `"${props.githubRepo}". Pass it with -c githubRepo=owner/name.`,
       )
     }
+
+    /**
+     * Both spellings of the subject, so the trust survives that setting being toggled.
+     *
+     * An IAM `StringEquals` given a list matches any member, and both members are exact — no
+     * wildcard, both pinned to `main`. Listing the pair costs nothing and removes the failure
+     * above, which took a decoded token to diagnose because every value that can be printed
+     * from the workflow's own context looks correct.
+     */
+    const withoutIds = props.githubRepo.replace(/@\d+/g, '')
+    const subjects = [
+      `repo:${props.githubRepo}:ref:refs/heads/main`,
+      ...(withoutIds === props.githubRepo ? [] : [`repo:${withoutIds}:ref:refs/heads/main`]),
+    ]
+    // One value stays a string rather than a list of one. They mean the same thing to IAM, and
+    // a list reads as though more than one thing is trusted.
+    const subject = subjects.length === 1 ? subjects[0]! : subjects
 
     /**
      * GitHub's OIDC provider, created here unless one already exists.
@@ -97,7 +124,7 @@ export class CicdStack extends Stack {
       assumedBy: new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-          'token.actions.githubusercontent.com:sub': `repo:${props.githubRepo}:ref:refs/heads/main`,
+          'token.actions.githubusercontent.com:sub': subject,
         },
       }),
       description: `Deploys ${env.name} from GitHub Actions in ${props.githubRepo}`,
