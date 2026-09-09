@@ -180,7 +180,7 @@ describe('the deploy role', () => {
  * The search stops at the repository root rather than walking to `/`, so it can never reach up
  * and grade an unrelated project's workflow.
  */
-function findDeployWorkflow(): { body: string; root: string } | undefined {
+function findDeployWorkflow(): { body: string; root: string; name: string } | undefined {
   const names = ['deploy.yml', 'control-plane-deploy.yml']
   const tried: string[] = []
   let sawWorkflowsDir = false
@@ -193,7 +193,7 @@ function findDeployWorkflow(): { body: string; root: string } | undefined {
       tried.push(candidate)
       // `root` is what an action sees as the repository root, which is what the paths inside
       // the workflow are resolved against.
-      if (existsSync(candidate)) return { body: readFileSync(candidate, 'utf8'), root: dir }
+      if (existsSync(candidate)) return { body: readFileSync(candidate, 'utf8'), root: dir, name }
     }
     // `.git` marks the outermost directory belonging to this checkout.
     if (existsSync(join(dir, '.git'))) break
@@ -211,18 +211,25 @@ ${tried.join('\n')}`)
 const deployWorkflow = findDeployWorkflow()
 
 /**
- * The workflows this project owns, by either of the names each one goes by.
+ * The workflows this project owns — the deploy workflow that was found, and the check workflow
+ * named the same way.
  *
- * Only these: the app repository's `.github/workflows` may hold workflows belonging to the
- * frontend, and they are none of this file's business.
+ * Derived from that name rather than from a list of candidates, because the app repository's
+ * `.github/workflows` belongs to the frontend too. A frontend `ci.yml` added there later is
+ * none of this file's business, and demanding control-plane path filters of it would be a
+ * failure about nothing.
  */
-function ourWorkflows(root: string): Array<{ name: string; body: string }> {
-  const found: Array<{ name: string; body: string }> = []
-  for (const name of ['ci.yml', 'control-plane-ci.yml', 'deploy.yml', 'control-plane-deploy.yml']) {
-    const path = join(root, '.github', 'workflows', name)
-    if (existsSync(path)) found.push({ name, body: readFileSync(path, 'utf8') })
+function ourWorkflows(found: {
+  root: string
+  name: string
+}): Array<{ name: string; body: string }> {
+  const names = [found.name, found.name.replace(/deploy\.yml$/, 'ci.yml')]
+  const out: Array<{ name: string; body: string }> = []
+  for (const name of new Set(names)) {
+    const path = join(found.root, '.github', 'workflows', name)
+    if (existsSync(path)) out.push({ name, body: readFileSync(path, 'utf8') })
   }
-  return found
+  return out
 }
 
 /** Every entry under every `paths:` key, which is what decides whether a workflow runs at all. */
@@ -398,7 +405,7 @@ describe.skipIf(deployWorkflow === undefined)('the deploy workflow', () => {
  * be spelled correctly and still match the wrong things.
  */
 describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane deploy', () => {
-  const root = deployWorkflow?.root ?? ''
+  const located = deployWorkflow ?? { root: '', name: '' }
 
   // A frontend commit: the app's source, its dependencies, its build spec, its migrations, its
   // documents. Amplify's business, none of it ours.
@@ -427,7 +434,7 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
   ]
 
   it('runs on nothing a frontend commit touches', () => {
-    const workflows = ourWorkflows(root)
+    const workflows = ourWorkflows(located)
     expect(workflows.length).toBeGreaterThan(0)
     for (const { name, body } of workflows) {
       const filters = pathFilters(body)
@@ -444,7 +451,7 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
   it('runs on everything a control-plane commit touches', () => {
     // The other half, and the more dangerous one to get wrong: a filter that excludes something
     // the control plane is built from means a change that silently never deploys.
-    for (const { name, body } of ourWorkflows(root)) {
+    for (const { name, body } of ourWorkflows(located)) {
       const filters = pathFilters(body)
       for (const file of CONTROL_PLANE) {
         expect(
@@ -462,7 +469,7 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
      * `needs.<job>` that is not a dependency evaluates to null, so the comparison was always
      * true. A guard that cannot fail is not a guard.
      */
-    for (const { name, body } of ourWorkflows(root)) {
+    for (const { name, body } of ourWorkflows(located)) {
       for (const job of jobDependencies(body)) {
         for (const read of job.read) {
           expect(
