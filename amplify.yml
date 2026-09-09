@@ -10,7 +10,7 @@ frontend:
         # Writing them to .env.production here is what makes Next's own
         # env loading pick them up server-side after deploy — every var this
         # app reads via src/lib/env.ts must be listed below.
-        - env | grep -e NEXT_PUBLIC_ -e SUPABASE_SERVICE_ROLE_KEY -e CRON_SECRET -e LLM_PROVIDER -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e NANGO_SERVER_URL -e NANGO_SECRET_KEY -e GOOGLE_OAUTH >> .env.production
+        - env | grep -e NEXT_PUBLIC_ -e SUPABASE_SERVICE_ROLE_KEY -e CRON_SECRET -e LLM_PROVIDER -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e NANGO_SERVER_URL -e NANGO_SECRET_KEY -e SES_ -e GOOGLE_OAUTH >> .env.production
     build:
       commands:
         - npm run build
