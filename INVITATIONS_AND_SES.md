@@ -142,9 +142,9 @@ Defined in `src/lib/env.ts` as `sesSchema`, read via `sesEnv()`:
 
 | Env var | Notes |
 |---|---|
-| `AWS_REGION` | |
-| `AWS_ACCESS_KEY_ID` | |
-| `AWS_SECRET_ACCESS_KEY` | Shown by AWS once; Vercel env vars are write-only after set — record it when generated |
+| `SES_REGION` | Not `AWS_REGION` — that name is reserved on AWS Amplify Hosting (Lambda-based SSR compute injects its own execution-role value there and rejects app overrides) |
+| `SES_ACCESS_KEY_ID` | Not `AWS_ACCESS_KEY_ID`, same reason |
+| `SES_SECRET_ACCESS_KEY` | Not `AWS_SECRET_ACCESS_KEY`, same reason. Shown by AWS once; Vercel/Amplify env vars are write-only after set — record it when generated |
 | `SES_FROM_ADDRESS` | Must be a verified SES identity |
 
 SES is **deliberately not part of `serverSchema`** — a deployment without SES

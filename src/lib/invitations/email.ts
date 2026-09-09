@@ -79,10 +79,10 @@ export async function sendInviteEmail(mail: InviteMail): Promise<InviteMailResul
 
   try {
     const client = new SESv2Client({
-      region: env.AWS_REGION,
+      region: env.SES_REGION,
       credentials: {
-        accessKeyId: env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        accessKeyId: env.SES_ACCESS_KEY_ID,
+        secretAccessKey: env.SES_SECRET_ACCESS_KEY,
       },
     });
 
