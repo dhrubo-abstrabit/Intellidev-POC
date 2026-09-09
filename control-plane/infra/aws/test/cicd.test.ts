@@ -419,17 +419,25 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
     'eslint.config.mjs',
     'tsconfig.json',
     'public/logo.svg',
-    'supabase/migrations/0001_product.sql',
+    'supabase/migrations/20260904000300_extraction_debounce.sql',
     'docs/frontend/Plan.md',
   ]
 
-  // A control-plane commit: the subtree, the runner's migrations, and the workflows themselves.
+  /**
+   * A control-plane commit: the subtree, the runner's migrations, and the workflows themselves.
+   *
+   * The migrations are the interesting case since the histories were merged. Both halves' now
+   * sit in `supabase/migrations/`, so the filter tells them apart by the `_runner_` in the
+   * name — which means the product migration in the list above and the runner migration in
+   * this one live in the same directory and must still land on opposite sides.
+   */
   const CONTROL_PLANE = [
     'control-plane/packages/adapter/src/stages/shell.ts',
     'control-plane/packages/control-plane/src/server.ts',
     'control-plane/infra/docker/Dockerfile',
     'control-plane/infra/aws/lib/runtime-stack.ts',
-    'db/migrations/0008_something.sql',
+    'supabase/migrations/20260906000000_runner_something.sql',
+    'supabase/verify/contract.sql',
     '.github/workflows/control-plane-deploy.yml',
   ]
 

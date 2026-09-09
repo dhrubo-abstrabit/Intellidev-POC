@@ -11,7 +11,11 @@ on:
       # — minutes of AWS work, and a new task definition revision, for a change that touched no
       # code the control plane runs.
       - 'control-plane/**'
-      - 'db/**'
+      # The runner's own migrations, which now live in the one Supabase history alongside the
+      # product's. Matched by name rather than by directory, because that directory is mostly
+      # the product's migrations and a product migration is not ours to run CI for.
+      - 'supabase/migrations/*_runner_*.sql'
+      - 'supabase/verify/**'
       - '.github/workflows/control-plane-*.yml'
   pull_request:
     paths:
@@ -22,7 +26,11 @@ on:
       # — minutes of AWS work, and a new task definition revision, for a change that touched no
       # code the control plane runs.
       - 'control-plane/**'
-      - 'db/**'
+      # The runner's own migrations, which now live in the one Supabase history alongside the
+      # product's. Matched by name rather than by directory, because that directory is mostly
+      # the product's migrations and a product migration is not ours to run CI for.
+      - 'supabase/migrations/*_runner_*.sql'
+      - 'supabase/verify/**'
       - '.github/workflows/control-plane-*.yml'
 
 concurrency:
