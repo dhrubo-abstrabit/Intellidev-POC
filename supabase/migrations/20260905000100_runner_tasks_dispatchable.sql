@@ -2,7 +2,7 @@
 --
 -- This is the ONLY migration in this repo that touches `public`, and it is isolated in its own
 -- file for that reason: it can be reviewed on its own, reverted on its own, or handed to the
--- team that owns the product schema to apply from their side instead. See db/README.md.
+-- team that owns the product schema to apply from their side instead. See DATABASE.md.
 --
 -- Everything here is additive. No column is dropped, renamed or retyped; no enum is altered;
 -- no index is invalidated. Three defaults and one new policy.
@@ -44,10 +44,11 @@ ALTER TABLE "public"."tasks" ALTER COLUMN "dedupe_hash" SET DEFAULT gen_random_u
 
 -- Dropped first so this migration converges rather than assuming absence.
 --
--- `pnpm db:baseline` snapshots the *live* schema, so once this has been applied the committed
+-- A schema dump snapshots the *live* schema, so once this has been applied the committed
 -- baseline contains this very policy — and `db:verify`, which replays baseline then migrations,
 -- would fail on "policy already exists". The ALTER COLUMN statements above are naturally
--- idempotent; this one has to be made so. The end state is what matters, and db/verify/checks.sql
+-- idempotent; this one has to be made so. The end state is what matters, and
+-- supabase/verify/checks.sql
 -- is what asserts it.
 DROP POLICY IF EXISTS "tasks_insert" ON "public"."tasks";
 

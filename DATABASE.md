@@ -1,43 +1,76 @@
-# One database, two migration histories
+# One database, one migration history
 
-Both halves of this repo talk to the **same** Supabase database, and each owns a different
-schema. Nothing about the layout says so, which is the only reason this file exists.
+Both halves of this repo talk to the **same** Supabase database and each owns a schema:
 
-| Schema | Owned by | Migrations | Apply with |
-| --- | --- | --- | --- |
-| `public.*` — the product tables, their RLS and functions | the Next app | `supabase/migrations/` | `npm run db:migrate` (`supabase db push`) |
-| `runner.*` — everything the control plane adds | `control-plane/` | `db/migrations/` | `npm run runner:db:migrate` |
+| Schema                                                   | Owned by         | Notes                               |
+| -------------------------------------------------------- | ---------------- | ----------------------------------- |
+| `public.*` — the product tables, their RLS and functions | the Next app     | exposed through the API             |
+| `runner.*` — everything the control plane adds           | `control-plane/` | reached only by a direct connection |
 
-Both migration folders are at the repository root on purpose. They were a level apart when the
-control plane was imported, and the two commands differed only by which directory you happened
-to be standing in.
+Both are migrated the same way, from the same place:
+
+```
+npm run db:migrate          # supabase db push — applies everything pending
+npm run db:new <name>       # supabase migration new — an empty file to write by hand
+```
+
+`supabase/migrations/` holds all of them, in one order. The control plane's are the ones with
+`_runner_` in the name — `20260905000000_runner_schema.sql` onward — and that naming is load
+bearing in one place: the GitHub workflows filter on `supabase/migrations/*_runner_*.sql`, so a
+product migration does not run control-plane CI. There is a test for it.
 
 `public.tasks` is the one table both touch: the control plane adds three defaults and one policy
-to it, by agreement, in `db/migrations/0001_tasks_dispatchable.sql`.
+to it, by agreement, in `20260905000100_runner_tasks_dispatchable.sql`.
 
-## The one thing that will lose data
+## Why the runner's migrations are all dated after the product's
 
-**`supabase db reset` rebuilds the database from `supabase/migrations` only.** It knows nothing
-about `db/migrations`, so a reset drops every `runner.*` table with it — runs, events, stage
-templates, artifacts and their version history.
+They were applied over several weeks and their real dates interleave with the product's. Dating
+them that way would sort `runner` migrations _before_ the product migrations creating the tables
+they reference, and a rebuild from scratch would fail on the first foreign key. So they all carry
+timestamps after the last product migration, which is the order that actually works.
 
-`npm run db:reset` targets the **local** dev database, which is safe and is what it is for.
-Adding `--linked` points the same destruction at the shared remote. Don't.
+## It used to be two histories
 
-If a reset does happen, recovery is `npm run runner:db:migrate` to rebuild the schema — the
-tables come back empty. The rows do not come back.
+Until 2026-09-09 the control plane kept its own migrations in `db/migrations/` with its own
+bookkeeping table (drizzle's `__drizzle_migrations`), because it was developed as a separate
+repository. That meant two commands, and `supabase db reset` — which knows only about
+`supabase/migrations/` — would drop every `runner.*` table without a way to bring the rows back.
 
-## The other rule
+Merging them is what removed that. The eight migrations moved into `supabase/migrations/`, and
+because the live database is long past them they have to be recorded as applied rather than run
+again — a one-time step against the remote:
 
-The two histories are independent: Supabase's own bookkeeping table, and drizzle's
-`__drizzle_migrations`. The Supabase CLI assumes one repo owns a database, so pushing from the
-wrong side reports a conflict and its suggested repair erases the other side's record of what has
-already been applied. `db/README.md` has the long version, including what `supabase db push`
-does if you run it against the runner history.
+```
+supabase migration repair --status applied \
+  20260905000000 20260905000100 20260905000200 20260905000300 \
+  20260905000400 20260905000500 20260905000600 20260905000700 \
+  --db-url "$SUPABASE_CONNECTION_STRING_SESSION"
+```
 
-## Where the schema is now
+**Run this before the next `npm run db:migrate`.** Until it is done, a push sees eight pending
+migrations and tries to create a schema that already exists: it fails on the first statement,
+which is loud and harmless, but there is no reason to meet it. Nothing else about the merge
+touches the database — the files moved, the bookkeeping did not.
 
-The live database is at control-plane migration **0007**. A fresh clone running
-`npm run runner:db:migrate` should find nothing to do — that is correct. If it instead tries to
-apply all eight, the journal at `db/migrations/meta/_journal.json` has been lost or truncated:
-restore it rather than letting the migrations re-run.
+If a fresh clone ever reports those eight as pending against the live database, this is the fix,
+not a re-run.
+
+## Verifying
+
+`supabase/verify/` holds what the control plane checks about the database rather than about the
+repo:
+
+- `contract.sql` — pins the four `public` functions every `runner` policy delegates to. They can
+  be redefined with `CREATE OR REPLACE`, which changes who can see every runner table and raises
+  nothing. `npm run runner:db:contract` runs this against the live database.
+- `checks.sql`, `seed.sql` — assertions about a rebuilt database, and the rows they need.
+
+`npm run db:verify` runs all of it against a local stack: `supabase db reset` to replay every
+migration from scratch, then the seed, the checks and the contract. That is now an honest test of
+the whole history — it used to be impossible, because the runner's half was not part of it.
+
+It replaced a harness that replayed a committed _dump_ of the product schema instead. The dump
+was a 0-byte file, so the harness had not run in weeks, and one of its assertions had drifted
+unnoticed: it still expected 7 runner tables when the artifacts migrations had made it 10. It now
+names the tables it expects rather than counting them, since "no new tables" was never the
+invariant.

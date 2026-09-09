@@ -205,13 +205,17 @@ pnpm reconciler:prove    # a task killed from outside still settles, with a reas
 
 ## Database
 
-Migrations are SQL in the repo, generated from the Drizzle schema and applied by an explicit step —
-never on boot, because several instances rolling out would race each other.
+Migrations are hand-written SQL applied by an explicit step — never on boot, because several
+instances rolling out would race each other. They live in the app repository's one Supabase
+history, named `*_runner_*`, and are applied from its root:
 
 ```bash
-pnpm db:generate     # schema change → drizzle/NNNN_*.sql
-pnpm db:migrate      # apply to SUPABASE_CONNECTION_STRING_SESSION
+npm run db:migrate      # supabase db push
+npm run db:new <name>   # an empty migration to write by hand
 ```
+
+`DATABASE.md` there is the full picture, including why the runner's migrations are dated after
+the product's.
 
 - A migration must be **backward compatible with the code it replaces**: during a rolling deploy
   both versions run at once. Adding a nullable column is safe; renaming one is not.

@@ -12,12 +12,12 @@ import {
 } from 'drizzle-orm/pg-core'
 
 /**
- * The tables this system reads and writes, as `db/migrations` created them.
+ * The tables this system reads and writes, as the `*_runner_*` migrations created them.
  *
- * **Definitions, not a source of truth.** The SQL in `db/migrations` is authoritative;
- * `drizzle-kit generate` is not used to author it, because this database is shared and what
- * the schema needs — RLS policies, `SECURITY DEFINER` helpers, `GRANT`/`REVOKE` — cannot be
- * expressed here. See `db/README.md`.
+ * **Definitions, not a source of truth.** The SQL in `supabase/migrations` is authoritative,
+ * and it is hand-written rather than generated from this file: the database is shared with the
+ * product, and what the schema needs — RLS policies, `SECURITY DEFINER` helpers,
+ * `GRANT`/`REVOKE` — cannot be expressed here. See `DATABASE.md`.
  *
  * Two schemas appear below, and the distinction matters:
  *

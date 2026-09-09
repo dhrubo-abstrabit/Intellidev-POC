@@ -11,10 +11,9 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "supabase db push",
-    "runner:db:migrate": "cd control-plane && pnpm db:migrate",
-    "runner:db:status": "cd control-plane && pnpm db:status",
-    "runner:db:new": "cd control-plane && pnpm db:new",
-    "runner:db:verify": "cd control-plane && pnpm db:verify",
+    "db:new": "supabase migration new",
+    "db:verify": "bash supabase/verify/run.sh",
+    "runner:db:contract": "cd control-plane && pnpm db:contract",
     "db:reset": "supabase db reset",
     "db:types": "supabase gen types typescript --linked --schema public > src/lib/db/database.types.ts",
     "db:types:check": "supabase gen types typescript --linked --schema public | diff - src/lib/db/database.types.ts"

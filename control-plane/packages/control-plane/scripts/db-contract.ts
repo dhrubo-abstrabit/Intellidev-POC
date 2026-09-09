@@ -2,10 +2,10 @@
 /**
  * Checks the authorization contract against a live database.
  *
- * `db:verify` runs the same assertions against a local replay, which catches a migration that
- * breaks them. This catches the other direction: someone changing a helper function in the
- * database we actually depend on. Nothing in the repo changes when that happens, so no test
- * or diff would notice — this is the only thing that does.
+ * `supabase db reset` against a local stack replays all 51 migrations and would catch one of
+ * ours breaking these assertions. This catches the other direction: someone changing a helper
+ * function in the database we actually depend on. Nothing in the repo changes when that
+ * happens, so no test or diff would notice — this is the only thing that does.
  *
  * Read-only, and safe to run on a schedule.
  */
@@ -29,7 +29,10 @@ function connectionString(): string {
 }
 
 // The file is written for psql, so its meta-commands have to go before pg sees it.
-const sql = readFileSync(new URL('../../../../db/contract.sql', import.meta.url), 'utf8')
+const sql = readFileSync(
+  new URL('../../../../supabase/verify/contract.sql', import.meta.url),
+  'utf8',
+)
   .split('\n')
   .filter((line) => !line.trimStart().startsWith('\\'))
   .join('\n')

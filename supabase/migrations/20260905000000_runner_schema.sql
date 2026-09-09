@@ -2,7 +2,9 @@
 --
 -- Everything this system adds lives under `runner`, and nothing here creates or alters an
 -- object in `public`. That boundary is what makes it safe for this repo to keep a migration
--- history separate from the one the product schema already has. See db/README.md.
+-- history separate from the one the product schema already has. Those two histories were
+-- merged later, which is why this file now sits among the product migrations. See
+-- DATABASE.md.
 --
 -- Tenancy is not reimplemented. Every policy below calls the product's own helper functions,
 -- so a user sees exactly the spaces and projects they see everywhere else, and a change to

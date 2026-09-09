@@ -14,11 +14,24 @@ DECLARE
     n integer;
 BEGIN
     ----------------------------------------------------------------------------
-    -- The tables exist, and only the ones we meant to create
+    -- Every table we meant to create exists
+    --
+    -- By name, not by count. This was `n <> 7` and had been wrong since the artifacts
+    -- migrations added three more — nobody noticed, because the baseline this script replayed
+    -- was an empty file, so it had not actually run in weeks. A count asserts "no new tables",
+    -- which is not an invariant anyone wants; a missing table is.
     ----------------------------------------------------------------------------
-    SELECT count(*) INTO n FROM information_schema.tables WHERE table_schema = 'runner';
-    IF n <> 7 THEN
-        RAISE EXCEPTION 'expected 7 runner tables, found %', n;
+    SELECT count(*) INTO n
+    FROM unnest(ARRAY[
+        'credentials', 'integrations', 'project_repos', 'run_events', 'run_tokens',
+        'runs', 'stage_templates', 'task_artifact_versions', 'task_artifacts', 'task_specs'
+    ]) AS expected(name)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'runner' AND table_name = expected.name
+    );
+    IF n <> 0 THEN
+        RAISE EXCEPTION '% expected runner table(s) missing', n;
     END IF;
 
     ----------------------------------------------------------------------------
@@ -95,7 +108,7 @@ DECLARE
     ok     boolean;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.client_spaces WHERE id = space1) THEN
-        RAISE EXCEPTION 'seed missing — db/verify/seed.sql must run before checks';
+        RAISE EXCEPTION 'seed missing — supabase/verify/seed.sql must run before checks';
     END IF;
 
     -- A GitHub installation is space-wide. Scoping one to a project would mean two projects

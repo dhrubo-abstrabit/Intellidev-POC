@@ -56,7 +56,7 @@ BEGIN
     IF array_length(drifted, 1) > 0 THEN
         RAISE EXCEPTION E'the authorization contract has drifted:\n    %\n\n'
             'Read the new definition(s) and work out the effect on runner.* access before '
-            'updating the pins in db/contract.sql.', array_to_string(drifted, E'\n    ');
+            'updating the pins in supabase/verify/contract.sql.', array_to_string(drifted, E'\n    ');
     END IF;
 
     RAISE NOTICE 'contract: ok (% helper functions pinned)', array_length(expected, 1);

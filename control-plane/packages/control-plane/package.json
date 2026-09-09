@@ -12,10 +12,6 @@
     "dev": "tsx watch src/main.ts",
     "prove-runner": "tsx scripts/prove-runner.ts",
     "prove-reconciler": "tsx scripts/prove-reconciler.ts",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx scripts/migrate.ts",
-    "db:status": "tsx scripts/db-status.ts",
-    "db:new": "drizzle-kit generate --custom --name",
     "db:contract": "tsx scripts/db-contract.ts",
     "dev:seed": "tsx scripts/dev-seed.ts",
     "task": "tsx scripts/task-cli.ts",
@@ -42,7 +38,6 @@
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
-    "drizzle-kit": "^0.31.10",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }

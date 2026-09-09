@@ -73,7 +73,9 @@ parsing and a state machine.
   of the way; Prisma's engine makes row-level locking awkward.
 - Drizzle is types plus a thin runtime — no query-engine binary to ship or match to an
   architecture. That matters when the same code may run on x86 and Graviton.
-- `drizzle-kit` for migrations.
+- Migrations are not Drizzle's. They are hand-written SQL in the app repository's Supabase
+  history, because RLS policies, `SECURITY DEFINER` helpers and `GRANT`/`REVOKE` cannot be
+  generated from a schema definition — and this database is shared with the product.
 
 ## Queue: Postgres, not Redis
 
