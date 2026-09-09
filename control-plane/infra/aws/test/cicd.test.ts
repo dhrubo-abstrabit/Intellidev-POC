@@ -163,36 +163,141 @@ describe('the deploy role', () => {
 })
 
 /**
- * The deploy workflow lives in a different place depending on which repository this tree is in:
- * on its own it is `.github/workflows/deploy.yml` at the root, and vendored into the app
- * repository as a subtree it is `.github/workflows/control-plane-deploy.yml` one level further
- * up, so that an Amplify commit does not trigger a control-plane deploy.
+ * Find the workflow that deploys this code, wherever this tree happens to be.
  *
- * So search upward for either name rather than hard-coding one layout. Throwing when neither is
- * found is the point: a workflow this file cannot see is a workflow whose assertions below would
- * otherwise pass by never running.
+ * Three states, and the difference between the last two is the whole reason this is a function:
+ *
+ * - Vendored into the app repository as a subtree, it is
+ *   `.github/workflows/control-plane-deploy.yml` at that repository's root — renamed and
+ *   path-filtered so an Amplify commit does not trigger a control-plane deploy. This is the
+ *   pipeline that actually deploys.
+ * - Standing alone as the snapshot repository, there are no workflows at all: Actions is off
+ *   there, because a push to the app repository is what should deploy. Nothing to assert, so
+ *   the block below skips rather than inventing a failure.
+ * - A workflows directory that exists but holds no deploy workflow is the accident — a rename
+ *   or a deletion — and it throws, because assertions that never run pass.
+ *
+ * The search stops at the repository root rather than walking to `/`, so it can never reach up
+ * and grade an unrelated project's workflow.
  */
-function findDeployWorkflow(): { body: string; root: string } {
+function findDeployWorkflow(): { body: string; root: string } | undefined {
   const names = ['deploy.yml', 'control-plane-deploy.yml']
   const tried: string[] = []
+  let sawWorkflowsDir = false
   let dir = fileURLToPath(new URL('.', import.meta.url))
   for (;;) {
+    const workflows = join(dir, '.github', 'workflows')
+    if (existsSync(workflows)) sawWorkflowsDir = true
     for (const name of names) {
-      const candidate = join(dir, '.github', 'workflows', name)
+      const candidate = join(workflows, name)
       tried.push(candidate)
       // `root` is what an action sees as the repository root, which is what the paths inside
       // the workflow are resolved against.
       if (existsSync(candidate)) return { body: readFileSync(candidate, 'utf8'), root: dir }
     }
+    // `.git` marks the outermost directory belonging to this checkout.
+    if (existsSync(join(dir, '.git'))) break
     const parent = dirname(dir)
     if (parent === dir) break
     dir = parent
   }
-  throw new Error(`no deploy workflow found. Looked for:\n${tried.join('\n')}`)
+  if (sawWorkflowsDir) {
+    throw new Error(`a workflows directory exists but holds no deploy workflow. Looked for:
+${tried.join('\n')}`)
+  }
+  return undefined
 }
 
-describe('the deploy workflow', () => {
-  const { body: workflow, root } = findDeployWorkflow()
+const deployWorkflow = findDeployWorkflow()
+
+/**
+ * The workflows this project owns, by either of the names each one goes by.
+ *
+ * Only these: the app repository's `.github/workflows` may hold workflows belonging to the
+ * frontend, and they are none of this file's business.
+ */
+function ourWorkflows(root: string): Array<{ name: string; body: string }> {
+  const found: Array<{ name: string; body: string }> = []
+  for (const name of ['ci.yml', 'control-plane-ci.yml', 'deploy.yml', 'control-plane-deploy.yml']) {
+    const path = join(root, '.github', 'workflows', name)
+    if (existsSync(path)) found.push({ name, body: readFileSync(path, 'utf8') })
+  }
+  return found
+}
+
+/** Every entry under every `paths:` key, which is what decides whether a workflow runs at all. */
+function pathFilters(body: string): string[] {
+  const lines = body.split('\n')
+  const out: string[] = []
+  lines.forEach((line, i) => {
+    if (!/^\s*paths:\s*$/.test(line)) return
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!
+      if (/^\s*#/.test(next)) continue
+      const item = /^\s*-\s*'([^']+)'\s*$/.exec(next)
+      if (!item) break
+      out.push(item[1]!)
+    }
+  })
+  return out
+}
+
+/**
+ * GitHub's filter globbing, for the two constructs these filters use: `**` crosses directory
+ * separators, `*` does not. Every pattern is checked against that vocabulary first, so a
+ * pattern shape this cannot represent fails loudly instead of matching by accident.
+ */
+function matches(file: string, pattern: string): boolean {
+  expect(pattern, 'a pattern shape this matcher does not implement').toMatch(
+    /^[\w./-]*(\*\*|\*)?[\w./*-]*$/,
+  )
+  const regex = pattern
+    .split('**')
+    .map((part) =>
+      part
+        .split('*')
+        .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+        .join('[^/]*'),
+    )
+    .join('.*')
+  return new RegExp(`^${regex}$`).test(file)
+}
+
+/** The jobs of a workflow, each with the `needs:` it declares and the `needs.` it reads. */
+function jobDependencies(
+  body: string,
+): Array<{ name: string; declared: string[]; read: string[] }> {
+  const region = body.slice(body.indexOf('\njobs:\n'))
+  const lines = region.split('\n')
+  const jobs: Array<{ name: string; declared: string[]; read: string[] }> = []
+  let current: { name: string; declared: string[]; read: string[] } | undefined
+  for (const line of lines) {
+    const header = /^  ([A-Za-z0-9_-]+):\s*$/.exec(line)
+    if (header) {
+      current = { name: header[1]!, declared: [], read: [] }
+      jobs.push(current)
+      continue
+    }
+    if (!current) continue
+    const needs = /^\s*needs:\s*(.+)$/.exec(line)
+    if (needs) {
+      current.declared.push(
+        ...needs[1]!
+          .replace(/[[\]]/g, '')
+          .split(',')
+          .map((n) => n.trim())
+          .filter(Boolean),
+      )
+    }
+    for (const reference of line.matchAll(/needs\.([A-Za-z0-9_-]+)/g)) {
+      current.read.push(reference[1]!)
+    }
+  }
+  return jobs
+}
+
+describe.skipIf(deployWorkflow === undefined)('the deploy workflow', () => {
+  const { body: workflow, root } = deployWorkflow ?? { body: '', root: '' }
 
   it('never separates pushing an image from deploying what pins it', () => {
     /**
@@ -279,5 +384,93 @@ describe('the deploy workflow', () => {
     // Vendored: each one has to be pointed at the workspace by hand.
     expect(workflow.match(/^\s*package_json_file:/gm)?.length ?? 0).toBe(setups)
     expect(workflow.match(/^\s*cache-dependency-path:/gm)?.length ?? 0).toBe(caches)
+  })
+})
+
+/**
+ * What may and may not start a control-plane deploy.
+ *
+ * The app repository hosts a Next app that Amplify redeploys on every push to `main`. Nothing
+ * about a frontend commit should push a 387 MB container image or cut a new task definition
+ * revision, and nothing about a control-plane commit should depend on Amplify. The `paths:`
+ * filters are the entire mechanism, so they are what is asserted — against representative
+ * commits from either side rather than against the list of patterns alone, because a filter can
+ * be spelled correctly and still match the wrong things.
+ */
+describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane deploy', () => {
+  const root = deployWorkflow?.root ?? ''
+
+  // A frontend commit: the app's source, its dependencies, its build spec, its migrations, its
+  // documents. Amplify's business, none of it ours.
+  const FRONTEND = [
+    'src/app/page.tsx',
+    'src/lib/db/database.types.ts',
+    'package.json',
+    'package-lock.json',
+    'amplify.yml',
+    'next.config.ts',
+    'eslint.config.mjs',
+    'tsconfig.json',
+    'public/logo.svg',
+    'supabase/migrations/0001_product.sql',
+    'docs/frontend/Plan.md',
+  ]
+
+  // A control-plane commit: the subtree, the runner's migrations, and the workflows themselves.
+  const CONTROL_PLANE = [
+    'control-plane/packages/adapter/src/stages/shell.ts',
+    'control-plane/packages/control-plane/src/server.ts',
+    'control-plane/infra/docker/Dockerfile',
+    'control-plane/infra/aws/lib/runtime-stack.ts',
+    'db/migrations/0008_something.sql',
+    '.github/workflows/control-plane-deploy.yml',
+  ]
+
+  it('runs on nothing a frontend commit touches', () => {
+    const workflows = ourWorkflows(root)
+    expect(workflows.length).toBeGreaterThan(0)
+    for (const { name, body } of workflows) {
+      const filters = pathFilters(body)
+      // A workflow with no filters at all runs on everything, which is the failure being
+      // prevented — assert they exist before asserting what they do.
+      expect(filters.length, `${name} has no path filters`).toBeGreaterThan(0)
+      for (const file of FRONTEND) {
+        const matched = filters.filter((pattern) => matches(file, pattern))
+        expect(matched, `${name} would run for ${file}`).toEqual([])
+      }
+    }
+  })
+
+  it('runs on everything a control-plane commit touches', () => {
+    // The other half, and the more dangerous one to get wrong: a filter that excludes something
+    // the control plane is built from means a change that silently never deploys.
+    for (const { name, body } of ourWorkflows(root)) {
+      const filters = pathFilters(body)
+      for (const file of CONTROL_PLANE) {
+        expect(
+          filters.some((pattern) => matches(file, pattern)),
+          `${name} would not run for ${file}`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('never guards a job on a job it does not depend on', () => {
+    /**
+     * FOUND BY READING IT. The `infra` job's condition ended in
+     * `needs.check.result != 'failure'` while `check` was not among its `needs` — and a
+     * `needs.<job>` that is not a dependency evaluates to null, so the comparison was always
+     * true. A guard that cannot fail is not a guard.
+     */
+    for (const { name, body } of ourWorkflows(root)) {
+      for (const job of jobDependencies(body)) {
+        for (const read of job.read) {
+          expect(
+            job.declared,
+            `${name}: ${job.name} reads needs.${read} without needing it`,
+          ).toContain(read)
+        }
+      }
+    }
   })
 })

@@ -192,7 +192,10 @@ jobs:
         # The pnpm monorepo root is the subtree, not the repository root — the repository
         # root is the Next app and uses npm.
         working-directory: control-plane
-    needs: [changes, runner, control-plane]
+    # `check` is listed because the guard below reads it: a `needs.<job>` that is not a
+    # dependency evaluates to null, so `needs.check.result != 'failure'` was always true and
+    # guarded nothing.
+    needs: [check, changes, runner, control-plane]
     # `always()` because the image jobs are skipped on most commits, and a skipped dependency
     # would otherwise skip this too.
     if: always() && needs.changes.outputs.infra == 'true' && needs.check.result != 'failure'
