@@ -1,6 +1,15 @@
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  /**
+   * An inline PostCSS config, so Vite does not go looking for one.
+   *
+   * The search runs *upward*, and as a subdirectory of a Next app's repository it escapes this
+   * subtree and finds the app's config, which loads a Tailwind plugin absent from this
+   * workspace. This suite has a config already, which stops vitest's own search but not this
+   * one.
+   */
+  css: { postcss: { plugins: [] } },
   test: {
     /**
      * Test files run one at a time in this package.
