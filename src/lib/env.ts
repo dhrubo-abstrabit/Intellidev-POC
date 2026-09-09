@@ -105,14 +105,22 @@ const nangoSchema = z.object({
  * starts sandboxed and needs an AWS support request before it can mail
  * anyone, and the invite flow was built to be useful during that wait.
  *
- * AWS_SECRET_ACCESS_KEY is shown by AWS exactly once, and Vercel env vars are
+ * SES_SECRET_ACCESS_KEY is shown by AWS exactly once, and Vercel env vars are
  * write-only after they are set, so this is a value with two chances to be
  * lost. Record it when it is generated.
+ *
+ * Deliberately NOT named AWS_REGION/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY:
+ * those are reserved on AWS Amplify Hosting (its SSR compute runs on Lambda,
+ * which injects its own execution-role credentials under exactly those
+ * names and refuses app-defined values there) — confirmed 2026-09-09 when
+ * Amplify's console rejected setting them. Same three values, SES_-prefixed
+ * names, read explicitly here rather than falling back to the AWS SDK's
+ * default credential chain so this keeps working unchanged on any host.
  */
 const sesSchema = z.object({
-  AWS_REGION: z.string().min(1),
-  AWS_ACCESS_KEY_ID: z.string().min(1),
-  AWS_SECRET_ACCESS_KEY: z.string().min(1),
+  SES_REGION: z.string().min(1),
+  SES_ACCESS_KEY_ID: z.string().min(1),
+  SES_SECRET_ACCESS_KEY: z.string().min(1),
   SES_FROM_ADDRESS: z.string().email(),
 });
 
