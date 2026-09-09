@@ -269,3 +269,17 @@ jobs:
             Intellidev-dev-AppSecrets Intellidev-dev-Registry Intellidev-dev-Runtime \
             Intellidev-dev-ControlPlane \
             --require-approval never
+      # This job deploys the control plane too, so it owes the same check the other one does.
+      #
+      # FOUND BY WATCHING IT DEPLOY. The list above includes `Intellidev-dev-ControlPlane`, and
+      # only the `control-plane` job waited for the service to answer. A circuit-breaker
+      # rollback happens *after* CloudFormation reports success, so an infra-only change that
+      # breaks the service would have been reported green.
+      - name: wait for it to serve
+        run: |
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://control.guidr.tech/healthz || true)
+            [ "$code" = "200" ] && echo "healthy" && exit 0
+            sleep 15
+          done
+          echo "never became healthy" && exit 1

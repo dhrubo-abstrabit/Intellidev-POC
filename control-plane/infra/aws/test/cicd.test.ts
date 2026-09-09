@@ -310,6 +310,18 @@ function matches(file: string, pattern: string): boolean {
 }
 
 /** The jobs of a workflow, each with the `needs:` it declares and the `needs.` it reads. */
+/** Each job of a workflow, with the lines belonging to it. */
+function jobBlocks(body: string): Array<{ name: string; block: string }> {
+  const region = body.slice(body.indexOf('\njobs:\n'))
+  const jobs: Array<{ name: string; lines: string[] }> = []
+  for (const line of region.split('\n')) {
+    const header = /^  ([A-Za-z0-9_-]+):\s*$/.exec(line)
+    if (header) jobs.push({ name: header[1]!, lines: [] })
+    else jobs[jobs.length - 1]?.lines.push(line)
+  }
+  return jobs.map(({ name, lines }) => ({ name, block: lines.join('\n') }))
+}
+
 function jobDependencies(
   body: string,
 ): Array<{ name: string; declared: string[]; read: string[] }> {
@@ -530,6 +542,27 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
     // And never `outputs.x || dispatch`, which cannot work: a filter output is the string
     // 'false', truthy in a GitHub expression, so the left side always wins.
     expect(deploy!.body).not.toMatch(/steps\.filter\.outputs\.\w+\s*\|\|/)
+  })
+
+  it('waits for the service in every job that deploys it', () => {
+    /**
+     * FOUND BY WATCHING A DEPLOY. `infra` deploys `Intellidev-dev-ControlPlane` along with the
+     * other stacks, and only the `control-plane` job waited for the service to answer. A
+     * circuit-breaker rollback lands *after* CloudFormation reports success, so an infra-only
+     * change that broke the service would have been reported green.
+     *
+     * Asserted per job rather than on the file, because a `/healthz` anywhere in it was exactly
+     * what made this look covered.
+     */
+    for (const { name, body } of ourWorkflows(located)) {
+      for (const job of jobBlocks(body)) {
+        if (!/cdk deploy[\s\S]*?Intellidev-dev-ControlPlane/.test(job.block)) continue
+        expect(
+          job.block,
+          `${name}: ${job.name} deploys the control plane without waiting`,
+        ).toContain('/healthz')
+      }
+    }
   })
 
   it('never guards a job on a job it does not depend on', () => {
