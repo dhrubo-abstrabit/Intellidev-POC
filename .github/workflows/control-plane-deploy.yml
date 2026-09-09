@@ -89,6 +89,17 @@ jobs:
         with:
           # Two commits, so a push can be compared against what it replaced.
           fetch-depth: 2
+      # What this run will present to AWS, printed because nothing else says it.
+      #
+      # A trust policy pins `sub` with `StringEquals`, and a mismatch fails as
+      # `Not authorized to perform sts:AssumeRoleWithWebIdentity` — which names neither the
+      # claim nor the condition. Reading it took CloudTrail access this account's deploy
+      # identity does not have. The string below is exactly what the condition must equal, so
+      # a mismatch is now a one-line diagnosis in the log. Neither value is a secret; the
+      # token they come from is never printed.
+      - name: the identity this run will assume with
+        run: echo "sub = repo:${{ github.repository }}:ref:${{ github.ref }}"
+
       - id: filter
         uses: dorny/paths-filter@v3
         with:
