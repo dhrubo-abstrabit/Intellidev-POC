@@ -6,7 +6,7 @@ history, so the rule comes first:
 | Objects                                                  | Owned by                    | Changed how                                    |
 | -------------------------------------------------------- | --------------------------- | ---------------------------------------------- |
 | `public.*` — the 29 product tables, their RLS, functions | **another repo**            | by them, via the Supabase CLI                  |
-| `runner.*` — everything this system adds                 | **this repo**               | `db/migrations/`, applied by `pnpm db:migrate` |
+| `runner.*` — everything this system adds                 | **the control plane**       | `db/migrations/`, applied by `npm run runner:db:migrate` from the repository root |
 | `public.tasks` — three defaults and one policy           | **this repo, by agreement** | `0001_tasks_dispatchable.sql`                  |
 
 ## Why not `supabase db push`

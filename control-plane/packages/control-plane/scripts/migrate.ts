@@ -59,7 +59,7 @@ const pool = new pg.Pool({
 try {
   const started = Date.now()
   await migrate(drizzle(pool), {
-    migrationsFolder: new URL('../../../db/migrations', import.meta.url).pathname,
+    migrationsFolder: new URL('../../../../db/migrations', import.meta.url).pathname,
   })
   console.log(`migrate: applied in ${Date.now() - started} ms against ${new URL(url).hostname}`)
 } finally {

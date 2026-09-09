@@ -14,7 +14,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import pg from 'pg'
 
-const MIGRATIONS_DIR = new URL('../../../db/migrations', import.meta.url).pathname
+const MIGRATIONS_DIR = new URL('../../../../db/migrations', import.meta.url).pathname
 
 function connectionString(): string {
   const explicit = process.env['SUPABASE_CONNECTION_STRING_SESSION']

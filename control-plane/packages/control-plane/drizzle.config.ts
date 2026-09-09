@@ -18,7 +18,7 @@ import { defineConfig } from 'drizzle-kit'
  */
 export default defineConfig({
   schema: './src/store/schema.ts',
-  out: '../../db/migrations',
+  out: '../../../db/migrations',
   dialect: 'postgresql',
   // Read at generate time only. Applying is a separate, explicit step.
   dbCredentials: { url: process.env['SUPABASE_CONNECTION_STRING_SESSION'] ?? '' },

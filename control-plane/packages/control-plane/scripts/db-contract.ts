@@ -29,7 +29,7 @@ function connectionString(): string {
 }
 
 // The file is written for psql, so its meta-commands have to go before pg sees it.
-const sql = readFileSync(new URL('../../../db/contract.sql', import.meta.url), 'utf8')
+const sql = readFileSync(new URL('../../../../db/contract.sql', import.meta.url), 'utf8')
   .split('\n')
   .filter((line) => !line.trimStart().startsWith('\\'))
   .join('\n')
