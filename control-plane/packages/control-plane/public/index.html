@@ -1,0 +1,3160 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Intellidev · dispatch</title>
+    <!--
+      Design tokens lifted from Intellidev.html, the existing UI build. Same names, same
+      values, both themes — so when the real UI takes over there is nothing to reconcile.
+      Fonts fall back to system faces: Manrope and JetBrains Mono are not vendored here.
+    -->
+    <style>
+      :root {
+        --app: #ffffff;
+        --main: #ffffff;
+        --panel: #fafbfa;
+        --card: #ffffff;
+        --inset: #f5f7f5;
+        --field: #f5f7f5;
+        --input: #f2f5f2;
+        --chip: #f2f5f2;
+        --hover: #f1f4f1;
+        --active: #e9f1eb;
+        --btn2: #f0f4f1;
+        --btn2h: #e4ece7;
+        --bd-soft: #e9ede9;
+        --bd-strong: #ccd5ce;
+        --bd-hover: #a5b6aa;
+        --bd-input: #d8dfd9;
+        --bd-danger: #f0c8c4;
+        --bd-warn: #e9d9a6;
+        --fg: #10201a;
+        --fg2: #31403a;
+        --fg3: #56655d;
+        --fg4: #697870;
+        --green: #12915a;
+        --green2: #0f7a4b;
+        --green-bd: #2f7d4f;
+        --on-green: #ffffff;
+        --amber: #b06a08;
+        --blue: #2563eb;
+        --red: #d13b3b;
+        --sans: Manrope, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      :root[data-theme='dark'] {
+        --app: #0d100e;
+        --main: #0c100e;
+        --panel: #0e1210;
+        --card: #121614;
+        --inset: #0f1311;
+        --field: #161a18;
+        --input: #141816;
+        --chip: #171c19;
+        --hover: #191e1b;
+        --active: #1a211d;
+        --btn2: #1f2724;
+        --btn2h: #28332e;
+        --bd-soft: #1d2320;
+        --bd-strong: #2a302c;
+        --bd-hover: #3a463f;
+        --bd-input: #262d29;
+        --bd-danger: #3d2725;
+        --bd-warn: #3a3524;
+        --fg: #e6ece8;
+        --fg2: #c6d0ca;
+        --fg3: #9aa8a1;
+        --fg4: #7f8a84;
+        --green: #4ade80;
+        --green2: #7dd3a0;
+        --green-bd: #3d9a63;
+        --on-green: #06210f;
+        --amber: #f59e0b;
+        --blue: #4c8dff;
+        --red: #f87171;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--app);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--bd-soft);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      header .spacer {
+        flex: 1;
+      }
+      .meta {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg4);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 380px minmax(0, 1fr);
+      }
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      .side {
+        border-right: 1px solid var(--bd-soft);
+        background: var(--panel);
+        padding: 16px;
+      }
+      /*
+       * The sidebar scrolls itself, and only where there is a sidebar to scroll.
+       *
+       * Without this the panel simply grows: a project with a dozen stages made the whole page
+       * taller than the screen, so reaching the task list meant scrolling past the editor and
+       * the run detail on the right scrolled away with it. Under 900px the layout is one column
+       * and the page scroll is the right one, so this is scoped to the two-column case.
+       */
+      /*
+       * Two panes that scroll themselves, sized without guessing at the header.
+       *
+       * `calc(100vh - 53px)` was here before and the header is 70px, so the page overflowed by
+       * exactly the difference — and would break again the next time the header changed. A flex
+       * column measures it instead: the header takes what it needs, the layout takes the rest.
+       *
+       * Only above 900px. Below that the layout is a single column and the page scroll is the
+       * right one; fixing the height there would put content below the fold with nothing to
+       * scroll it.
+       */
+      @media (min-width: 901px) {
+        body {
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        header {
+          flex: none;
+        }
+        .layout {
+          flex: 1;
+          min-height: 0;
+        }
+        .side,
+        .main {
+          overflow-y: auto;
+          min-height: 0;
+        }
+      }
+      .main {
+        padding: 16px 20px;
+        min-width: 0;
+      }
+      h2 {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.11em;
+        color: var(--fg3);
+        margin: 0 0 10px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--fg3);
+        margin: 10px 0 4px;
+      }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        padding: 8px 10px;
+        font: inherit;
+        color: var(--fg);
+        background: var(--input);
+        border: 1px solid var(--bd-input);
+        border-radius: 6px;
+      }
+      /*
+       * A checkbox is not a text field.
+       *
+       * The rule above was written when every input on the page was one, so `width: 100%` was
+       * harmless. The first checkbox added made itself the full width of its row and left the
+       * label beside it zero pixels wide — which rendered as a sentence one word per line, two
+       * hundred pixels tall.
+       */
+      input[type='checkbox'],
+      input[type='radio'] {
+        width: auto;
+        padding: 0;
+        accent-color: var(--ok, #2f7d4f);
+      }
+      textarea {
+        min-height: 64px;
+        resize: vertical;
+        font-family: inherit;
+      }
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: 2px solid var(--green-bd);
+        outline-offset: 1px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 9px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        background: var(--green);
+        color: var(--on-green);
+        border: 1px solid var(--green-bd);
+      }
+      button:hover:not(:disabled) {
+        background: var(--green2);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: var(--btn2);
+        color: var(--fg);
+        border-color: var(--bd-strong);
+      }
+      button.secondary:hover:not(:disabled) {
+        background: var(--btn2h);
+      }
+      /*
+        `hidden` has to win.
+
+        The attribute's `display: none` comes from the user-agent stylesheet, so any class that
+        sets `display` beats it — and the classes here nearly all do. That is why the template
+        picker and the default checkbox stayed on screen in a mode that hides them: the code was
+        setting `.hidden = true` and the CSS was quietly ignoring it.
+      */
+      [hidden] {
+        display: none !important;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        flex: none;
+      }
+      .dot.ok {
+        background: var(--green);
+      }
+      .dot.unauthorized {
+        background: var(--amber);
+      }
+      .dot.error {
+        background: var(--red);
+      }
+      .dot.unknown {
+        background: var(--fg5);
+      }
+      .srv {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .srv:last-child {
+        border-bottom: 0;
+      }
+      /*
+       * A stage card, which is emphatically not a `.srv`.
+       *
+       * `.srv` is `display: flex`, so reusing it turned every child — the controls, the prompt,
+       * the approval label — into a column squeezed beside its siblings. Stacked instead, with
+       * the controls laid out on a grid so each has a real width rather than whatever flex
+       * leaves it.
+       */
+      /*
+       * The stage editor as a dialog rather than a column in the sidebar.
+       *
+       * Editing a pipeline is a task in its own right — several stages, each with a prompt worth
+       * reading — and doing it in a 380px column meant a textarea the width of a phone under a
+       * list that pushed everything else off screen. A dialog gets the width the work needs and
+       * leaves the page underneath alone.
+       */
+      dialog.sheet {
+        width: min(760px, 92vw);
+        max-height: 86vh;
+        padding: 0;
+        border: 1px solid var(--bd-soft);
+        border-radius: 14px;
+        background: var(--panel);
+        color: var(--fg);
+      }
+      dialog.sheet::backdrop {
+        background: rgba(0, 0, 0, 0.45);
+      }
+      .sheet-head,
+      .sheet-foot {
+        position: sticky;
+        padding: 14px 18px;
+        background: var(--panel);
+        z-index: 1;
+      }
+      .sheet-head {
+        top: 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .sheet-foot {
+        bottom: 0;
+        border-top: 1px solid var(--bd-soft);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      /* Only the middle scrolls, so the title and the buttons stay put. */
+      .sheet-body {
+        padding: 14px 18px;
+        overflow-y: auto;
+        max-height: calc(86vh - 130px);
+      }
+      .stage {
+        display: block;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--bd-soft);
+      }
+      .stage:last-child {
+        border-bottom: 0;
+      }
+      .stage-head {
+        display: grid;
+        /* grip, number, id, kind, the on switch, remove. `minmax(0, …)` so a long id shrinks
+           rather than pushing the controls off the edge. The kind column is wide enough for
+           "builtin" plus a native dropdown arrow — at 5.5em it read "age" and "bui", which is
+           not a choice anyone can make. */
+        grid-template-columns: auto 1.4em minmax(0, 1fr) 8.5em auto auto;
+        gap: 6px;
+        align-items: center;
+      }
+      .stage-head input,
+      .stage-head select {
+        min-width: 0;
+      }
+      .grip {
+        cursor: grab;
+        /* Tight tracking so two dots read as a grip rather than as four characters. */
+        letter-spacing: -2px;
+        padding-inline: 6px;
+      }
+      .stage[draggable='true'] {
+        /* The row moves, the text inside it does not get selected on the way. */
+        user-select: none;
+      }
+      .stage.dragging {
+        opacity: 0.4;
+      }
+      /* Where the row would land. A line rather than a gap, so nothing reflows mid-drag and the
+         target stops moving away from the cursor. */
+      .stage.drop-before {
+        box-shadow: inset 0 3px 0 0 var(--green);
+      }
+      .stage.drop-after {
+        box-shadow: inset 0 -3px 0 0 var(--green);
+      }
+      /* A stage that will be skipped. Legible, but plainly not part of the run. */
+      .stage.off > *:not(.stage-head) {
+        opacity: 0.4;
+      }
+      .stage.off .stage-head input[data-stage-id],
+      .stage.off .stage-head select {
+        opacity: 0.55;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+      }
+      .toggle input {
+        width: auto;
+      }
+      .stage .icon {
+        padding: 4px 7px;
+        line-height: 1;
+      }
+      .stage textarea {
+        width: 100%;
+        margin-top: 6px;
+        resize: vertical;
+      }
+      /* The checkbox sits with its label rather than beside it in a flex column. */
+      .stage .approval {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-top: 8px;
+        line-height: 1.4;
+      }
+      .stage .approval input {
+        margin-top: 2px;
+        flex: none;
+      }
+      /*
+       * The label text fills the row rather than shrinking to its longest word.
+       *
+       * A flex item sizes to its content and may shrink below it, which put this sentence in a
+       * 53px column two hundred pixels tall — the tall thin text in the screenshot. `flex: 1`
+       * makes it take the space that is actually there.
+       */
+      .stage .approval span {
+        flex: 1;
+        min-width: 0;
+      }
+      .srv .grow {
+        flex: 1;
+        min-width: 0;
+      }
+      .srv .name {
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .srv .meta {
+        color: var(--fg3);
+        font-size: 12px;
+        margin: 2px 0 0;
+        overflow-wrap: anywhere;
+      }
+      .srv button {
+        padding: 3px 8px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .checks label {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        font-weight: 400;
+        margin: 0 0 5px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+        color: var(--fg);
+      }
+      .checks input {
+        width: auto;
+        margin: 0;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--bd-soft);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 8px;
+      }
+      .task {
+        cursor: pointer;
+      }
+      .task:hover {
+        border-color: var(--bd-hover);
+        background: var(--hover);
+      }
+      .task.selected {
+        border-color: var(--green-bd);
+        background: var(--active);
+      }
+      .task h3 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .task p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--fg3);
+      }
+      /* State is encoded in form as well as colour: a pill plus a dot, so it reads without
+         relying on hue alone. */
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--chip);
+        border: 1px solid var(--bd-strong);
+        color: var(--fg3);
+      }
+      .pill::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .pill.running,
+      .pill.dispatched,
+      .pill.provisioning {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .pill.succeeded,
+      .pill.in_review,
+      .pill.done {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .pill.failed {
+        color: var(--red);
+        border-color: var(--bd-danger);
+      }
+      /*
+        Amber, not red.
+
+        `blocked` was grouped with `failed`, which put the alarm colour on a task that is simply
+        waiting for someone to look at it — the same mistake as the word did. It needs attention;
+        it has not gone wrong.
+      */
+      .pill.waiting_capacity,
+      .pill.parked,
+      .pill.blocked {
+        color: var(--amber);
+        border-color: var(--bd-warn);
+      }
+      .stages {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 10px 0;
+      }
+      .stage {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 5px;
+        background: var(--inset);
+        border: 1px solid var(--bd-soft);
+        color: var(--fg4);
+      }
+      .stage.active {
+        border-color: var(--green-bd);
+        color: var(--green);
+        background: var(--active);
+      }
+      .stage.passed {
+        color: var(--green);
+        border-color: var(--green-bd);
+      }
+      .stage.failed {
+        color: var(--red);
+        border-color: var(--bd-danger);
+      }
+      #log {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        line-height: 1.65;
+        background: var(--inset);
+        border: 1px solid var(--bd-soft);
+        border-radius: 8px;
+        padding: 10px 12px;
+        height: calc(100vh - 320px);
+        min-height: 240px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #log .seq {
+        color: var(--fg4);
+      }
+      #log .st {
+        color: var(--blue);
+      }
+      #log .ok {
+        color: var(--green);
+      }
+      #log .bad {
+        color: var(--red);
+      }
+      #log .warn {
+        color: var(--amber);
+      }
+      .empty {
+        color: var(--fg4);
+        font-size: 13px;
+        padding: 20px 0;
+      }
+      a {
+        color: var(--green);
+      }
+      .hint {
+        font-size: 11px;
+        color: var(--fg4);
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Intellidev</h1>
+      <span class="pill" id="mode">…</span>
+      <div class="spacer"></div>
+      <span class="meta" id="cfg"></span>
+      <button class="secondary" id="theme" title="Toggle theme">◐</button>
+    </header>
+
+    <div class="layout">
+      <section class="side">
+        <h2>New task</h2>
+        <form id="form">
+          <label for="repoUrl">Repository</label>
+          <input
+            id="repoUrl"
+            required
+            placeholder="/path/to/origin.git or https://github.com/me/repo"
+          />
+          <label for="title">Title</label>
+          <input id="title" required placeholder="Add a hello function" />
+          <label for="description">Description</label>
+          <textarea id="description" required placeholder="What should change, and why."></textarea>
+          <label for="criteria">Acceptance criteria (one per line)</label>
+          <textarea id="criteria" placeholder="hello('world') returns a greeting"></textarea>
+          <label for="harness">Harness</label>
+          <select id="harness"></select>
+          <label for="baseBranch">Base branch</label>
+          <input id="baseBranch" value="main" />
+
+          <!--
+            Which saved template this task starts from.
+
+            The API accepted `stageTemplateId` from the beginning and nothing here ever sent one,
+            so every task ran the project default whether or not other templates existed — they
+            were savable and then unreachable.
+          -->
+          <label for="taskTemplate">Stages</label>
+          <select id="taskTemplate"></select>
+
+          <label>Tools</label>
+          <div id="taskServers"><p class="hint">No MCP servers connected yet.</p></div>
+
+          <div class="row" style="margin-top: 14px">
+            <button type="submit" id="create">Create task</button>
+          </div>
+          <p class="hint" id="formHint"></p>
+        </form>
+
+        <h2 style="margin-top: 22px">Harness accounts</h2>
+        <div id="seats"><p class="empty">No harness connected.</p></div>
+
+        <div id="loginPanel" class="card" hidden style="margin-top: 8px">
+          <div class="name" id="loginTitle"></div>
+          <p class="hint" id="loginHint"></p>
+          <!--
+            The device code, when there is one. Shown large because its whole job is to be read
+            off this screen and typed into another window — a hint-sized line is the wrong shape
+            for that, and it was previously buried in one.
+          -->
+          <div
+            id="loginCodeShown"
+            hidden
+            style="
+              margin: 10px 0;
+              padding: 12px;
+              border: 1px solid var(--line);
+              border-radius: 10px;
+              text-align: center;
+            "
+          >
+            <div class="hint" style="margin-bottom: 4px">Enter this code on that page</div>
+            <div
+              id="loginUserCode"
+              style="
+                font:
+                  600 22px/1.2 ui-monospace,
+                  monospace;
+                letter-spacing: 2px;
+              "
+            ></div>
+          </div>
+          <p style="margin: 8px 0">
+            <a id="loginLink" target="_blank" rel="noopener noreferrer"></a>
+          </p>
+          <div id="loginCodeRow" hidden>
+            <label for="loginCode">Code from that page</label>
+            <div class="row" style="gap: 6px">
+              <input id="loginCode" placeholder="paste it here" style="flex: 1" />
+              <!--
+                One click instead of click-then-paste. The clipboard read needs a gesture and a
+                permission, and is allowed to be refused — the field beside it still works, so
+                nothing depends on this button succeeding.
+              -->
+              <button type="button" id="loginPaste" class="secondary" title="Paste from clipboard">
+                Paste
+              </button>
+            </div>
+            <!-- Says whether what was pasted is usable, before anything is submitted. -->
+            <p class="hint" id="loginCodeState" style="min-height: 1.2em"></p>
+          </div>
+          <div class="row" style="margin-top: 10px">
+            <button type="button" id="loginSubmit" hidden>Submit code</button>
+            <button type="button" id="loginCancel" class="secondary">Cancel</button>
+          </div>
+          <p class="hint" id="loginStatus"></p>
+        </div>
+
+        <h2 style="margin-top: 22px">
+          Stages
+          <button id="openStages" class="secondary" style="float: right; padding: 4px 10px">
+            Configure
+          </button>
+        </h2>
+        <!--
+          A summary here, the editing in a dialog. The sidebar's job is to say what will happen;
+          changing it is a piece of work that needs room.
+        -->
+        <p class="hint" id="stagesSource"></p>
+        <p class="hint" id="stagesSummary"></p>
+
+        <h2 style="margin-top: 22px">
+          MCP servers
+          <button id="addServer" class="secondary" style="float: right; padding: 4px 10px">
+            Add
+          </button>
+        </h2>
+        <div id="servers"><p class="empty">Nothing connected.</p></div>
+
+        <form id="serverForm" hidden>
+          <label for="sPreset">Preset</label>
+          <select id="sPreset"></select>
+          <label for="sId">Server id</label>
+          <input id="sId" placeholder="supabase" />
+          <label for="sName">Display name</label>
+          <input id="sName" placeholder="Supabase" />
+          <label for="sUrl">URL</label>
+          <input id="sUrl" placeholder="https://mcp.supabase.com/mcp" />
+          <label for="sAuth">Auth</label>
+          <select id="sAuth">
+            <option value="oauth2">OAuth (opens a consent window)</option>
+            <option value="bearer">Bearer token</option>
+            <option value="none">None</option>
+          </select>
+          <div id="sTokenRow" hidden>
+            <label for="sToken">Bearer token</label>
+            <input
+              id="sToken"
+              type="password"
+              placeholder="stored locally, never sent to the agent"
+            />
+          </div>
+          <div id="sScopeRow">
+            <label for="sScope">Scopes (space separated)</label>
+            <input id="sScope" placeholder="leave blank for everything the server offers" />
+          </div>
+          <p class="hint" id="sHint"></p>
+          <div class="row" style="margin-top: 10px">
+            <button type="submit" id="saveServer">Save &amp; connect</button>
+            <button type="button" id="cancelServer" class="secondary">Cancel</button>
+          </div>
+          <p class="hint" id="serverHint"></p>
+        </form>
+
+        <h2 style="margin-top: 22px">Tasks</h2>
+        <div id="tasks"><p class="empty">No tasks yet.</p></div>
+      </section>
+
+      <section class="main">
+        <div id="detail"><p class="empty">Select a task, or create one.</p></div>
+      </section>
+    </div>
+
+    <!--
+      Where an artifact is shown.
+
+      The frame is sandboxed *without* `allow-same-origin`, so its origin is opaque and it cannot
+      read this page's `sessionStorage` — where the bearer token lives — whatever the artifact
+      contains. Its policy is written into the document the parent builds, and names this origin
+      as the only place a script may come from.
+    -->
+    <dialog class="sheet" id="artifactDialog">
+      <div class="sheet-head">
+        <div class="name" id="artifactTitle">Artifact</div>
+        <p class="hint" id="artifactMeta" style="margin: 4px 0 0"></p>
+        <!--
+          Which revision is on screen.
+
+          An iteration is a version of the same artifact rather than a second one, so the history
+          is the thing worth navigating. Looking at an earlier version does not change what
+          anyone else sees — that takes the button beside it.
+        -->
+        <div class="row" id="artifactVersionRow" style="margin-top: 8px; gap: 6px" hidden>
+          <label class="hint" for="artifactVersion" style="white-space: nowrap">Version</label>
+          <select id="artifactVersion" style="flex: 1"></select>
+          <button type="button" id="artifactMakeCurrent" class="secondary">
+            Make this the current one
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body" style="padding: 0">
+        <iframe
+          id="artifactFrame"
+          title="Artifact preview"
+          sandbox="allow-scripts"
+          style="width: 100%; height: 100%; min-height: 60vh; border: 0; background: #fff"
+        ></iframe>
+      </div>
+      <div class="sheet-foot">
+        <span class="hint" id="artifactSource" style="flex: 1"></span>
+        <button type="button" id="artifactDownload" class="secondary" hidden>Download</button>
+        <button type="button" id="artifactRaw" class="secondary">View source</button>
+        <button type="button" id="artifactDelete" class="secondary">Delete</button>
+        <button type="button" id="closeArtifact" class="secondary">Close</button>
+      </div>
+    </dialog>
+
+    <dialog class="sheet" id="stagesDialog">
+      <div class="sheet-head">
+        <div class="name" id="stagesTitle">Stages</div>
+        <p class="hint" id="stagesScopeNote" style="margin: 4px 0 0"></p>
+        <!--
+          Which of the saved templates is open.
+
+          Without this the editor could only ever reach one: saving wrote the project default, so
+          a second template could be created and then never opened again.
+        -->
+        <div class="row" id="templatePickerRow" style="margin-top: 8px; gap: 6px">
+          <label class="hint" for="templatePicker" style="white-space: nowrap">Editing</label>
+          <select id="templatePicker" style="flex: 1"></select>
+          <button type="button" id="deleteTemplate" class="secondary">Delete</button>
+        </div>
+      </div>
+      <div class="sheet-body">
+        <div id="stageList"></div>
+        <button type="button" id="addStage" class="secondary" style="margin-top: 10px">
+          Add stage
+        </button>
+      </div>
+      <div class="sheet-foot">
+        <!-- Label and field together, so hiding the field cannot leave its label behind. -->
+        <div class="row" id="stageTemplateNameRow" style="flex: 1">
+          <label class="hint" for="stageTemplateName" style="white-space: nowrap">Save as</label>
+          <input
+            id="stageTemplateName"
+            placeholder="a name for this set of stages"
+            style="flex: 1"
+          />
+        </div>
+        <!--
+          Whether saving also claims the project default.
+
+          It used to be unconditional, so saving a second template would silently take the
+          default off the first — the one thing that changes what every future task runs, done
+          as a side effect of pressing Save.
+        -->
+        <label class="hint approval" id="makeDefaultRow" style="white-space: nowrap">
+          <input type="checkbox" id="makeDefault" />
+          <span>the project default</span>
+        </label>
+        <button type="button" id="saveStages">Save</button>
+        <button type="button" id="closeStages" class="secondary">Close</button>
+        <span class="hint" id="stagesStatus"></span>
+      </div>
+    </dialog>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id)
+
+      /**
+       * Sign in, and make every later request carry the token.
+       *
+       * `fetch` is wrapped once rather than the twenty call sites being edited, because the
+       * failure mode of missing one is a 401 that reads as a broken feature rather than as a
+       * missing header — which is exactly what happened when the gate was added and this page
+       * had no login at all.
+       *
+       * The token lives in `sessionStorage`, not `localStorage`: it is a bearer credential, and
+       * a tab closing should end the session rather than leave it on disk indefinitely.
+       */
+      const auth = await (await fetch('/auth-config')).json()
+
+      const TOKEN_KEY = 'intellidev.token'
+      const nativeFetch = window.fetch.bind(window)
+
+      window.fetch = async (input, init = {}) => {
+        const url = String(typeof input === 'string' ? input : (input.url ?? ''))
+        const token = sessionStorage.getItem(TOKEN_KEY)
+        // Only our own API, and never the ungated config route — sending a stale token to
+        // Supabase's own endpoints would be wrong, and to /auth-config pointless.
+        const ours = url.startsWith('/api/') || url.startsWith('/internal/')
+        const res = await nativeFetch(input, {
+          ...init,
+          headers: {
+            ...(init.headers ?? {}),
+            ...(ours && token ? { authorization: `Bearer ${token}` } : {}),
+          },
+        })
+        if (res.status === 401 && ours) {
+          // The token expired mid-session. Signing in again is the only remedy, so ask rather
+          // than let every panel render empty.
+          sessionStorage.removeItem(TOKEN_KEY)
+          location.reload()
+        }
+        return res
+      }
+
+      // Named for what it signs into. The page already has a `signIn(harness, button)` that
+      // starts a harness login, and the collision made the whole module fail to parse — so
+      // nothing ran, and the symptom was every panel rendering empty.
+      async function signInToSupabase(email, password) {
+        const res = await nativeFetch(`${auth.supabaseUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: { apikey: auth.supabaseAnonKey, 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body.error_description ?? body.msg ?? 'sign-in failed')
+        }
+        const { access_token } = await res.json()
+        sessionStorage.setItem(TOKEN_KEY, access_token)
+      }
+
+      /**
+       * Blocks the page until there is a token.
+       *
+       * A form drawn here rather than a separate route, so the whole app stays one file and the
+       * rest of the script can assume it is authenticated by the time it runs.
+       */
+      async function requireSignIn() {
+        if (!auth.required) return
+        // Verify a stored token rather than trusting it: an expired one would otherwise let the
+        // page render and then fail every panel with a 401.
+        if (sessionStorage.getItem(TOKEN_KEY)) {
+          const probe = await fetch('/api/config')
+          if (probe.ok) return
+          sessionStorage.removeItem(TOKEN_KEY)
+        }
+
+        document.body.innerHTML = `
+          <div style="max-width:22rem;margin:6rem auto;font:14px system-ui">
+            <h1 style="font-size:1.1rem;margin-bottom:.25rem">Intellidev</h1>
+            <p style="color:#888;margin-top:0">Sign in to continue.</p>
+            <form id="signin" style="display:grid;gap:.6rem;margin-top:1.25rem">
+              <input id="email" type="email" placeholder="email" autocomplete="username"
+                     required style="padding:.55rem;border:1px solid #ccc;border-radius:6px" />
+              <input id="password" type="password" placeholder="password"
+                     autocomplete="current-password" required
+                     style="padding:.55rem;border:1px solid #ccc;border-radius:6px" />
+              <button type="submit"
+                      style="padding:.55rem;border:0;border-radius:6px;background:#2f7d4f;color:#fff;cursor:pointer">
+                Sign in
+              </button>
+              <p id="err" style="color:#c33;min-height:1.2em;margin:0"></p>
+            </form>
+          </div>`
+
+        await new Promise((resolve) => {
+          $('signin').onsubmit = async (event) => {
+            event.preventDefault()
+            $('err').textContent = ''
+            try {
+              await signInToSupabase($('email').value, $('password').value)
+              resolve()
+            } catch (error) {
+              $('err').textContent = String(error.message ?? error)
+            }
+          }
+        })
+        // Reload rather than re-render: the rest of this script has already run against a page
+        // that no longer exists, and re-entering it by hand is how half-initialised state bugs
+        // start.
+        location.reload()
+      }
+
+      await requireSignIn()
+      const state = {
+        tasks: [],
+        selected: null,
+        run: null,
+        stream: null,
+        lastSeq: -1,
+        servers: [],
+        presets: [],
+        accounts: [],
+        recipes: [],
+        config: null,
+      }
+
+      // --- theme ---------------------------------------------------------------
+      $('theme').onclick = () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
+        document.documentElement.dataset.theme = next
+        localStorage.setItem('theme', next)
+      }
+      document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'dark'
+
+      // --- boot ----------------------------------------------------------------
+      const config = await (await fetch('/api/config')).json()
+      $('mode').textContent = config.mode
+      $('mode').className = 'pill ' + (config.mode === 'docker' ? 'running' : '')
+      $('cfg').textContent =
+        `${config.image} · ${config.hasGithubToken ? 'github token set' : 'no github token'}`
+      $('harness').innerHTML = config.harnesses
+        .map((h) => `<option ${h === 'opencode' ? 'selected' : ''}>${h}</option>`)
+        .join('')
+
+      // --- tasks ---------------------------------------------------------------
+      async function loadTasks() {
+        state.tasks = (await (await fetch('/api/tasks')).json()).tasks
+        $('tasks').innerHTML =
+          state.tasks.length === 0
+            ? '<p class="empty">No tasks yet.</p>'
+            : state.tasks
+                .map(
+                  (t) => `
+          <div class="card task ${state.selected === t.id ? 'selected' : ''}" data-id="${t.id}">
+            <div class="row" style="justify-content: space-between">
+              <h3>${escape(t.title)}</h3>
+              <span class="pill ${t.status}">${escapeHtmlText(taskLabel(t))}</span>
+            </div>
+            <p>${escape(t.harness)} · ${escape(t.repoUrl.split('/').slice(-1)[0])}${t.mcpServerIds?.length ? ` · ${escape(t.mcpServerIds.join(', '))}` : ''}</p>
+          </div>`,
+                )
+                .join('')
+        for (const el of $('tasks').querySelectorAll('.task')) {
+          el.onclick = () => select(el.dataset.id)
+        }
+      }
+
+      // --- harness accounts ----------------------------------------------------
+
+      async function loadSeats() {
+        const [accounts, recipes, config] = await Promise.all([
+          fetch('/api/harness/accounts').then((r) => r.json()),
+          state.recipes.length
+            ? { recipes: state.recipes }
+            : fetch('/api/harness/recipes').then((r) => r.json()),
+          fetch('/api/config').then((r) => r.json()),
+        ])
+        state.accounts = accounts.accounts
+        state.recipes = recipes.recipes
+        state.config = config
+        renderSeats()
+      }
+
+      function renderSeats() {
+        // Every harness is listed, connected or not: a missing credential is the thing worth
+        // seeing, since without it a run reaches the model layer and reports "Not logged in".
+        $('seats').innerHTML = state.recipes
+          .map((r) => {
+            const account = state.accounts.find((a) => a.harness === r.harness)
+            const viaEnv = !account && state.config?.harnessAuth?.[r.harness]
+            // A stored seat whose material cannot be decrypted is not connected, whatever the
+            // row says. It showed green until a run failed, which is the worst place to learn it.
+            const broken = Boolean(account) && account.readable === false
+            const ok = (Boolean(account) && !broken) || viaEnv
+            const detail = broken
+              ? 'stored credential cannot be read — sign in again'
+              : account
+                ? account.envVars.length
+                  ? account.envVars.join(', ')
+                  : account.files.join(', ')
+                : viaEnv
+                  ? 'from the control plane environment'
+                  : `run: ${r.command}`
+            return `
+              <div class="srv">
+                <span class="dot ${ok ? 'ok' : 'unknown'}"></span>
+                <div class="grow">
+                  <div class="name">${escape(r.harness)}</div>
+                  <p class="meta">${escape(detail)}</p>
+                </div>
+                ${
+                  r.canSignIn
+                    ? `<button class="secondary" data-signin="${escape(r.harness)}">${account ? 'Sign in again' : 'Sign in'}</button>`
+                    : `<button class="secondary" data-import="${escape(r.harness)}">${account ? 'Re-import' : 'Import'}</button>`
+                }
+                ${account ? `<button class="secondary" data-forget="${escape(r.harness)}" title="Forget">×</button>` : ''}
+              </div>`
+          })
+          .join('')
+
+        $('seats')
+          .querySelectorAll('[data-import]')
+          .forEach((b) => {
+            b.onclick = async () => {
+              const harness = b.dataset.import
+              const recipe = state.recipes.find((r) => r.harness === harness)
+              /**
+               * A file picker, not a path prompt.
+               *
+               * A path is only meaningful when the control plane shares a filesystem with the
+               * person at the keyboard. Hosted, it reads a container's disk and finds nothing —
+               * so the browser reads the file and uploads what it contains instead, which is the
+               * form that works in both places.
+               */
+              const input = document.createElement('input')
+              input.type = 'file'
+              // A hint, not a restriction: these files have no consistent extension.
+              input.accept = '.json,application/json'
+              input.onchange = async () => {
+                const file = input.files?.[0]
+                if (!file) return
+                b.disabled = true
+                try {
+                  await connectHarness({ harness, contents: await file.text() })
+                } finally {
+                  b.disabled = false
+                }
+              }
+              // Told where to look, since the file is usually hidden in the home directory.
+              b.title = `usually ${recipe.hostPath}`
+              input.click()
+            }
+          })
+        $('seats')
+          .querySelectorAll('[data-signin]')
+          .forEach((b) => {
+            b.onclick = () => void signIn(b.dataset.signin, b)
+          })
+        $('seats')
+          .querySelectorAll('[data-forget]')
+          .forEach((b) => {
+            b.onclick = async () => {
+              await fetch(`/api/harness/accounts/${b.dataset.forget}`, { method: 'DELETE' })
+              await loadSeats()
+            }
+          })
+      }
+
+      /**
+       * Drive the harness's own login: open the vendor's page, relay what comes back.
+       *
+       * A window is opened *synchronously on the click*, while the gesture that permits it is
+       * still in scope, and navigated once the control plane has scraped the URL. Opening it
+       * later — after the await — is what browsers block, which is why this was an anchor
+       * before.
+       *
+       * The anchor is still rendered, and is what happens when a blocker refuses the window
+       * anyway: `window.open` returns null, and the flow continues with a link the person can
+       * click. Nothing depends on the popup existing.
+       */
+      async function signIn(harness, button) {
+        button.disabled = true
+        /**
+         * Opened blank on the click, navigated once the URL is known.
+         *
+         * FOUND BY CLICKING IT. This asked for `noopener` too, and `window.open` returns **null**
+         * whenever that is set — by specification, since there is no handle to give back. So the
+         * window opened, stayed `about:blank`, and nothing could ever navigate it.
+         *
+         * A handle is the whole point here, so `noopener` cannot be used. The page it will hold
+         * is the vendor's own sign-in, and the anchor below keeps `rel="noopener"` for the case
+         * where a person clicks that instead.
+         */
+        const authWindow = window.open('', '_blank', 'width=520,height=720')
+        /**
+         * Say something while it is blank.
+         *
+         * The window is opened on the click and navigated once the URL is known, which is
+         * instant for a direct sign-in and about a minute when a container has to start. A blank
+         * window for a minute reads as a broken popup, and the person closes it — so it holds a
+         * line of text until it has somewhere to go.
+         */
+        try {
+          authWindow?.document.write(
+            '<title>Signing in…</title>' +
+              '<body style="font:14px system-ui;display:grid;place-items:center;height:90vh;' +
+              'margin:0;color:#555">Preparing the sign-in page…</body>',
+          )
+        } catch {
+          /* a blocker took it; the link in the panel still works */
+        }
+        const panel = $('loginPanel')
+        panel.hidden = false
+        $('loginTitle').textContent = `Sign in to ${harness}`
+        $('loginHint').textContent = 'starting the login…'
+        $('loginLink').textContent = ''
+        $('loginLink').removeAttribute('href')
+        $('loginCodeRow').hidden = true
+        $('loginCodeShown').hidden = true
+        $('loginSubmit').hidden = true
+        $('loginStatus').textContent = ''
+
+        try {
+          const res = await fetch(`/api/harness/login/${harness}/start`, { method: 'POST' })
+          const body = await res.json()
+          const login = body.login
+          if (!res.ok || !login?.authorizationUrl) {
+            $('loginHint').textContent = body.error ?? login?.error ?? 'could not start the login'
+            // Otherwise a blank tab is left sitting there with no explanation.
+            try {
+              authWindow?.close()
+            } catch {
+              /* already gone */
+            }
+            return
+          }
+
+          $('loginLink').href = login.authorizationUrl
+          $('loginLink').textContent = 'Open the sign-in page ↗'
+          // Navigated now that the URL exists. A blocked or closed window is not an error:
+          // the link above does the same job.
+          try {
+            if (authWindow && !authWindow.closed) authWindow.location.href = login.authorizationUrl
+          } catch {
+            /* a blocker took it; the link stands */
+          }
+          // The code gets its own box; the hint explains what to do with it.
+          $('loginCodeShown').hidden = !login.userCode
+          $('loginUserCode').textContent = login.userCode ?? ''
+          $('loginHint').textContent = login.inputHint
+            ? login.inputHint
+            : login.needsCode
+              ? 'Sign in, then paste the code that page shows you.'
+              : 'Sign in; this page will notice when it completes.'
+          $('loginCodeRow').hidden = !login.needsCode
+          $('loginSubmit').hidden = !login.needsCode
+
+          $('loginStatus').textContent = 'waiting for you to finish…'
+          const settled = await waitForLogin()
+          $('loginStatus').textContent =
+            settled?.status === 'connected'
+              ? 'connected'
+              : (settled?.error ?? 'the login did not complete')
+          if (settled?.status === 'connected') panel.hidden = true
+        } finally {
+          button.disabled = false
+          await loadSeats()
+        }
+      }
+
+      /**
+       * Is this paste usable, and what is the code inside it?
+       *
+       * Mirrors the control plane's own extraction so the answer appears as the person pastes
+       * rather than after a round trip. Codex sends them back with a whole failed URL — the code
+       * is a parameter inside it — and Claude with `code#state`.
+       */
+      function readPastedCode(raw) {
+        const text = (raw ?? '').trim()
+        if (!text) return { ok: false }
+        if (/^https?:\/\//.test(text)) {
+          try {
+            const code = new URL(text).searchParams.get('code')
+            return code ? { ok: true, code } : { ok: false, why: 'that address has no code in it' }
+          } catch {
+            return { ok: false, why: 'that does not look like an address' }
+          }
+        }
+        return { ok: true, code: text.split('#')[0] }
+      }
+
+      /** Submits whatever is in the box, and reports what came back. */
+      async function submitLoginCode() {
+        const parsed = readPastedCode($('loginCode').value)
+        if (!parsed.ok) return
+        $('loginSubmit').disabled = true
+        const res = await fetch('/api/harness/login/code', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code: $('loginCode').value.trim() }),
+        })
+        $('loginSubmit').disabled = false
+        $('loginCode').value = ''
+        $('loginCodeState').textContent = ''
+        $('loginStatus').textContent = res.ok
+          ? 'finishing…'
+          : ((await res.json()).error ?? 'code rejected')
+      }
+
+      /**
+       * Validates as it is typed or pasted, and submits itself once it is valid.
+       *
+       * The last step of a sign-in should not be a form. Everything needed is in what they
+       * pasted, so asking them to then find a button is asking for a click that carries no
+       * information.
+       */
+      $('loginCode').oninput = () => {
+        const parsed = readPastedCode($('loginCode').value)
+        $('loginCodeState').textContent = parsed.ok
+          ? 'code found — signing in…'
+          : (parsed.why ?? '')
+        $('loginCodeState').style.color = parsed.ok ? 'var(--ok, #2f7d4f)' : 'var(--fg3)'
+        if (parsed.ok) void submitLoginCode()
+      }
+
+      $('loginPaste').onclick = async () => {
+        try {
+          $('loginCode').value = await navigator.clipboard.readText()
+          $('loginCode').dispatchEvent(new Event('input'))
+        } catch {
+          // Refused, or unsupported. The field beside it is the fallback, and always was.
+          $('loginCodeState').textContent = 'could not read the clipboard — paste into the box'
+        }
+      }
+
+      $('loginSubmit').onclick = async () => {
+        const code = $('loginCode').value.trim()
+        if (!code) return
+        $('loginSubmit').disabled = true
+        const res = await fetch('/api/harness/login/code', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code }),
+        })
+        $('loginSubmit').disabled = false
+        $('loginCode').value = ''
+        if (!res.ok) $('loginStatus').textContent = (await res.json()).error ?? 'code rejected'
+        else $('loginStatus').textContent = 'code sent; finishing…'
+      }
+
+      $('loginCancel').onclick = async () => {
+        await fetch('/api/harness/login/cancel', { method: 'POST' })
+        $('loginPanel').hidden = true
+      }
+
+      /** Poll until the CLI exits one way or the other. */
+      async function waitForLogin() {
+        for (let i = 0; i < 150; i++) {
+          const { login } = await (await fetch('/api/harness/login/status')).json()
+          if (!login || login.status === 'connected' || login.status === 'failed') return login
+          await new Promise((r) => setTimeout(r, 2000))
+        }
+        return null
+      }
+
+      async function connectHarness(body) {
+        const res = await fetch('/api/harness/accounts', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) alert((await res.json()).error ?? 'could not connect')
+        await loadSeats()
+      }
+
+      // --- mcp servers ---------------------------------------------------------
+
+      async function loadServers() {
+        const [servers, presets] = await Promise.all([
+          fetch('/api/mcp/servers').then((r) => r.json()),
+          state.presets.length
+            ? { presets: state.presets }
+            : fetch('/api/mcp/presets').then((r) => r.json()),
+        ])
+        state.servers = servers.servers
+        state.presets = presets.presets
+        renderServers()
+        renderTaskServers()
+      }
+
+      function renderServers() {
+        const el = $('servers')
+        if (!state.servers.length) {
+          el.innerHTML = '<p class="empty">Nothing connected.</p>'
+          return
+        }
+        el.innerHTML = state.servers
+          .map((s) => {
+            // An authorized-but-unverified server is its own state: the token exists but no
+            // tool list has been proven, so the button says Verify rather than Connect.
+            const needsAuth = !s.authorized
+            const label = needsAuth ? (s.auth === 'oauth2' ? 'Connect' : 'Add token') : 'Verify'
+            const detail =
+              s.health === 'ok'
+                ? `${s.toolCount ?? 0} tools`
+                : s.lastError
+                  ? s.lastError.slice(0, 90)
+                  : s.authorized
+                    ? 'not verified yet'
+                    : 'not connected'
+            return `
+              <div class="srv">
+                <span class="dot ${s.health}" title="${escape(s.health)}"></span>
+                <div class="grow">
+                  <div class="name">${escape(s.name)} <span style="color:var(--fg4);font-weight:400">${escape(s.auth)}</span></div>
+                  <p class="meta">${escape(detail)}</p>
+                </div>
+                <button class="secondary" data-connect="${escape(s.id)}">${label}</button>
+                <button class="secondary" data-remove="${escape(s.id)}" title="Remove">×</button>
+              </div>`
+          })
+          .join('')
+
+        el.querySelectorAll('[data-connect]').forEach((b) => {
+          b.onclick = () => connectServer(b.dataset.connect, b)
+        })
+        el.querySelectorAll('[data-remove]').forEach((b) => {
+          b.onclick = async () => {
+            await fetch(`/api/mcp/servers/${b.dataset.remove}`, { method: 'DELETE' })
+            await loadServers()
+          }
+        })
+      }
+
+      async function connectServer(id, button) {
+        const server = state.servers.find((s) => s.id === id)
+        // A bearer server with no token yet has nothing to connect to; reopen the form so the
+        // token can be supplied, rather than failing a verify that was always going to fail.
+        if (server && server.auth === 'bearer' && !server.authorized) {
+          openServerForm(server)
+          return
+        }
+        button.disabled = true
+        button.textContent = '…'
+        try {
+          const res = await fetch(`/api/mcp/servers/${id}/connect`, { method: 'POST' })
+          const body = await res.json()
+          if (!res.ok) {
+            $('serverHint').textContent = body.error ?? 'could not connect'
+          } else if (body.kind === 'oauth') {
+            // A popup, not a redirect: the board keeps its state and the callback page can
+            // tell this window when consent is done.
+            window.open(body.authorizationUrl, 'intellidev-oauth', 'width=560,height=760')
+          }
+        } finally {
+          await loadServers()
+        }
+      }
+
+      // The callback page posts this when the exchange finishes.
+      window.addEventListener('message', (event) => {
+        if (event.data?.type === 'intellidev:mcp-connected') void loadServers()
+      })
+
+      function openServerForm(server) {
+        $('serverForm').hidden = false
+        $('addServer').hidden = true
+        $('sPreset').innerHTML =
+          '<option value="">Custom…</option>' +
+          state.presets
+            .map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`)
+            .join('')
+        $('sId').value = server?.id ?? ''
+        $('sName').value = server?.name ?? ''
+        $('sUrl').value = server?.url ?? ''
+        $('sAuth').value = server?.auth ?? 'oauth2'
+        $('sToken').value = ''
+        $('sScope').value = ''
+        $('sHint').textContent = ''
+        $('serverHint').textContent = ''
+        syncAuthRows()
+      }
+
+      function syncAuthRows() {
+        const auth = $('sAuth').value
+        $('sTokenRow').hidden = auth !== 'bearer'
+        $('sScopeRow').hidden = auth !== 'oauth2'
+      }
+      $('sAuth').onchange = syncAuthRows
+
+      $('sPreset').onchange = () => {
+        const preset = state.presets.find((p) => p.id === $('sPreset').value)
+        if (!preset) return
+        $('sId').value = preset.id
+        $('sName').value = preset.name
+        $('sUrl').value = preset.url
+        $('sAuth').value = preset.auth
+        $('sScope').value = preset.scope ?? ''
+        $('sHint').textContent = preset.hint
+        syncAuthRows()
+      }
+
+      $('addServer').onclick = () => openServerForm(null)
+      $('cancelServer').onclick = () => {
+        $('serverForm').hidden = true
+        $('addServer').hidden = false
+      }
+
+      $('serverForm').onsubmit = async (event) => {
+        event.preventDefault()
+        $('saveServer').disabled = true
+        $('serverHint').textContent = ''
+        const body = {
+          id: $('sId').value.trim(),
+          name: $('sName').value.trim() || $('sId').value.trim(),
+          url: $('sUrl').value.trim(),
+          auth: $('sAuth').value,
+          ...($('sAuth').value === 'bearer' && $('sToken').value
+            ? { token: $('sToken').value }
+            : {}),
+          ...($('sAuth').value === 'oauth2' && $('sScope').value.trim()
+            ? { scope: $('sScope').value.trim() }
+            : {}),
+        }
+        const res = await fetch('/api/mcp/servers', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        $('saveServer').disabled = false
+        if (!res.ok) {
+          const error = await res.json()
+          $('serverHint').textContent =
+            (error.issues ?? []).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ||
+            error.error ||
+            'could not save'
+          return
+        }
+        $('serverForm').hidden = true
+        $('addServer').hidden = false
+        await loadServers()
+        // Saving and connecting are one action: a server nobody connected is not useful, and
+        // making it two clicks just invites forgetting the second.
+        const row = $('servers').querySelector(`[data-connect="${body.id}"]`)
+        if (row) await connectServer(body.id, row)
+      }
+
+      function renderTaskServers() {
+        const usable = state.servers.filter((s) => s.authorized)
+        const el = $('taskServers')
+        if (!usable.length) {
+          el.innerHTML =
+            '<p class="hint">No MCP servers connected yet — add one above to give the agent tools.</p>'
+          return
+        }
+        el.innerHTML =
+          '<div class="checks">' +
+          usable
+            .map(
+              (s) => `<label><input type="checkbox" class="taskServer" value="${escape(s.id)}" />
+                 ${escape(s.name)} <span style="color:var(--fg4)">${s.toolCount ?? 0} tools</span></label>`,
+            )
+            .join('') +
+          '</div>'
+      }
+
+      $('form').onsubmit = async (event) => {
+        event.preventDefault()
+        $('create').disabled = true
+        $('formHint').textContent = ''
+        const body = {
+          repoUrl: $('repoUrl').value.trim(),
+          title: $('title').value.trim(),
+          description: $('description').value.trim(),
+          acceptanceCriteria: $('criteria')
+            .value.split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          harness: $('harness').value,
+          baseBranch: $('baseBranch').value.trim() || 'main',
+        }
+        body.mcpServerIds = [...document.querySelectorAll('.taskServer:checked')].map(
+          (c) => c.value,
+        )
+        /**
+         * Only when one was chosen.
+         *
+         * An empty selection means "the project default", and resolution already answers that —
+         * sending an empty string instead would fail the uuid check on a form nobody touched.
+         */
+        const chosenTemplate = $('taskTemplate').value
+        if (chosenTemplate === CUSTOM_STAGES) {
+          /**
+           * The draft travels with the task, as stages rather than a template id.
+           *
+           * Which is what makes it a one-off: resolution takes inline stages over everything
+           * else, no template is created, and a later edit to the project default leaves this
+           * task alone.
+           */
+          if (!state.draftStages?.length) {
+            $('create').disabled = false
+            $('formHint').textContent = 'build the custom stages first, or pick a template'
+            return
+          }
+          body.stages = state.draftStages
+        } else if (chosenTemplate) {
+          body.stageTemplateId = chosenTemplate
+        }
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        $('create').disabled = false
+        if (!res.ok) {
+          const error = await res.json()
+          $('formHint').textContent =
+            (error.issues ?? []).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ||
+            'could not create task'
+          return
+        }
+        const { task } = await res.json()
+        $('title').value = ''
+        $('description').value = ''
+        $('criteria').value = ''
+        // The draft belonged to that task. Leaving it armed would silently apply a pipeline
+        // built for one task to the next one somebody types.
+        state.draftStages = null
+        renderTaskTemplateOptions()
+        $('taskTemplate').value = ''
+        await loadTasks()
+        select(task.id)
+      }
+
+      // --- detail --------------------------------------------------------------
+      async function select(id) {
+        state.selected = id
+        state.run = null
+        closeStream()
+        await loadTasks()
+        const { task, runs } = await (await fetch(`/api/tasks/${id}`)).json()
+        /**
+         * Fetched alongside, and tolerant of failing.
+         *
+         * A task detail pane that will not render because an artifact list could not be read
+         * would make a new feature able to break the old one. Summaries only — bodies are
+         * fetched when something is opened.
+         */
+        const artifacts = await fetch(`/api/tasks/${id}/artifacts`)
+          .then((res) => (res.ok ? res.json() : { artifacts: [] }))
+          .then((body) => body.artifacts ?? [])
+          .catch(() => [])
+        renderDetail(task, runs, artifacts)
+        const current = latestRun(runs)
+        if (current) follow(current.id)
+      }
+
+      /**
+       * The run a task is on now, which is the newest one.
+       *
+       * FOUND AFTER A RE-DISPATCH. `runs` comes back oldest-first, and this took `runs[0]` — so
+       * dispatching again left the pane streaming the *first* run: the status chip said RUNNING
+       * while the banner underneath showed a failure from an earlier attempt and the live log
+       * was pinned to a container that had stopped days ago.
+       *
+       * Sorted here rather than by changing the query, because "oldest first" is right for a
+       * history and this is the only place that wants the opposite.
+       */
+      function latestRun(runs) {
+        return [...(runs ?? [])]
+          .sort((a, b) => String(a.startedAt ?? '').localeCompare(String(b.startedAt ?? '')))
+          .at(-1)
+      }
+
+      function renderDetail(task, runs, artifacts = []) {
+        const run = latestRun(runs)
+        $('detail').innerHTML = `
+          <div class="row" style="justify-content: space-between; align-items: flex-start">
+            <div>
+              <h2 style="margin-bottom: 6px">Task</h2>
+              <div style="font-size: 16px; font-weight: 600">${escape(task.title)}</div>
+              <p style="color: var(--fg3); margin: 6px 0 0; max-width: 60ch">${escape(task.description)}</p>
+            </div>
+            <div class="row">
+              <span class="pill ${task.status}">${escapeHtmlText(taskLabel(task, runs))}</span>
+              <!--
+                Only before it runs. Editing the stages of a task that has already started would
+                describe something that did not happen, and a resumed run reads its own state
+                rather than the task.
+              -->
+              <button id="taskStages" class="secondary"
+                ${task.status === 'not_started' || task.status === 'failed' ? '' : 'disabled'}>
+                ${task.stages ? 'Stages (edited)' : 'Stages'}
+              </button>
+              <button id="dispatch" ${task.status === 'not_started' || task.status === 'failed' ? '' : 'disabled'}>
+                Dispatch
+              </button>
+            </div>
+          </div>
+          <div class="stages" id="stages"></div>
+          ${run?.prUrl ? `<p><a href="${run.prUrl}" target="_blank" rel="noreferrer">${run.prUrl}</a></p>` : ''}
+          ${run?.failureReason ? `<p style="color: var(--red)">${escape(run.failureReason)}</p>` : ''}
+          <h2 style="margin-top: 14px">Live log ${run ? `<span class="meta">· ${run.id}</span>` : ''}</h2>
+          <div id="log">${run ? '' : 'Nothing dispatched yet.'}</div>
+        `
+        /**
+         * The same dialog, pointed at one task.
+         *
+         * It opens on whatever the task will actually run — its own pinned stages if it has
+         * them, the resolved template otherwise — so editing starts from the truth rather than
+         * from a blank list. Saving pins them to this task alone.
+         */
+        $('taskStages').onclick = () => {
+          state.stages = (task.stages ?? state.projectStages ?? []).map((stage) => ({ ...stage }))
+          renderStages()
+          openStageDialog({ taskId: task.id })
+        }
+
+        $('dispatch').onclick = async () => {
+          $('dispatch').disabled = true
+          $('log').textContent = ''
+          const res = await fetch(`/api/tasks/${task.id}/dispatch`, { method: 'POST' })
+          if (!res.ok) {
+            append('bad', `dispatch failed: ${(await res.json()).error}`)
+            return
+          }
+          const { runId } = await res.json()
+          await loadTasks()
+          follow(runId)
+        }
+
+        /**
+         * Appended rather than built into the template above.
+         *
+         * `innerHTML` is written once and the log streams into part of it, so an artifact list
+         * that arrived with the task would be rebuilt — and its handlers lost — every time the
+         * pane re-rendered.
+         */
+        const list = renderArtifactList(artifacts)
+        if (list) {
+          const box = document.createElement('div')
+          box.innerHTML = list
+          $('detail').append(box)
+          box.querySelectorAll('[data-artifact]').forEach((el) => {
+            el.onclick = () => void openArtifact(el.dataset.artifact)
+          })
+        }
+      }
+
+      // --- stages --------------------------------------------------------------
+      /**
+       * The stage editor.
+       *
+       * Held as an array in `state.stages` and written whole, which mirrors how a template is
+       * stored: the order *is* the array, so a move is a splice rather than a renumbering that
+       * could disagree with itself.
+       */
+      state.stages = []
+      state.stageSource = null
+
+      /**
+       * `keepOpen` is the template the editor should still be showing afterwards.
+       *
+       * Without it a reload after "Save as" put the picker back on the default, so the template
+       * someone had just created vanished from under them the moment it was saved.
+       */
+      async function loadStages({ keepOpen } = {}) {
+        const res = await fetch('/api/stage-templates')
+        if (!res.ok) return
+        const body = await res.json()
+        state.stages = body.effective.stages.map((s) => ({ ...s }))
+        // Kept so opening the dialog for a task can start from what that task would run.
+        state.projectStages = body.effective.stages
+        state.stageSource = body.effective.source
+        state.stageTaskId = null
+        state.wellKnownStages = body.wellKnown ?? []
+        /**
+         * Every saved template, not only the one in effect.
+         *
+         * The list was fetched and thrown away, which is why the editor could reach exactly one
+         * of them: whatever `effective` happened to be.
+         */
+        state.templates = body.templates ?? []
+        state.openTemplateId =
+          (keepOpen && state.templates.find((t) => t.id === keepOpen)?.id) ??
+          state.templates.find((t) => t.name === body.effective.name)?.id ??
+          null
+        /**
+         * Which template is in effect, kept apart from which one is open.
+         *
+         * They are the same until someone switches the picker, and conflating them is what let
+         * a closed-without-saving switch leave the sidebar button opening the wrong template.
+         */
+        state.effectiveTemplateId =
+          state.templates.find((t) => t.name === body.effective.name)?.id ?? null
+        state.effectiveTemplateName =
+          body.effective.source === 'built-in' ? '' : body.effective.name
+
+        const open = state.templates.find((t) => t.id === state.openTemplateId)
+        if (open) {
+          // The editor shows the template the picker names, which for `keepOpen` is not the one
+          // in effect — reading the stages off `effective` there would show the wrong pipeline.
+          state.stages = open.stages.map((stage) => ({ ...stage }))
+        }
+        $('stageTemplateName').value = open
+          ? open.name
+          : body.effective.source === 'built-in'
+            ? ''
+            : body.effective.name
+        renderTemplatePicker()
+        renderTaskTemplateOptions()
+        renderStages()
+      }
+
+      /** A template's own name, plus what it is: a project's, the space's, the default. */
+      function templateLabel(template) {
+        const marks = [
+          template.projectId ? 'this project' : 'shared by the space',
+          ...(template.isDefault ? ['default'] : []),
+        ]
+        return `${template.name} — ${marks.join(', ')}`
+      }
+
+      /**
+       * The picker, and the state that goes with whichever template is open.
+       *
+       * "New template…" is an entry rather than a separate button because creating one is the
+       * same act as editing one with a different name — the alternative was a second control
+       * that did what typing in the name field already does.
+       */
+      function renderTemplatePicker() {
+        const templates = state.templates ?? []
+        $('templatePicker').innerHTML = [
+          ...templates.map(
+            (t) =>
+              `<option value="${escapeAttr(t.id)}" ${t.id === state.openTemplateId ? 'selected' : ''}>${escapeHtmlText(templateLabel(t))}</option>`,
+          ),
+          `<option value="" ${state.openTemplateId ? '' : 'selected'}>New template…</option>`,
+        ].join('')
+
+        const open = templates.find((t) => t.id === state.openTemplateId)
+        // A template the space owns is edited from here, but deleting it would change what every
+        // other project in the space inherits — so that is not a button on a project's screen.
+        $('deleteTemplate').disabled = !open || !open.projectId
+        $('deleteTemplate').title = open?.projectId
+          ? 'Delete this template'
+          : open
+            ? "This one belongs to the client space — delete it where it's owned"
+            : 'Nothing to delete yet'
+        $('makeDefault').checked = open ? open.isDefault : templates.length === 0
+      }
+
+      /**
+       * The stages a new task will run, chosen at dispatch.
+       *
+       * The project default is the first entry and stays selected unless someone picks
+       * otherwise, so the form behaves exactly as it did for anyone who ignores this.
+       */
+      function renderTaskTemplateOptions() {
+        const templates = state.templates ?? []
+        const chosen = $('taskTemplate').value
+        $('taskTemplate').innerHTML = [
+          `<option value="">the project default${
+            state.stageSource === 'built-in' ? ' (built-in stages)' : ''
+          }</option>`,
+          ...templates
+            .filter((t) => !t.isDefault)
+            .map(
+              (t) =>
+                `<option value="${escapeAttr(t.id)}">${escapeHtmlText(templateLabel(t))}</option>`,
+            ),
+          /**
+           * A pipeline for this one task, saving nothing.
+           *
+           * The alternative was a template per variation: "run this one without the design
+           * stage" would leave a permanent project-level profile behind, and a project would
+           * collect one per task until the picker was useless.
+           */
+          `<option value="${CUSTOM_STAGES}">${
+            state.draftStages ? describeDraft(state.draftStages) : 'custom for this task…'
+          }</option>`,
+        ].join('')
+        // Kept across a reload, so saving a template does not quietly reset a choice made on the
+        // form a moment ago.
+        if (chosen) $('taskTemplate').value = chosen
+      }
+
+      /** The sentinel for "not a template at all". Not a uuid, so it cannot collide with one. */
+      const CUSTOM_STAGES = 'custom'
+
+      /** What the custom option says once there is a draft behind it. */
+      function describeDraft(stages) {
+        const off = stages.filter((stage) => stage.enabled === false).length
+        const runs = stages.length - off
+        // "3 stages, 1 off" reads as though there were three in total. Say which will run.
+        return `custom — ${runs} will run${off ? `, ${off} off` : ''} (edit)`
+      }
+
+      /**
+       * Choosing "custom" opens the editor rather than selecting a value.
+       *
+       * The stages have to exist before the task does, so this is the only point at which they
+       * can be built — and building them is an edit, not a pick from a list.
+       */
+      $('taskTemplate').onchange = () => {
+        if ($('taskTemplate').value !== CUSTOM_STAGES) return
+        // Starts from what this task would have run anyway, which is nearly always the thing
+        // being varied.
+        state.stages = (state.draftStages ?? state.projectStages ?? []).map((stage) => ({
+          ...stage,
+        }))
+        renderStages()
+        openStageDialog({ draft: true })
+      }
+
+      /**
+       * What a status is called on screen.
+       *
+       * The pill used to print the stored value with its underscores swapped, so it read
+       * `blocked` and `waiting capacity` — accurate as field names and unhelpful as English. The
+       * class still carries the raw status, so the colours keep keying off the real thing.
+       */
+      const TASK_STATUS_WORDS = {
+        not_started: 'not started',
+        dispatched: 'starting',
+        running: 'running',
+        waiting_capacity: 'waiting for capacity',
+        in_review: 'in review',
+        done: 'done',
+        blocked: 'waiting on approval',
+        failed: 'failed',
+      }
+
+      /**
+       * The label for a task, preferring what its newest run says.
+       *
+       * A parked run is the precise fact: the container is gone and a decision is outstanding.
+       * The task status is a coarser projection of that, and it can also be *stale* — a run that
+       * parked before parking started setting `blocked` left its task on `running`, and the board
+       * claimed something was running when nothing was. Reading the run fixes both at once,
+       * without a migration to correct rows after the fact.
+       *
+       * `runs` is absent in the sidebar, which lists tasks only; there the mapped word is used.
+       */
+      function taskLabel(task, runs) {
+        const current = runs ? latestRun(runs) : undefined
+        if (current?.status === 'parked') return 'waiting on approval'
+        return TASK_STATUS_WORDS[task.status] ?? task.status.replace(/_/g, ' ')
+      }
+
+      /** Where the stages a new task runs came from, in words rather than a field name. */
+      const SOURCE_WORDS = {
+        'built-in': 'the built-in defaults — nothing has been configured yet',
+        'space-default': "this client space's stages, shared by every project in it",
+        'project-default': "this project's own stages",
+        'task-template': 'a template chosen per task',
+        'task-inline': 'stages pinned to a single task',
+      }
+
+      function renderStages() {
+        $('stagesSource').textContent = state.stageSource
+          ? `New tasks run ${SOURCE_WORDS[state.stageSource] ?? state.stageSource}.`
+          : ''
+
+        /**
+         * The sidebar shows what will happen; the dialog is where it changes.
+         *
+         * An arrow-separated list is enough to answer "is the review stage still in there?"
+         * without opening anything, and a mark for the stages that stop for approval, because
+         * that is the one property with a cost attached.
+         */
+        const effective = state.projectStages ?? state.stages
+        $('stagesSummary').textContent = effective.length
+          ? effective.map((stage) => `${stage.id}${stage.requiresApproval ? ' ⏸' : ''}`).join(' → ')
+          : 'No stages configured.'
+
+        if (state.stages.length === 0) {
+          $('stageList').innerHTML = '<p class="empty">No stages. A run would do nothing.</p>'
+          return
+        }
+
+        $('stageList').innerHTML = state.stages
+          .map(
+            (stage, i) => `
+            <div class="stage${stage.enabled === false ? ' off' : ''}" draggable="true" data-stage-index="${i}">
+              <div class="stage-head">
+                <!--
+                  The handle is a button, not a bare grip.
+
+                  Dragging replaced the up/down arrows, and a drag-only control cannot be
+                  operated from the keyboard at all — so this one is focusable and moves the
+                  stage with the arrow keys. Same affordance, both ways in.
+                -->
+                <button
+                  type="button"
+                  class="secondary icon grip"
+                  data-stage-grip="${i}"
+                  title="Drag to reorder, or focus and use the arrow keys"
+                  aria-label="reorder ${escapeAttr(stage.id)}"
+                >⋮⋮</button>
+                <span class="hint">${i + 1}</span>
+                <input data-stage-id="${i}" value="${escapeAttr(stage.id)}" placeholder="stage name" />
+                <select data-stage-kind="${i}">
+                  <option value="agent" ${stage.kind === 'agent' ? 'selected' : ''}>agent</option>
+                  <option value="builtin" ${stage.kind === 'builtin' ? 'selected' : ''}>builtin</option>
+                </select>
+                <!--
+                  Off, rather than removed.
+
+                  Turning a stage off keeps it and its prompt in the pipeline, so putting it back
+                  is a click — which is the whole point for a one-off: "run this task without the
+                  design stage" should not mean retyping the design stage afterwards.
+                -->
+                <label class="hint toggle" title="${stage.enabled === false ? 'Skipped on this run' : 'Runs'}">
+                  <input type="checkbox" data-stage-enabled="${i}" ${stage.enabled === false ? '' : 'checked'} />
+                  <span>on</span>
+                </label>
+                <button type="button" class="secondary icon" data-stage-remove="${i}" title="remove">×</button>
+              </div>
+              ${
+                stage.kind === 'builtin'
+                  ? `<select data-stage-action="${i}" style="margin-top: 6px; width: 100%">
+                       ${['git.create_branch', 'git.commit', 'github.open_pr']
+                         .map(
+                           (a) =>
+                             `<option value="${a}" ${stage.action === a ? 'selected' : ''}>${a}</option>`,
+                         )
+                         .join('')}
+                     </select>`
+                  : `<select data-stage-tools="${i}" style="margin-top: 6px; width: 100%">
+                       ${['none', 'read_only', 'full']
+                         .map(
+                           (m) =>
+                             `<option value="${m}" ${(stage.tools?.mode ?? 'none') === m ? 'selected' : ''}>tools: ${m}</option>`,
+                         )
+                         .join('')}
+                     </select>
+                     <textarea data-stage-prompt="${i}" rows="4"
+                       placeholder="what this stage should do — the instructions the model gets">${escapeHtmlText(stage.prompt ?? '')}</textarea>
+                     ${
+                       stage.promptFile && !stage.prompt
+                         ? `<p class="hint" style="margin: 4px 0 0">
+                              No instructions here — this stage reads
+                              <code>${escapeHtmlText(stage.promptFile)}</code> from the image,
+                              which nobody can edit. Type above to replace it.
+                            </p>`
+                         : ''
+                     }`
+              }
+              <label class="hint approval">
+                <input type="checkbox" data-stage-approval="${i}" ${stage.requiresApproval ? 'checked' : ''} />
+                <span>Needs approval — the run stops after this stage and costs nothing until someone decides</span>
+              </label>
+            </div>`,
+          )
+          .join('')
+
+        bindStageInputs()
+      }
+
+      /**
+       * Every control writes straight into `state.stages`.
+       *
+       * Re-rendering on each keystroke would move the caret and lose focus, so only the controls
+       * that change a stage's *shape* — its kind, or its position — redraw.
+       */
+      function bindStageInputs() {
+        /**
+         * Reading a stage out of the array, and recording that it was touched.
+         *
+         * Every control goes through here, so marking it in one place is what makes the
+         * discard warning honest — a flag set by each handler would be forgotten by the next
+         * control someone adds.
+         */
+        const at = (el, attr) => {
+          state.stagesDirty = true
+          return state.stages[Number(el.dataset[attr])]
+        }
+
+        $('stageList')
+          .querySelectorAll('[data-stage-id]')
+          .forEach((el) => (el.oninput = () => (at(el, 'stageId').id = el.value.trim())))
+        $('stageList')
+          .querySelectorAll('[data-stage-prompt]')
+          .forEach((el) => (el.oninput = () => (at(el, 'stagePrompt').prompt = el.value)))
+        $('stageList')
+          .querySelectorAll('[data-stage-tools]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                at(el, 'stageTools').tools = { mode: el.value, allow: [], deny: [] }
+              }),
+          )
+        $('stageList')
+          .querySelectorAll('[data-stage-action]')
+          .forEach((el) => (el.onchange = () => (at(el, 'stageAction').action = el.value)))
+        $('stageList')
+          .querySelectorAll('[data-stage-approval]')
+          .forEach(
+            (el) => (el.onchange = () => (at(el, 'stageApproval').requiresApproval = el.checked)),
+          )
+        /**
+         * Turning a stage off, which the engine already honours by skipping it.
+         *
+         * Re-rendered because the row's appearance changes — a stage that will not run has to
+         * look like one, or the only evidence is a checkbox nobody scrolls back to.
+         */
+        $('stageList')
+          .querySelectorAll('[data-stage-enabled]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                at(el, 'stageEnabled').enabled = el.checked
+                renderStages()
+              }),
+          )
+
+        $('stageList')
+          .querySelectorAll('[data-stage-kind]')
+          .forEach(
+            (el) =>
+              (el.onchange = () => {
+                const stage = at(el, 'stageKind')
+                stage.kind = el.value
+                // The two kinds carry different fields, and leaving the other behind produces a
+                // template the schema rejects on save with a message about a field nobody set.
+                if (stage.kind === 'builtin') {
+                  delete stage.prompt
+                  delete stage.tools
+                  stage.action = stage.action ?? 'git.commit'
+                } else {
+                  delete stage.action
+                  stage.tools = stage.tools ?? { mode: 'none', allow: [], deny: [] }
+                }
+                renderStages()
+              }),
+          )
+
+        const move = (from, to) => {
+          if (to < 0 || to >= state.stages.length || from === to) return
+          state.stagesDirty = true
+          const [moved] = state.stages.splice(from, 1)
+          state.stages.splice(to, 0, moved)
+          renderStages()
+          // Focus follows the stage, so a keyboard reorder can continue rather than dumping the
+          // caret back at the top of the list after every single move.
+          $('stageList').querySelector(`[data-stage-grip="${to}"]`)?.focus()
+        }
+
+        /**
+         * Reordering by dragging the row, with the keyboard as the equal path.
+         *
+         * The arrows were replaced because reordering five stages meant counting clicks. They
+         * are not simply gone: the grip is focusable and takes ArrowUp/ArrowDown, because a
+         * drag-only list is unusable without a mouse.
+         */
+        $('stageList')
+          .querySelectorAll('[data-stage-grip]')
+          .forEach((el) => {
+            const from = Number(el.dataset.stageGrip)
+            el.onkeydown = (event) => {
+              const to =
+                event.key === 'ArrowUp' ? from - 1 : event.key === 'ArrowDown' ? from + 1 : null
+              if (to === null) return
+              // The list scrolls; without this the page jumps a screen on every move.
+              event.preventDefault()
+              move(from, to)
+            }
+          })
+
+        const rows = [...$('stageList').querySelectorAll('[data-stage-index]')]
+        const clearMarks = () =>
+          rows.forEach((row) => row.classList.remove('drop-before', 'drop-after', 'dragging'))
+
+        rows.forEach((row) => {
+          const index = Number(row.dataset.stageIndex)
+
+          row.ondragstart = (event) => {
+            state.dragFrom = index
+            row.classList.add('dragging')
+            // `setData` is required or Firefox refuses to start the drag at all; the payload is
+            // the index, though the handler reads `state.dragFrom` so a drag from another window
+            // cannot reorder this list.
+            event.dataTransfer?.setData('text/plain', String(index))
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+          }
+
+          row.ondragover = (event) => {
+            if (state.dragFrom === undefined || state.dragFrom === index) return
+            // Without preventDefault the drop event never fires — the browser treats the row as
+            // an invalid target and shows the "no drop" cursor.
+            event.preventDefault()
+            const box = row.getBoundingClientRect()
+            const after = event.clientY > box.top + box.height / 2
+            row.classList.remove(after ? 'drop-before' : 'drop-after')
+            row.classList.add(after ? 'drop-after' : 'drop-before')
+          }
+
+          row.ondragleave = () => row.classList.remove('drop-before', 'drop-after')
+
+          row.ondrop = (event) => {
+            event.preventDefault()
+            const from = state.dragFrom
+            state.dragFrom = undefined
+            if (from === undefined || from === index) return clearMarks()
+            const box = row.getBoundingClientRect()
+            const after = event.clientY > box.top + box.height / 2
+            /**
+             * Dropping below a row that sits *after* the one being dragged lands on `index`, not
+             * `index + 1`: removing the dragged row first shifts everything below it up by one.
+             * Getting this wrong moves the stage one place too far, which looks like the drop
+             * being ignored every other time.
+             */
+            const to = after ? (from < index ? index : index + 1) : from < index ? index - 1 : index
+            clearMarks()
+            move(from, to)
+          }
+
+          row.ondragend = () => {
+            state.dragFrom = undefined
+            clearMarks()
+          }
+        })
+        $('stageList')
+          .querySelectorAll('[data-stage-remove]')
+          .forEach(
+            (el) =>
+              (el.onclick = () => {
+                state.stagesDirty = true
+                state.stages.splice(Number(el.dataset.stageRemove), 1)
+                renderStages()
+              }),
+          )
+      }
+
+      /**
+       * Opened as a modal, so the page underneath is inert while a pipeline is being edited.
+       *
+       * `showModal` rather than a hidden div: it traps focus, closes on Escape and dims what is
+       * behind it without any of that being written here.
+       */
+      /**
+       * One dialog, two modes, and the mode is an argument rather than leftover state.
+       *
+       * Both buttons used to call the same handler, so a task edit left the dialog in task mode
+       * and the *sidebar* button then saved to whichever task was last selected — silently
+       * writing a project change onto one task.
+       */
+      function openStageDialog({ taskId, draft } = {}) {
+        state.stageTaskId = taskId ?? null
+        state.stageDraft = Boolean(draft)
+        /**
+         * Three subjects, and only one of them is a template.
+         *
+         * A task's stages — pinned to an existing task, or drafted for one not yet created —
+         * have no name of their own, belong to no template, and are not anyone's default. So
+         * the name field, the picker and the default box are all a project-scope thing: showing
+         * them would offer to do something the save cannot do.
+         */
+        const perTask = Boolean(taskId) || Boolean(draft)
+        $('stageTemplateNameRow').hidden = perTask
+        $('templatePickerRow').hidden = perTask
+        $('makeDefaultRow').hidden = perTask
+        state.stagesDirty = false
+        $('stagesTitle').textContent = taskId
+          ? 'Stages for this task'
+          : draft
+            ? 'Stages for the next task'
+            : 'Project stages'
+        $('stagesScopeNote').textContent = taskId
+          ? 'Saved against this task only — the project default and every other task are untouched.'
+          : draft
+            ? 'Used by the task you are about to create. Nothing is saved as a template, and no other task changes.'
+            : "Saved as this project's default. Every new task starts from it."
+        $('saveStages').textContent = draft ? 'Use these stages' : 'Save'
+        $('stagesStatus').textContent = ''
+        /**
+         * Re-synced on open, not only on load.
+         *
+         * The picker and the default box describe whichever template is open, and both are
+         * plain form controls that keep whatever they were last set to. Opening the dialog
+         * without this showed the default box unchecked for a template that *is* the default —
+         * and a save would then have taken the default away.
+         */
+        if (!perTask) renderTemplatePicker()
+        $('stagesDialog').showModal()
+      }
+
+      $('openStages').onclick = () => {
+        // From the sidebar the subject is the project, so a task edited a moment ago is not it —
+        // and neither is a template someone switched the picker to and then closed without
+        // saving. Both the stages and the picker go back to what is in effect.
+        state.stages = (state.projectStages ?? []).map((stage) => ({ ...stage }))
+        state.openTemplateId = state.effectiveTemplateId ?? null
+        $('stageTemplateName').value = state.effectiveTemplateName ?? ''
+        renderStages()
+        openStageDialog({ taskId: null })
+      }
+      $('closeStages').onclick = () => {
+        /**
+         * Backing out of a draft returns the selector to what it was.
+         *
+         * Otherwise the form would sit on "custom for this task…" with nothing behind it, and
+         * the task would be created with the project default while the form claimed otherwise.
+         */
+        if (state.stageDraft && !state.draftStages) $('taskTemplate').value = ''
+        $('stagesDialog').close()
+      }
+
+      /**
+       * Switching which template is open.
+       *
+       * The editor holds a copy, so switching discards unsaved edits — confirmed rather than
+       * done silently, because the stages someone just typed are not recoverable from anywhere.
+       */
+      $('templatePicker').onchange = () => {
+        const id = $('templatePicker').value
+        const target = (state.templates ?? []).find((t) => t.id === id)
+
+        if (state.stagesDirty && !confirm('Discard the changes you have not saved?')) {
+          // Put the selection back, or the box would claim to show a template it is not showing.
+          renderTemplatePicker()
+          return
+        }
+
+        state.openTemplateId = target?.id ?? null
+        state.stagesDirty = false
+        if (target) {
+          state.stages = target.stages.map((stage) => ({ ...stage }))
+          $('stageTemplateName').value = target.name
+        } else {
+          // A new template starts from what this project runs today rather than from nothing:
+          // most new templates are a variation on the default, not a blank page.
+          state.stages = (state.projectStages ?? []).map((stage) => ({ ...stage }))
+          $('stageTemplateName').value = ''
+        }
+        $('stagesStatus').textContent = ''
+        renderTemplatePicker()
+        renderStages()
+      }
+
+      $('deleteTemplate').onclick = async () => {
+        const open = (state.templates ?? []).find((t) => t.id === state.openTemplateId)
+        if (!open) return
+        if (!confirm(`Delete "${open.name}"? Tasks already dispatched are unaffected.`)) return
+
+        $('deleteTemplate').disabled = true
+        const res = await fetch(`/api/stage-templates/${open.id}`, { method: 'DELETE' })
+        $('deleteTemplate').disabled = false
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          $('stagesStatus').textContent = body.error ?? 'could not delete'
+          return
+        }
+        state.openTemplateId = null
+        state.stagesDirty = false
+        $('stagesStatus').textContent = 'deleted'
+        await loadStages()
+      }
+
+      $('addStage').onclick = () => {
+        state.stagesDirty = true
+        state.stages.push({
+          id: `stage-${state.stages.length + 1}`,
+          kind: 'agent',
+          prompt: '',
+          tools: { mode: 'read_only', allow: [], deny: [] },
+          requiresApproval: false,
+        })
+        renderStages()
+      }
+
+      $('saveStages').onclick = async () => {
+        /**
+         * Two destinations, and the difference is the whole feature.
+         *
+         * With a task selected the stages are pinned to that task: the template it came from is
+         * untouched, and so is every other task. Without one, this is the project's default and
+         * every future task starts from it.
+         */
+        /**
+         * A draft is kept in the page until the task is created.
+         *
+         * There is nothing to save it against yet — the task does not exist — and inventing a
+         * template to hold it is exactly what this avoids.
+         */
+        if (state.stageDraft) {
+          state.draftStages = state.stages.map((stage) => ({ ...stage }))
+          state.stagesDirty = false
+          renderTaskTemplateOptions()
+          $('taskTemplate').value = CUSTOM_STAGES
+          $('stagesDialog').close()
+          return
+        }
+
+        if (state.stageTaskId) {
+          $('saveStages').disabled = true
+          const res = await fetch(`/api/tasks/${state.stageTaskId}/stages`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ stages: state.stages }),
+          })
+          $('saveStages').disabled = false
+          const body = await res.json().catch(() => ({}))
+          $('stagesStatus').textContent = res.ok
+            ? 'saved for this task only'
+            : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
+          if (res.ok) {
+            $('stagesDialog').close()
+            // Re-read the task so the button says "edited" and the detail reflects the pin.
+            await select(state.stageTaskId)
+          }
+          return
+        }
+
+        const name = $('stageTemplateName').value.trim()
+        if (!name) {
+          $('stagesStatus').textContent = 'give the template a name first'
+          return
+        }
+        const open = (state.templates ?? []).find((t) => t.id === state.openTemplateId)
+        /**
+         * A changed name saves a new template rather than renaming the open one.
+         *
+         * Which makes "Save as" literal: the way to keep the original and get a variant is to
+         * type a different name, and the way to edit one is to leave its name alone. Sending the
+         * id whenever we have one would have made renaming the only possible outcome.
+         */
+        const editingSameName = open && open.name === name
+
+        $('saveStages').disabled = true
+        const res = await fetch('/api/stage-templates', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...(editingSameName ? { id: open.id } : {}),
+            name,
+            stages: state.stages,
+            // Space-level templates are a deliberate act, not a side effect of editing here.
+            scope: 'project',
+            // Asked rather than assumed: this is the one field that changes what every future
+            // task runs, and it used to be set on every save.
+            isDefault: $('makeDefault').checked,
+          }),
+        })
+        $('saveStages').disabled = false
+        const body = await res.json().catch(() => ({}))
+        $('stagesStatus').textContent = res.ok
+          ? $('makeDefault').checked
+            ? 'saved — new tasks in this project will run these stages'
+            : 'saved — pick it under Stages when creating a task'
+          : `${body.error ?? 'could not save'}${body.detail ? `: ${body.detail}` : ''}`
+        if (res.ok) {
+          // Reopened on what was just saved, so a "Save as" leaves the editor showing the new
+          // template rather than jumping back to whichever one is the default.
+          state.stagesDirty = false
+          await loadStages({ keepOpen: body.template?.id })
+          // Closed on success only. A failed save keeps the dialog open with the message beside
+          // the button, rather than dismissing the work someone just did.
+          $('stagesDialog').close()
+        }
+      }
+
+      // --- artifacts -----------------------------------------------------------
+      /**
+       * What a stage drew, shown in a frame that cannot reach this page.
+       *
+       * The containment is the design, not a precaution: an artifact's body was written by an
+       * agent, and an `html` one is arbitrary markup. Three things hold it:
+       *
+       *  - the frame is sandboxed *without* `allow-same-origin`, so its origin is opaque and
+       *    `sessionStorage` — where the bearer token lives — is unreachable from inside it;
+       *  - its policy names this origin as the only script source, so nothing inline runs, and
+       *    an `html` artifact gets `script-src 'none'` on top of that;
+       *  - the source is handed over as JSON in a non-executable script block rather than
+       *    interpolated into markup.
+       */
+      const ARTIFACT_KIND_WORDS = {
+        mermaid: 'diagram',
+        markdown: 'note',
+        html: 'page',
+        image: 'image',
+        file: 'file',
+      }
+
+      function renderArtifactList(artifacts) {
+        if (!artifacts || artifacts.length === 0) return ''
+        return `
+          <h2 style="margin-top: 22px">Artifacts</h2>
+          <div class="hint" style="margin-bottom: 8px">
+            What this task's stages drew. Later stages can read these too.
+          </div>
+          ${artifacts
+            .map(
+              (a) => `
+              <div class="card srv">
+                <div style="min-width: 0">
+                  <div class="name">${escapeHtmlText(a.title || a.name)}</div>
+                  <p class="hint" style="margin: 2px 0 0">
+                    ${escapeHtmlText(a.name)} · ${ARTIFACT_KIND_WORDS[a.kind] ?? a.kind}${
+                      a.stage ? ` · from ${escapeHtmlText(a.stage)}` : ''
+                    } · ${Math.max(1, Math.round(a.bytes / 1024))} KB${
+                      // Only when there is a history worth mentioning.
+                      a.versionCount > 1 ? ` · v${a.version} of ${a.versionCount}` : ''
+                    }
+                  </p>
+                </div>
+                <button type="button" class="secondary" data-artifact="${escapeAttr(a.id)}">
+                  Open
+                </button>
+              </div>`,
+            )
+            .join('')}`
+      }
+
+      /**
+       * The document the frame shows.
+       *
+       * Built here rather than fetched, so the frame needs no credential of its own: an
+       * `<iframe src>` cannot carry an Authorization header, and putting a token in a URL is how
+       * it ends up in a proxy log. The parent fetches with its bearer and hands over the result.
+       */
+      function artifactDocument(artifact) {
+        /**
+         * Closing script tags below are written with a backslash: `<\/script>`.
+         *
+         * Not a style choice. This function lives inside the page's own script block, and the
+         * HTML parser ends that block at the first unescaped closing tag it meets — inside a
+         * template literal or not. Writing them plainly truncated this file mid-function and
+         * the page stopped loading at all.
+         *
+         * The lesson arrived twice: the *comment* that first explained this contained the
+         * literal sequence, so prettier reformatted the file around it and broke the page in
+         * the same way the code was careful not to. Hence the description in words.
+         *
+         * It is the same trap `source` is escaped against a few lines down, one level up.
+         */
+        /**
+         * `defer` on the renderer, and classic scripts rather than modules.
+         *
+         * FOUND BY A BLANK PREVIEW, TWICE OVER. These tags sit in `<head>` while the elements
+         * they act on are in `<body>`, so a classic script runs *before the body exists* —
+         * `getElementById` returned null and the renderer gave up without a word. `defer` moves
+         * it to after parsing, and the two libraries above still execute during it, so they are
+         * ready when it runs.
+         *
+         * The other half: a module script is always fetched in CORS mode, and this frame's
+         * origin is opaque — sandboxed without `allow-same-origin`, which is the point — so the
+         * request counts as cross-origin. The routes now send the header for it either way,
+         * because the next thing added here will hit the same wall.
+         *
+         * FOUND BY A BLANK PREVIEW. A module script is always fetched in CORS mode, and this
+         * frame's origin is opaque — sandboxed without `allow-same-origin`, which is the point —
+         * so the request counts as cross-origin and needs the server to allow the null origin.
+         * It did not, so the renderer was rejected while the two libraries beside it loaded
+         * fine: nothing to see and nothing in the log.
+         *
+         * A classic script needs no such permission. The routes send the header anyway, because
+         * the next thing added here will hit the same wall.
+         */
+        const scripts =
+          artifact.kind === 'html'
+            ? // Nothing runs. An html artifact is arbitrary markup, and it needs no help from us
+              // to be displayed — so it gets no script at all, its own included.
+              `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">`
+            : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${location.origin}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">
+                     <script src="${location.origin}/vendor/marked.js"><\/script>
+                     <script src="${location.origin}/vendor/mermaid.js"><\/script>
+                     <script defer src="${location.origin}/vendor/artifact-preview.js"><\/script>`
+
+        const dark = document.documentElement.dataset.theme === 'dark'
+        /**
+         * `</script` is the one sequence that escapes a script block.
+         *
+         * JSON escaping does not cover it — a body containing the literal characters would end
+         * the block early and everything after it would be parsed as markup. This is the whole
+         * reason the source can be passed as data at all.
+         */
+        const source = JSON.stringify({
+          kind: artifact.kind,
+          body: artifact.body,
+          theme: dark ? 'dark' : 'light',
+        }).replace(/<\/script/gi, '<\\/script')
+
+        return `<!doctype html>
+      <html lang="en">
+      <head>
+      <meta charset="utf-8">
+      ${scripts}
+      <style>
+        body {
+          margin: 0;
+          padding: 20px;
+          font: 14px/1.6 system-ui, -apple-system, sans-serif;
+          color: ${dark ? '#e7efe9' : '#10201a'};
+          background: ${dark ? '#0e1210' : '#ffffff'};
+        }
+        #artifact { max-width: 80ch; margin: 0 auto; }
+        #artifact.failed { white-space: pre-wrap; font-family: ui-monospace, monospace; color: #d13b3b; }
+        img, svg { max-width: 100%; height: auto; }
+        pre { overflow-x: auto; padding: 10px; border-radius: 8px; background: ${dark ? '#161b18' : '#f5f7f5'}; }
+        code { font-family: ui-monospace, monospace; font-size: 13px; }
+        table { border-collapse: collapse; }
+        th, td { border: 1px solid ${dark ? '#2a322c' : '#e9ede9'}; padding: 6px 10px; }
+        a { color: ${dark ? '#7dd3a0' : '#0f7a4b'}; }
+      </style>
+      </head>
+      <body>
+      <div id="artifact">${
+        artifact.kind === 'html'
+          ? artifact.body
+          : artifact.kind === 'image'
+            ? /**
+               * A data URI, built by the parent.
+               *
+               * The frame cannot fetch the bytes itself: its origin is opaque, so a request to
+               * the content endpoint would be cross-origin and would not carry the bearer —
+               * and putting a token in the URL is the thing this design avoids. So the parent
+               * fetches with its own credential and inlines the result, which `img-src data:`
+               * already allows.
+               */
+              `<img src="${artifact.dataUri}" alt="${escapeAttr(artifact.title || artifact.name)}">`
+            : ''
+      }</div>
+      <script type="application/json" id="artifact-source">${source}<\/script>
+      </body>
+      </html>`
+      }
+
+      async function openArtifact(id, version) {
+        const res = await fetch(`/api/artifacts/${id}`)
+        if (!res.ok) return
+        const { artifact } = await res.json()
+        state.artifact = artifact
+        /**
+         * The revision on screen, which is not necessarily the current one.
+         *
+         * Reading an earlier version is a private act — it changes nothing for anyone else, and
+         * that is the point: you compare before you decide. Promoting one is the separate
+         * button.
+         */
+        state.artifactVersion = version ?? artifact.version
+
+        state.artifactVersions = await fetch(`/api/artifacts/${id}/versions`)
+          .then((r) => (r.ok ? r.json() : { versions: [] }))
+          .then((b) => b.versions ?? [])
+          .catch(() => [])
+        renderArtifactVersions()
+
+        // The body on the row is the *current* version's. Looking at another means fetching it.
+        if (state.artifactVersion !== artifact.version) {
+          const older = await fetch(`/api/artifacts/${id}/content?version=${state.artifactVersion}`)
+          if (older.ok) {
+            artifact.body = artifact.storage === 'inline' ? await older.text() : undefined
+            if (artifact.storage !== 'inline') state.artifactBlob = await older.blob()
+          }
+        }
+
+        /**
+         * The bytes, for the kinds whose body is not in the row.
+         *
+         * An image and a file live as objects, so the row carries metadata only. Fetched here
+         * with the page's bearer — the frame has no credential of its own and must not be given
+         * one — and turned into a data URI the frame can show, or a blob the footer can offer.
+         */
+        if (artifact.storage !== 'inline' && !state.artifactBlob) {
+          const bytes = await fetch(`/api/artifacts/${id}/content?version=${state.artifactVersion}`)
+          if (!bytes.ok) {
+            $('artifactSource').textContent = 'could not load this artifact’s content'
+            return
+          }
+          const blob = await bytes.blob()
+          state.artifactBlob = blob
+          if (artifact.kind === 'image') {
+            artifact.dataUri = await new Promise((resolve) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result)
+              reader.readAsDataURL(blob)
+            })
+          }
+        } else {
+          state.artifactBlob = null
+        }
+
+        /**
+         * The heading describes the version on screen, not the current one.
+         *
+         * FOUND BY SWITCHING. `/api/artifacts/:id` returns the *current* version's row, so
+         * looking at v1 kept v2's title and said "written by the code stage" for something the
+         * design stage wrote — the two facts a version history exists to keep straight.
+         */
+        const shown =
+          (state.artifactVersions ?? []).find((v) => v.version === state.artifactVersion) ??
+          artifact
+        $('artifactTitle').textContent = shown.title || artifact.name
+        $('artifactMeta').textContent =
+          `${artifact.name} · ${ARTIFACT_KIND_WORDS[shown.kind] ?? shown.kind}` +
+          `${shown.stage ? ` · written by the ${shown.stage} stage` : ''}` +
+          `${artifact.versionCount > 1 ? ` · version ${state.artifactVersion} of ${artifact.versionCount}` : ''}`
+        $('artifactSource').textContent = ''
+        /**
+         * Shown first, then filled.
+         *
+         * FOUND BY A BLANK WHITE PANE. A closed `<dialog>` is `display: none`, and a frame
+         * inside one does not load a `srcdoc` set while it is hidden — the attribute was there,
+         * the document was correct, and nothing was ever painted. Re-setting the identical
+         * document after the dialog was on screen rendered it immediately, which is what named
+         * the cause.
+         *
+         * `srcdoc`, not `src`, for a different reason: an `<iframe src>` cannot carry an
+         * Authorization header, and a token in a URL ends up in a proxy log. See
+         * `artifactDocument`.
+         */
+        /**
+         * A `file` is offered rather than rendered.
+         *
+         * The kind exists for the things there is no sensible preview of — an export, an
+         * archive — and pretending otherwise would be a pane of mojibake. The download comes
+         * from the parent, which already holds the bytes, so nothing in the frame needs a
+         * credential.
+         */
+        $('artifactDownload').hidden = !state.artifactBlob
+        $('artifactRaw').hidden = artifact.kind === 'image' || artifact.kind === 'file'
+
+        // The kind of the version on screen, for the same reason: a note that became a diagram
+        // must not be rendered as the one it used to be.
+        artifact.kind = shown.kind ?? artifact.kind
+        artifact.contentType = shown.contentType ?? artifact.contentType
+
+        $('artifactDialog').showModal()
+        $('artifactFrame').srcdoc =
+          artifact.kind === 'file'
+            ? artifactDocument({
+                kind: 'markdown',
+                body:
+                  `**${artifact.name}** — ${artifact.contentType}, ` +
+                  `${Math.max(1, Math.round(artifact.bytes / 1024))} KB.\n\n` +
+                  'There is no preview for this kind. Use Download to open it.',
+              })
+            : artifactDocument(artifact)
+      }
+
+      /**
+       * The history, and which of it is on screen.
+       *
+       * Hidden entirely when there is only one version: a picker with a single option is noise
+       * on the overwhelmingly common case.
+       */
+      function renderArtifactVersions() {
+        const versions = state.artifactVersions ?? []
+        $('artifactVersionRow').hidden = versions.length < 2
+        if (versions.length < 2) return
+
+        $('artifactVersion').innerHTML = versions
+          .map((v) => {
+            const when = new Date(v.createdAt).toLocaleString()
+            const marks = [
+              `v${v.version}`,
+              v.isCurrent ? 'current' : null,
+              v.stage ? `from ${v.stage}` : null,
+              when,
+            ].filter(Boolean)
+            return `<option value="${v.version}" ${
+              v.version === state.artifactVersion ? 'selected' : ''
+            }>${escapeHtmlText(marks.join(' · '))}</option>`
+          })
+          .join('')
+
+        // Nothing to promote when the one on screen is already the current one.
+        const shown = versions.find((v) => v.version === state.artifactVersion)
+        $('artifactMakeCurrent').disabled = Boolean(shown?.isCurrent)
+      }
+
+      $('artifactVersion').onchange = () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        // Re-opened at the chosen version, which re-fetches its bytes. Reading is private: it
+        // changes nothing for anyone else until the button below is pressed.
+        state.artifactBlob = null
+        void openArtifact(artifact.id, Number($('artifactVersion').value))
+      }
+
+      $('artifactMakeCurrent').onclick = async () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        const res = await fetch(`/api/artifacts/${artifact.id}/current`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ version: state.artifactVersion }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          $('artifactSource').textContent = body.error ?? 'could not switch version'
+          return
+        }
+        const promoted = state.artifactVersion
+        // The list shows "v2 of 3", so it has to be re-read.
+        if (state.selected) await select(state.selected)
+        state.artifactBlob = null
+        await openArtifact(artifact.id, promoted)
+        // Said after reopening, not before: `openArtifact` clears this line, so the earlier
+        // order set the confirmation and then wiped it in the same click.
+        $('artifactSource').textContent = `version ${promoted} is now the current one`
+      }
+
+      $('closeArtifact').onclick = () => {
+        // Emptied on close so the next open cannot show the previous artifact for a moment
+        // while its document parses — and the version state with it, or reopening a different
+        // artifact would start on a revision number that belonged to the last one.
+        $('artifactFrame').srcdoc = ''
+        state.artifactVersion = undefined
+        state.artifactVersions = []
+        state.artifactBlob = null
+        $('artifactDialog').close()
+      }
+
+      $('artifactRaw').onclick = () => {
+        // The source, for a diagram that will not parse or a note someone wants to copy. Shown
+        // in the same sandboxed frame as text rather than opened in a tab, because a tab would
+        // be a same-origin document containing agent-written markup.
+        const artifact = state.artifact
+        if (!artifact) return
+        // The dialog is already open here, so the ordering that caught `openArtifact` does not
+        // apply — but the frame is emptied first so a failed render cannot leave the previous
+        // document on screen looking like the source.
+        $('artifactFrame').srcdoc = ''
+        $('artifactFrame').srcdoc = artifactDocument({
+          kind: 'markdown',
+          // Fenced, so `marked` renders it as a code block and nothing in it is interpreted.
+          body: '```\n' + artifact.body + '\n```',
+        })
+        $('artifactSource').textContent = 'showing the source'
+      }
+
+      $('artifactDownload').onclick = () => {
+        /**
+         * From a blob the parent already holds, not from the content URL.
+         *
+         * A link to the endpoint would open a request the browser makes without our bearer, so
+         * it would simply 401. The bytes are here already.
+         */
+        const blob = state.artifactBlob
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = state.artifact?.name ?? 'artifact'
+        link.click()
+        // Released on the next turn, once the click has been handled.
+        setTimeout(() => URL.revokeObjectURL(url), 0)
+      }
+
+      $('artifactDelete').onclick = async () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        if (!confirm(`Delete "${artifact.name}"? Later stages will no longer be able to read it.`))
+          return
+        const res = await fetch(`/api/artifacts/${artifact.id}`, { method: 'DELETE' })
+        if (!res.ok) {
+          $('artifactSource').textContent = 'could not delete that'
+          return
+        }
+        $('artifactFrame').srcdoc = ''
+        $('artifactDialog').close()
+        if (state.selected) await select(state.selected)
+      }
+
+      function escapeAttr(value) {
+        return String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;')
+      }
+      function escapeHtmlText(value) {
+        return String(value).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
+
+      // --- live stream ---------------------------------------------------------
+      /**
+       * Server-sent events read over `fetch`, not through `EventSource`.
+       *
+       * `EventSource` cannot set request headers, so it cannot present a bearer token — every
+       * connection came back 401 the moment the API was gated, and the only symptom was
+       * "stream interrupted — reconnecting…" forever while the run itself was fine.
+       *
+       * The token deliberately does not go in the query string instead. A URL is not a private
+       * place: it lands in load balancer access logs, in browser history, and in any referrer
+       * the page emits. A header is the only place a credential belongs.
+       *
+       * Reconnection is ours to do now, which `EventSource` handled — and it is the reason
+       * `since` exists, so a resumed stream continues from the last sequence seen rather than
+       * replaying or skipping.
+       */
+      function follow(runId) {
+        closeStream()
+        state.run = runId
+        state.lastSeq = -1
+        // Per run: `renderDetail` rewrites the pane, so the cards this tracked are gone and
+        // keeping their ids would suppress the decision on the run being opened now.
+        state.approvals = new Map()
+
+        const controller = new AbortController()
+        state.stream = controller
+
+        void (async () => {
+          // Backoff, so a control plane that is down is not hammered by a page left open.
+          let delay = 500
+          while (!controller.signal.aborted) {
+            try {
+              const res = await fetch(`/api/runs/${runId}/stream?since=${state.lastSeq}`, {
+                headers: { accept: 'text/event-stream' },
+                signal: controller.signal,
+              })
+              if (!res.ok) throw new Error(`stream returned ${res.status}`)
+              delay = 500
+
+              const reader = res.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              for (;;) {
+                const { value, done } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                // Frames are separated by a blank line; a partial one stays in the buffer.
+                const frames = buffer.split('\n\n')
+                buffer = frames.pop() ?? ''
+                for (const frame of frames) {
+                  const data = frame
+                    .split('\n')
+                    .filter((l) => l.startsWith('data:'))
+                    .map((l) => l.slice(5).trim())
+                    .join('\n')
+                  if (!data) continue
+                  const event = JSON.parse(data)
+                  state.lastSeq = event.seq
+                  render(event)
+                  /**
+                   * Parking does not end the stream.
+                   *
+                   * FOUND BY APPROVING A RUN. `parked` is a `run.finished` like any other, so
+                   * this closed the stream — and a re-follow replayed from the start, hit that
+                   * same frame again and closed immediately. The resumed container's events
+                   * were all recorded and none of them were ever shown: the log stopped dead
+                   * at the approval and the pull request appeared out of nowhere.
+                   *
+                   * Left open instead, so the run continues into its next container on the
+                   * same connection and nothing has to be re-followed.
+                   */
+                  if (event.type === 'run.finished' && event.data.outcome !== 'parked') {
+                    closeStream()
+                    await loadTasks()
+                    return
+                  }
+                  if (event.type === 'run.finished') await loadTasks()
+                }
+              }
+            } catch (error) {
+              if (controller.signal.aborted) return
+              append('warn', `stream interrupted — reconnecting… (${error.message})`)
+            }
+            if (controller.signal.aborted) return
+            await new Promise((r) => setTimeout(r, delay))
+            delay = Math.min(delay * 2, 10_000)
+          }
+        })()
+      }
+
+      function closeStream() {
+        state.stream?.abort()
+        state.stream = null
+      }
+
+      /**
+       * A run that stopped for approval.
+       *
+       * Rendered from the event rather than by polling: `approval.requested` arrives on the same
+       * stream everything else does, and the container has already exited by the time it lands —
+       * which is the point. Nothing is running while this sits on screen.
+       */
+      function renderApproval(event) {
+        /**
+         * One card per decision, however many times the event is seen.
+         *
+         * The stream replays from a given sequence — on a reconnect, or when the page is
+         * reopened — so `approval.requested` arrives again for a decision that may already
+         * have been made. Appending a second card would offer to approve the same stage twice.
+         */
+        const approvalId = event.data.approvalId ?? `${state.run}:${event.stage}`
+        state.approvals ??= new Map()
+        if (state.approvals.has(approvalId)) return
+
+        const box = document.createElement('div')
+        state.approvals.set(approvalId, box)
+        box.className = 'card'
+        box.style.marginTop = '10px'
+        box.innerHTML = `
+                <div class="name">Waiting for approval</div>
+                <p class="hint">${escapeHtmlText(event.data.detail ?? event.data.action ?? '')}</p>
+                <div class="row" style="margin-top: 8px">
+                  <button type="button" id="approveRun">Approve and continue</button>
+                  <button type="button" id="rejectRun" class="secondary">Reject</button>
+                </div>
+                <p class="hint" id="approvalStatus"></p>`
+        $('detail').append(box)
+
+        const decide = async (decision) => {
+          $('approveRun').disabled = true
+          $('rejectRun').disabled = true
+          const res = await fetch(`/api/runs/${state.run}/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ decision }),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            $('approvalStatus').textContent = body.error ?? 'could not record that'
+            $('approveRun').disabled = false
+            $('rejectRun').disabled = false
+            return
+          }
+          /**
+           * The card becomes a record of the decision, not a question again.
+           *
+           * FOUND BY APPROVING A RUN. The buttons stayed on screen after a successful
+           * approval, so the obvious next thing to do was press them again — which answered
+           * with "run … is succeeded, not awaiting a decision" and read as the approval having
+           * failed, when it had already worked and opened the pull request.
+           */
+          box.innerHTML = `
+                  <div class="name">${decision === 'approved' ? 'Approved' : 'Rejected'}</div>
+                  <p class="hint">${
+                    decision === 'approved'
+                      ? 'The run is continuing from the next stage.'
+                      : 'The run was stopped here.'
+                  }</p>`
+          // No re-follow: the stream stays open across a park now, so the resumed container's
+          // events arrive on the connection that is already there.
+          await loadTasks()
+        }
+        $('approveRun').onclick = () => void decide('approved')
+        $('rejectRun').onclick = () => void decide('rejected')
+      }
+
+      const stageEls = new Map()
+      function render(event) {
+        if (event.type === 'approval.requested') renderApproval(event)
+        if (event.type === 'stage.entered') markStage(event.stage, 'active')
+        if (event.type === 'stage.exited') markStage(event.stage, event.data.outcome)
+        const line = describe(event)
+        if (line)
+          append(
+            line.cls,
+            `${String(event.seq).padStart(4, '0')} ${event.stage ?? '·'} ${line.text}`,
+          )
+      }
+
+      function markStage(stage, cls) {
+        if (!stage) return
+        let el = stageEls.get(stage)
+        if (!el) {
+          el = document.createElement('span')
+          el.className = 'stage'
+          el.textContent = stage
+          $('stages')?.appendChild(el)
+          stageEls.set(stage, el)
+        }
+        el.className = `stage ${cls}`
+      }
+
+      function describe(e) {
+        const d = e.data ?? {}
+        switch (e.type) {
+          case 'assistant.delta':
+            return null
+          case 'command.output':
+            return null
+          case 'run.provisioning':
+            return { cls: '', text: 'provisioning' }
+          case 'cache.restored':
+            return { cls: '', text: `cache ${d.hit ? 'hit' : 'miss'} (${d.durationMs}ms)` }
+          case 'worktree.ready':
+            return { cls: '', text: `worktree ${d.branch} @ ${d.baseSha.slice(0, 8)}` }
+          case 'run.started':
+            return { cls: 'ok', text: `started with ${d.harness}` }
+          case 'stage.entered':
+            return { cls: 'st', text: `── attempt ${d.attempt}` }
+          case 'stage.exited':
+            return { cls: d.outcome === 'passed' ? 'ok' : 'bad', text: `   ${d.outcome}` }
+          case 'assistant.message':
+            return { cls: '', text: `say: ${firstLine(d.text)}` }
+          case 'thinking.started':
+            return { cls: '', text: 'thinking' }
+          case 'tool.call':
+            return { cls: '', text: `→ ${d.name} ${firstLine(d.inputPreview ?? '')}` }
+          case 'tool.result':
+            return { cls: d.ok ? '' : 'bad', text: `← ${d.name} ${d.ok ? 'ok' : 'FAILED'}` }
+          case 'tool.denied':
+            return { cls: 'warn', text: `⊘ ${d.name} denied: ${d.reason}` }
+          case 'seat.authenticated':
+            return {
+              cls: 'ok',
+              text: `seat ${d.harness} authenticated${d.envVars.length ? ` via ${d.envVars.join(', ')}` : ''}${d.files.length ? ` (${d.files.length} credential file)` : ''}`,
+            }
+          case 'tool.server_connected':
+            return {
+              cls: 'ok',
+              text: `mcp ${d.name} connected${d.authenticated ? ' (authenticated)' : ''}: ${d.tools.join(', ') || 'no tools'}`,
+            }
+          case 'file.changed':
+            return { cls: '', text: `${d.change} ${d.path}` }
+          case 'diff.produced':
+            return {
+              cls: '',
+              text: `diff ${d.filesChanged} files +${d.insertions}/-${d.deletions}`,
+            }
+          case 'gate.evaluated':
+            return {
+              cls: d.passed ? 'ok' : 'bad',
+              text: `gate ${d.passed ? 'PASS' : 'FAIL'} ${d.label ?? d.kind}`,
+            }
+          case 'gate.blocked':
+            return {
+              cls: 'warn',
+              text: `blocked ${d.attemptsUsed}/${d.attemptsAllowed} → ${d.nextStage ?? 'fail'}`,
+            }
+          case 'git.branch_created':
+            return { cls: '', text: `branch ${d.branch}` }
+          case 'git.committed':
+            return { cls: 'ok', text: `commit ${d.sha.slice(0, 8)}` }
+          case 'git.pushed':
+            return { cls: 'ok', text: `pushed ${d.branch}` }
+          case 'pr.opened':
+            return { cls: 'ok', text: `PR #${d.number} ${d.url}` }
+          // Labelled as an estimate, because for seat auth it is derived rather than billed.
+          case 'usage.updated':
+            return { cls: '', text: `usage ~${d.tokensIn} in / ${d.tokensOut} out` }
+          case 'error':
+            return { cls: 'bad', text: `ERROR ${d.code}: ${firstLine(d.message)}` }
+          case 'harness.crashed':
+            return { cls: 'bad', text: `harness crashed (${d.exitCode ?? d.signal})` }
+          case 'run.finished':
+            return {
+              cls: d.outcome === 'succeeded' ? 'ok' : 'bad',
+              text: `── ${d.outcome}${d.reason ? `: ${d.reason}` : ''}`,
+            }
+          default:
+            return { cls: '', text: e.type }
+        }
+      }
+
+      function append(cls, text) {
+        const log = $('log')
+        if (!log) return
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+        const span = document.createElement('span')
+        span.className = cls
+        span.textContent = text + '\n'
+        log.appendChild(span)
+        // Only follow the tail if the reader was already there; yanking the scroll away
+        // from someone reading history is worse than not following.
+        if (atBottom) log.scrollTop = log.scrollHeight
+      }
+
+      const firstLine = (t = '', max = 110) => {
+        const line = String(t).split('\n')[0]
+        return line.length > max ? line.slice(0, max) + '…' : line
+      }
+      function escape(text) {
+        const el = document.createElement('span')
+        el.textContent = String(text ?? '')
+        return el.innerHTML
+      }
+
+      await loadSeats()
+      await loadServers()
+      await loadStages()
+      await loadTasks()
+    </script>
+  </body>
+</html>

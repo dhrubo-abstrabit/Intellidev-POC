@@ -1,0 +1,117 @@
+# Intellidev — docs
+
+Backend platform for dispatching development tasks to containerised coding agents.
+A task created in the UI is picked up by an ephemeral container that branches,
+implements, tests, reviews and opens a PR — streamed live and steerable mid-run.
+
+## Read in this order
+
+| Doc                                | What it covers                                                        |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| [architecture.md](architecture.md) | System shape, components, data model, API surface, decisions taken    |
+| [aws-ecs-plan.md](aws-ecs-plan.md) | Task breakdown for deploying to ECS Fargate, and what runs where      |
+| [stack.md](stack.md)               | Framework and library choices, with the alternatives rejected and why |
+| [milestone-0.md](milestone-0.md)   | The walking skeleton — the first slice to build, task by task         |
+| [roadmap.md](roadmap.md)           | M1–M5 after the skeleton, with the trigger for each                   |
+| [ui-contract.md](ui-contract.md)   | Design tokens, vocabulary, and the endpoints the UI consumes          |
+| [contributing.md](contributing.md) | Commit and branch conventions                                         |
+
+## Shape
+
+- **Runtime**: AWS ECS on Fargate, scale-to-zero, 60–120 s dispatch budget
+- **Harnesses**: **opencode** (default), Claude Code, Codex CLI — each behind one driver
+- **Model auth**: subscription seats, scheduled as a pooled resource
+- **Language**: TypeScript end to end (control plane, adapter, UI)
+
+## Current status
+
+**T1–T8 complete, plus a third harness and a runnable local path.** 399 tests, typecheck clean.
+Verify with `pnpm install && pnpm check`.
+
+| Task | Ships                                                                                 |
+| ---- | ------------------------------------------------------------------------------------- |
+| T1   | `@intellidev/shared` — event vocabulary, stage templates, manifest, toolset, run spec |
+| T2   | Claude Code driver, NDJSON reassembly, event bus with seq/ack/replay                  |
+| T3   | Codex driver behind the same interface, plus a cross-harness equivalence test         |
+| T4   | Stage engine — command/predicate/human gates, bounded retries, resume at last gate    |
+| —    | **opencode** driver, third harness                                                    |
+
+Contract tests replay recorded CLI output from `packages/adapter/test/fixtures/`, so
+they need no subprocess and spend no quota. The
+[capability matrix](architecture.md) records where the three harnesses differ.
+
+A real task has been run end to end against a real repo with a real model:
+see [running-locally.md](running-locally.md).
+
+**Next:** T9, the control plane — Postgres schema, manual task form, dispatch endpoint.
+
+### Fixture provenance
+
+All three are **runtime captures**, not schemas:
+
+| Harness             | Captured from                                               |
+| ------------------- | ----------------------------------------------------------- |
+| Claude Code 2.1.228 | `-p --output-format stream-json --include-partial-messages` |
+| Codex 0.147.0       | `exec --json`                                               |
+| opencode 1.18.16    | `run --format json`                                         |
+
+The opencode fixture replaced an earlier spec-derived one that was **wrong** — its
+server SSE stream and its `run` stream are different formats. That is why captures are
+mandatory here rather than nice to have.
+
+### Re-recording a fixture after a CLI upgrade
+
+```sh
+# claude-code
+claude -p "<prompt>" --output-format stream-json --verbose --include-partial-messages \
+  --max-turns 3 --allowedTools Read < /dev/null > out.ndjson
+
+# codex — stdin must be closed or it waits forever
+codex exec --json --skip-git-repo-check -s read-only -C . "<prompt>" < /dev/null > out.jsonl
+
+# opencode — free models need no credentials of your own
+opencode run --format json --dir . --auto --model opencode/nemotron-3.5-lightning-free \
+  "<prompt>" < /dev/null > out.jsonl
+
+# opencode config + part schemas — useful, but NOT the run wire format
+opencode serve --port 39917 & curl -s http://127.0.0.1:39917/doc > openapi.json
+```
+
+Scrub paths, session ids and uuids before committing. The contract tests will name
+whatever shape changed.
+
+## Vocabulary
+
+Use these words in code, API and UI. They match the UI build.
+
+| Term         | Meaning                                                                         |
+| ------------ | ------------------------------------------------------------------------------- |
+| **Project**  | Durable identity: repo, manifest, caches, attached tools. Never executes.       |
+| **Task**     | A unit of work someone wants done. Created by hand in the UI.                   |
+| **Run**      | One ephemeral container executing one task. Disposable.                         |
+| **Stage**    | One step of the process — design, code, test, review. _Not_ "phase".            |
+| **Harness**  | A coding-agent CLI (Claude Code, Codex, opencode). Replaceable behind a driver. |
+| **Adapter**  | Our process inside the container. Owns stages, events, tools, credentials.      |
+| **Dispatch** | The act of sending a task to a runner.                                          |
+| **Seat**     | A subscription credential, allocated like a resource.                           |
+
+## Non-negotiables
+
+Carried from the design discussion. Breaking one of these is a design change,
+not an implementation detail.
+
+1. **Never mount a host Docker socket.** Model-authored code runs in these containers.
+2. **Broker credentials are never environment variables.** GitHub tokens, seat
+   material and MCP upstream tokens are pulled on demand over a unix socket. Project
+   secrets that tests genuinely need _are_ env vars and are therefore assumed
+   compromised by the run — so they must be sandbox-scoped, and dispatch refuses any
+   secret not attested as such.
+3. **Manifests are immutable and runs pin a version.** Editing a project never
+   changes the meaning of a run already in flight.
+4. **`run_events` is the only source of run state.** UI, resume and audit read the
+   same stream so they cannot disagree.
+5. **Every usage record carries its seat.** Per-project cost attribution on a shared
+   subscription account is impossible to backfill.
+6. **The PR is the boundary.** Nothing writes to `main`.
+7. **Redaction happens at the event bus**, never at call sites. One forgotten call site
+   is a permanent leak, because the log outlives the run.
