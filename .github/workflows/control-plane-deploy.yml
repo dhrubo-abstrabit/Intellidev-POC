@@ -81,9 +81,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     outputs:
-      runner: ${{ steps.filter.outputs.runner }}
-      controlPlane: ${{ steps.filter.outputs.controlPlane }}
-      infra: ${{ steps.filter.outputs.infra }}
+      # A manual run deploys everything.
+      #
+      # `workflow_dispatch` is here so a deploy can be repeated without an empty commit, and it
+      # could not do that: these outputs come from a diff against the previous commit, so
+      # dispatching after a frontend-only commit reported nothing changed and skipped all three
+      # jobs. The escape hatch did not escape.
+      #
+      # Written as a ternary because a filter output is the *string* `'false'`, which is truthy
+      # in a GitHub expression — `outputs.runner || dispatch` would return 'false' and always
+      # win. `condition && 'true' || value` is the idiom that actually short-circuits.
+      runner: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.runner }}
+      controlPlane:
+        ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.controlPlane }}
+      infra: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.infra }}
     steps:
       - uses: actions/checkout@v4
         with:

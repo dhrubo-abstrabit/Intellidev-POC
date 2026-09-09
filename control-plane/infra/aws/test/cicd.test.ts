@@ -470,6 +470,29 @@ describe.skipIf(deployWorkflow === undefined)('what triggers a control-plane dep
     }
   })
 
+  it('deploys every dimension on a manual run', () => {
+    /**
+     * `workflow_dispatch` exists so a deploy can be repeated without an empty commit, and it
+     * could not: the three outputs come from a diff against the previous commit, so a dispatch
+     * after a frontend-only commit reported nothing changed and skipped all three deploy jobs.
+     *
+     * The assertion is per output rather than on the file as a whole, because getting this
+     * right for `runner` and wrong for `infra` is exactly the shape the bug had.
+     */
+    const deploy = ourWorkflows(located).find((w) => w.name.includes('deploy'))
+    expect(deploy).toBeDefined()
+    for (const output of ['runner', 'controlPlane', 'infra']) {
+      const line = new RegExp(
+        `${output}:[\\s\\S]{0,40}?github\\.event_name == 'workflow_dispatch' && 'true'`,
+      )
+      expect(deploy!.body, `${output} ignores a manual run`).toMatch(line)
+    }
+
+    // And never `outputs.x || dispatch`, which cannot work: a filter output is the string
+    // 'false', truthy in a GitHub expression, so the left side always wins.
+    expect(deploy!.body).not.toMatch(/steps\.filter\.outputs\.\w+\s*\|\|/)
+  })
+
   it('never guards a job on a job it does not depend on', () => {
     /**
      * FOUND BY READING IT. The `infra` job's condition ended in
