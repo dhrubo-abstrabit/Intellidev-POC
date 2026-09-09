@@ -99,8 +99,10 @@ jobs:
               - 'control-plane/infra/docker/control-plane.Dockerfile'
             infra:
               - 'control-plane/infra/aws/**'
-              # At the repository root now, not inside the subtree.
-              - 'db/**'
+              # Not `db/**`. A migration is applied by hand with `npm run runner:db:migrate` and
+              # no stack reads anything under it, so a migration-only commit was deploying seven
+              # stacks to change nothing. It still runs `check`, which is the part that matters:
+              # `db/**` stays in this workflow's own `paths:` filter above.
 
   # The runner image, then the stack that pins it.
   #
