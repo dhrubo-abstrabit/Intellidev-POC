@@ -37,6 +37,19 @@ export class ShellCommandRunner implements CommandRunner {
     return new Promise((resolve) => {
       const child = spawn(shell, ['-c', command], {
         cwd: opts.cwd,
+        /**
+         * Its own process group, so the timeout can kill the whole tree.
+         *
+         * FOUND ON LINUX CI, PASSING ON MACOS. `sh -c 'sleep 30'` execs under bash but *forks*
+         * under dash, so signalling the child killed the shell and left `sleep` orphaned —
+         * still holding the stdout and stderr pipes, so `close` never fired and the command
+         * hung until the run's wall-clock limit. Which is the exact failure the timeout below
+         * exists to prevent.
+         *
+         * A group leader can be signalled as `-pid`, which reaches every descendant. Not
+         * `unref`'d: this process still waits for it.
+         */
+        detached: true,
         env: {
           PATH: process.env['PATH'] ?? '/usr/bin:/bin',
           HOME: process.env['HOME'] ?? '/tmp',
@@ -67,17 +80,42 @@ export class ShellCommandRunner implements CommandRunner {
       child.stdout.on('data', capture('stdout'))
       child.stderr.on('data', capture('stderr'))
 
+      /**
+       * Signal the group, not the process.
+       *
+       * `child.kill()` reaches only the shell. Anything it started outlives it and keeps the
+       * pipes open, which is what made the timeout below not actually a timeout.
+       */
+      const signalGroup = (signal: NodeJS.Signals) => {
+        if (child.pid === undefined) return
+        try {
+          process.kill(-child.pid, signal)
+        } catch {
+          // ESRCH: the group is already gone, which is the outcome being asked for. On a
+          // platform without process groups, fall back to the child alone.
+          try {
+            child.kill(signal)
+          } catch {
+            /* already reaped */
+          }
+        }
+      }
+
       // Polite first, then not. A hung process ignoring SIGTERM would otherwise hold the
       // run open until its wall-clock limit.
+      let hard: NodeJS.Timeout | undefined
+      let flush: NodeJS.Timeout | undefined
       const kill = setTimeout(() => {
-        child.kill('SIGTERM')
-        setTimeout(() => child.kill('SIGKILL'), 5_000)
+        signalGroup('SIGTERM')
+        hard = setTimeout(() => signalGroup('SIGKILL'), 5_000)
       }, opts.timeoutSec * 1000)
 
       const finish = (exitCode: number) => {
         if (settled) return
         settled = true
         clearTimeout(kill)
+        if (hard) clearTimeout(hard)
+        if (flush) clearTimeout(flush)
         resolve({ exitCode, stdout, stderr })
       }
 
@@ -88,6 +126,16 @@ export class ShellCommandRunner implements CommandRunner {
       child.on('close', (code, signal) => {
         // A killed process reports a null code; the caller needs a number to compare.
         finish(code ?? (signal ? 124 : -1))
+      })
+      /**
+       * `close` waits for the pipes; `exit` does not. Normally close follows within a tick and
+       * is the one worth waiting for, because it means every byte has been read. But a
+       * descendant holding an inherited pipe open can delay it indefinitely — so once the shell
+       * itself is gone, give the streams a moment to drain and then answer regardless.
+       */
+      child.on('exit', (code, signal) => {
+        if (settled) return
+        flush = setTimeout(() => finish(code ?? (signal ? 124 : -1)), 250)
       })
     })
   }

@@ -431,6 +431,23 @@ describe('ShellCommandRunner', () => {
     expect(result.exitCode).not.toBe(0)
   }, 15_000)
 
+  it('kills what the command started, not only the command', async () => {
+    /**
+     * FOUND ON LINUX CI WHILE PASSING ON MACOS. `sh -c` execs a lone simple command under bash
+     * but forks under dash, and signalling only the shell leaves its children alive holding the
+     * stdout and stderr pipes they inherited. `close` waits for those pipes, so a timed-out
+     * command hung until the run's wall-clock limit — the opposite of what a timeout is for.
+     *
+     * A background child reproduces it on either shell. The assertion is the wall clock, not the
+     * exit code: the code was already correct while it hung.
+     */
+    const runner = new ShellCommandRunner()
+    const started = Date.now()
+    const result = await runner.run('sleep 30 & sleep 30', { cwd: root, timeoutSec: 1 })
+    expect(result.exitCode).not.toBe(0)
+    expect(Date.now() - started).toBeLessThan(8_000)
+  }, 20_000)
+
   it('reports a missing shell command rather than throwing', async () => {
     const runner = new ShellCommandRunner()
     const result = await runner.run('definitely-not-a-command', { cwd: root, timeoutSec: 10 })
