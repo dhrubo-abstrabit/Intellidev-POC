@@ -7,9 +7,9 @@ opens a PR — streamed live. Three harnesses behind one adapter: **opencode**, 
 Runs in two places behind one interface: a **local container** for the development loop, and
 **ECS Fargate** for the deployed path. The UI cannot tell them apart, which is the test.
 
-- **Docs** — start at [docs/README.md](docs/README.md); local details in
-  [docs/running-locally.md](docs/running-locally.md)
-- **AWS** — task breakdown and current state in [docs/aws-ecs-plan.md](docs/aws-ecs-plan.md)
+- **Docs** — start at [docs/README.md](../docs/control-plane/README.md); local details in
+  [docs/running-locally.md](../docs/control-plane/running-locally.md)
+- **AWS** — task breakdown and current state in [docs/aws-ecs-plan.md](../docs/control-plane/aws-ecs-plan.md)
 - **Requires** — Node 24+, pnpm, Docker running (local mode only)
 
 ---
@@ -107,7 +107,7 @@ docker run --rm -v intellidev-cache-local:/cache \
 ## Running against ECS Fargate
 
 Same UI, same code paths — the runner and the store are swapped by configuration. The
-infrastructure is CDK in `infra/aws`; see [docs/aws-ecs-plan.md](docs/aws-ecs-plan.md) for what
+infrastructure is CDK in `infra/aws`; see [docs/aws-ecs-plan.md](../docs/control-plane/aws-ecs-plan.md) for what
 each stack is and why.
 
 **The control plane must be reachable from the task.** A Fargate container dials _out_ to stream
