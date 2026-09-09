@@ -1,0 +1,14 @@
+# Files another tool owns and rewrites.
+#
+# `format:check` globs every yaml in the repo, which catches the lockfile — and prettier's
+# preferred layout is not pnpm's. Formatting it once makes CI pass until the next `pnpm add`
+# rewrites it, and then the failure returns looking unrelated to whatever that change was. It
+# has never actually been prettier-clean; CI simply had no remote to run against until now.
+#
+# A lockfile is generated, reviewed as a diff rather than read, and owned by the package
+# manager. Prettier has no business in it.
+pnpm-lock.yaml
+
+# Build output. Not matched by the current glob, but listed so it stays that way if the glob
+# ever widens — a bundled file has no style to check.
+packages/adapter/dist/
