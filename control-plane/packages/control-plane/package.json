@@ -1,0 +1,49 @@
+{
+  "name": "@intellidev/control-plane",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Minimal control plane: manual task form, dispatch, live event stream.",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "build": "echo \"served from source via tsx\"",
+    "dev": "tsx watch src/main.ts",
+    "prove-runner": "tsx scripts/prove-runner.ts",
+    "prove-reconciler": "tsx scripts/prove-reconciler.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:status": "tsx scripts/db-status.ts",
+    "db:new": "drizzle-kit generate --custom --name",
+    "db:contract": "tsx scripts/db-contract.ts",
+    "dev:seed": "tsx scripts/dev-seed.ts",
+    "task": "tsx scripts/task-cli.ts",
+    "seat:connect": "tsx scripts/connect-seat.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ecs": "^3.1114.0",
+    "@aws-sdk/client-kms": "^3.1120.0",
+    "@aws-sdk/client-s3": "^3.1114.0",
+    "@aws-sdk/client-sqs": "^3.1114.0",
+    "@aws-sdk/client-ssm": "^3.1114.0",
+    "@aws-sdk/s3-request-presigner": "^3.1114.0",
+    "@fastify/websocket": "^11.3.0",
+    "@intellidev/adapter": "workspace:*",
+    "@intellidev/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.2.0",
+    "jose": "^6.2.10",
+    "marked": "^18.0.12",
+    "mermaid": "^11.17.2",
+    "pg": "^8.23.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

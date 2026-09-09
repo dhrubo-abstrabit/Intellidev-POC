@@ -1,0 +1,49 @@
+{
+  "name": "intellidev",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yaml,yml}\"",
+    "check": "pnpm format:check && pnpm typecheck && pnpm test",
+    "adapter": "tsx packages/adapter/src/cli/adapter.ts",
+    "cred": "tsx packages/adapter/src/cli/cred.ts",
+    "ui": "tsx packages/control-plane/src/main.ts",
+    "infra:bootstrap": "pnpm --filter @intellidev/infra-aws exec cdk bootstrap",
+    "infra:synth": "pnpm --filter @intellidev/infra-aws run synth",
+    "infra:diff": "pnpm --filter @intellidev/infra-aws run diff",
+    "infra:deploy": "pnpm --filter @intellidev/infra-aws run deploy",
+    "infra:destroy": "pnpm --filter @intellidev/infra-aws run destroy",
+    "infra:verify": "pnpm --filter @intellidev/infra-aws run verify",
+    "infra:smoke": "pnpm --filter @intellidev/infra-aws run smoke",
+    "image:push": "pnpm --filter @intellidev/infra-aws run push",
+    "image:measure": "pnpm --filter @intellidev/infra-aws run measure-pull",
+    "runner:prove": "pnpm --filter @intellidev/control-plane run prove-runner",
+    "bundle:push": "pnpm --filter @intellidev/infra-aws run push-bundle",
+    "reconciler:prove": "pnpm --filter @intellidev/control-plane run prove-reconciler",
+    "db:migrate": "pnpm --filter @intellidev/control-plane run db:migrate",
+    "db:status": "pnpm --filter @intellidev/control-plane run db:status",
+    "db:new": "pnpm --filter @intellidev/control-plane run db:new",
+    "db:baseline": "supabase db dump --db-url \"$SUPABASE_CONNECTION_STRING_SESSION\" --schema public -f ../db/baseline/product-schema.sql",
+    "db:verify": "bash ../db/verify/run.sh",
+    "db:contract": "pnpm --filter @intellidev/control-plane run db:contract",
+    "dev:seed": "pnpm --filter @intellidev/control-plane run dev:seed",
+    "task": "pnpm --filter @intellidev/control-plane run task",
+    "control-plane:push": "pnpm --filter @intellidev/infra-aws run push-control-plane",
+    "seat:connect": "pnpm --filter @intellidev/control-plane run seat:connect"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.23.12",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

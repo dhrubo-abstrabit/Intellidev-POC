@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# The proving signal for A1.
+#
+# Asserts the deployed reality, not the template: SSM resolves to a VPC that exists, with
+# the CIDR config asked for, carrying the tags, and with no NAT gateway anywhere in the
+# region. "cdk deploy said CREATE_COMPLETE" is not the same claim.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+CONFIG=$(pnpm exec tsx bin/config-json.ts)
+env_name=$(printf '%s' "$CONFIG" | sed -n 's/.*"env": "\([^"]*\)".*/\1/p')
+want_cidr=$(printf '%s' "$CONFIG" | sed -n 's/.*"cidr": "\([^"]*\)".*/\1/p')
+
+fail() { printf 'verify: FAIL %s\n' "$1" >&2; exit 1; }
+ok() { printf 'verify: ok   %s\n' "$1"; }
+
+prefix="/intellidev/${env_name}/network"
+
+vpc_id=$(aws ssm get-parameter --name "$prefix/vpc-id" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail "$prefix/vpc-id is not in SSM — did the stack deploy?"
+ok "SSM $prefix/vpc-id → $vpc_id"
+
+for tier in public isolated; do
+  ids=$(aws ssm get-parameter --name "$prefix/${tier}-subnet-ids" \
+    --query 'Parameter.Value' --output text 2>/dev/null) \
+    || fail "$prefix/${tier}-subnet-ids is not in SSM"
+  count=$(printf '%s' "$ids" | tr ',' '\n' | grep -c 'subnet-')
+  [ "$count" -ge 2 ] || fail "expected at least 2 $tier subnets, found $count"
+  ok "SSM $prefix/${tier}-subnet-ids → $count subnets"
+done
+
+# The id in SSM must point at something real — a stale parameter is worse than a missing
+# one, because config resolution at boot would succeed and then fail at RunTask.
+have_cidr=$(aws ec2 describe-vpcs --vpc-ids "$vpc_id" \
+  --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null) \
+  || fail "$vpc_id does not exist, but SSM still advertises it"
+[ "$have_cidr" = "$want_cidr" ] || fail "vpc CIDR is $have_cidr, config says $want_cidr"
+ok "VPC $vpc_id exists with CIDR $have_cidr"
+
+managed=$(aws ec2 describe-vpcs --vpc-ids "$vpc_id" \
+  --query "Vpcs[0].Tags[?Key=='intellidev:managed-by'].Value | [0]" --output text)
+[ "$managed" = "cdk" ] || fail "VPC is not tagged intellidev:managed-by=cdk (got '$managed')"
+ok 'VPC carries the intellidev tags'
+
+# --- A2: the S3 gateway endpoint must actually be in the route tables ---
+endpoint=$(aws ssm get-parameter --name "$prefix/s3-endpoint-id" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail "$prefix/s3-endpoint-id is not in SSM"
+routed=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$vpc_id" \
+  --query "length(RouteTables[?Routes[?GatewayId=='$endpoint']])" --output text)
+# Four subnets, so four route tables. An endpoint that exists but is not routed is the
+# quiet failure here: S3 still works, over the internet, billed per GB.
+[ "$routed" = "4" ] || fail "S3 endpoint $endpoint is routed from $routed/4 route tables"
+ok "S3 endpoint $endpoint routed from all 4 route tables"
+
+# An interface endpoint bills ~\$7/month per AZ whether used or not.
+iface=$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpc_id" \
+  --query "VpcEndpoints[?VpcEndpointType=='Interface'].ServiceName" --output text)
+[ -z "$iface" ] || fail "interface endpoint(s) present, which bill hourly: $iface"
+ok 'no interface endpoints'
+
+# --- A2: the egress allowlist must be an allowlist ---
+sg=$(aws ssm get-parameter --name "$prefix/run-task-security-group-id" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail "$prefix/run-task-security-group-id is not in SSM"
+ingress=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query 'length(SecurityGroups[0].IpPermissions)' --output text)
+[ "$ingress" = "0" ] || fail "run-task group has $ingress inbound rules; it should have none"
+allow_all=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query "length(SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'])" --output text)
+[ "$allow_all" = "0" ] || fail 'run-task group has an allow-all egress rule'
+ports=$(aws ec2 describe-security-groups --group-ids "$sg" \
+  --query 'SecurityGroups[0].IpPermissionsEgress[].FromPort' --output text | tr '\t' ' ')
+ok "run-task group $sg: no inbound, egress ports [$ports]"
+
+# --- A3: the recorded image reference must be a digest that exists ---
+repo=$(aws ssm get-parameter --name "/intellidev/${env_name}/runner/repository-uri" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'runner/repository-uri is not in SSM'
+digest=$(aws ssm get-parameter --name "/intellidev/${env_name}/runner/image-digest" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'runner/image-digest is not in SSM — run pnpm image:push'
+
+# A tag is a mutable pointer: two dispatches of the same commit could run different code,
+# which makes a failure impossible to attribute. Rollback must be a digest change.
+case "$digest" in
+  sha256:*) ;;
+  *) fail "recorded image reference is '$digest', not a sha256 digest" ;;
+esac
+aws ecr describe-images --repository-name "${repo##*/}" \
+  --image-ids "imageDigest=${digest}" >/dev/null 2>&1 \
+  || fail "recorded digest ${digest} is not in ${repo##*/} — a stale pointer is worse than a missing one"
+ok "image ${digest:0:19}... exists in ${repo##*/}"
+
+arch=$(aws ssm get-parameter --name "/intellidev/${env_name}/runner/architecture" \
+  --query 'Parameter.Value' --output text 2>/dev/null) || fail 'runner/architecture is not in SSM'
+# Not verified against the image manifest here: a manifest records layers, and the
+# architecture lives in the config blob behind another fetch. The check belongs at the two
+# places it can actually fail — push-image.sh refuses a host/target mismatch, and
+# measure-pull.sh runs the image on a real task, which is proof rather than inference.
+ok "run tasks pinned to $arch"
+
+# --- C2: the spec and bundle must travel as objects, not mounts ---
+artifacts=$(aws ssm get-parameter --name "/intellidev/${env_name}/artifacts/bucket" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'artifacts/bucket is not in SSM'
+aws s3api head-bucket --bucket "$artifacts" >/dev/null 2>&1 \
+  || fail "artifacts bucket $artifacts does not exist"
+ok "artifacts bucket $artifacts"
+
+# The done-condition for C2. A single mount point would mean the Fargate path had quietly
+# regressed to needing a filesystem it does not have.
+taskdef=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/run-task-definition-arn" \
+  --query 'Parameter.Value' --output text 2>/dev/null) || fail 'run task definition is not in SSM'
+# Two queries rather than one: JMESPath has no arithmetic, so `length(a) + length(b)` is
+# rejected as a bad expression rather than evaluated.
+read -r mount_points volumes < <(aws ecs describe-task-definition --task-definition "$taskdef" \
+  --query 'taskDefinition.[length(containerDefinitions[0].mountPoints),length(volumes)]' \
+  --output text)
+[ "$mount_points" = "0" ] && [ "$volumes" = "0" ] \
+  || fail "run task definition has $mount_points mount points and $volumes volumes; Fargate has no bind mounts"
+ok 'run task definition has no bind mounts'
+
+# A run must reach the artifacts bucket only through a presigned URL. Any S3 grant on the
+# task role would be a grant over every other run's spec, since one task definition serves
+# every run.
+task_role=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/task-role-arn" \
+  --query 'Parameter.Value' --output text 2>/dev/null) || fail 'task role is not in SSM'
+inline=$(aws iam list-role-policies --role-name "${task_role##*/}" \
+  --query 'length(PolicyNames)' --output text)
+attached=$(aws iam list-attached-role-policies --role-name "${task_role##*/}" \
+  --query 'length(AttachedPolicies)' --output text)
+[ "$inline" = "0" ] && [ "$attached" = "0" ] \
+  || fail "run task role holds $inline inline and $attached attached policies; it should hold none yet"
+ok "run task role ${task_role##*/} holds no permissions at all"
+
+# Every published bundle must be fetchable at the digest that names it.
+for key_param in $(aws ssm get-parameters-by-path --path "/intellidev/${env_name}/bundle" \
+  --recursive --query "Parameters[?ends_with(Name,'/key')].Name" --output text); do
+  project=$(basename "$(dirname "$key_param")")
+  key=$(aws ssm get-parameter --name "$key_param" --query 'Parameter.Value' --output text)
+  digest=$(aws ssm get-parameter --name "/intellidev/${env_name}/bundle/${project}/digest" \
+    --query 'Parameter.Value' --output text 2>/dev/null) \
+    || fail "bundle for $project has a key but no digest"
+  aws s3api head-object --bucket "$artifacts" --key "$key" >/dev/null 2>&1 \
+    || fail "bundle for $project is recorded at $key but the object is missing"
+  # The key is content-addressed, so a key that does not contain its own digest means the
+  # recorded pair has drifted and a run would refuse to extract.
+  case "$key" in
+    *"${digest#sha256:}"*) ;;
+    *) fail "bundle for $project: key $key does not match digest $digest" ;;
+  esac
+  ok "bundle for project $project matches its digest"
+done
+
+# --- C5: the lifecycle signal must be wired, or a quiet death leaks a run for ever ---
+queue_url=$(aws ssm get-parameter --name "/intellidev/${env_name}/runtime/task-events-queue-url" \
+  --query 'Parameter.Value' --output text 2>/dev/null) \
+  || fail 'runtime/task-events-queue-url is not in SSM'
+
+rule="intellidev-${env_name}-task-state-change"
+state=$(aws events describe-rule --name "$rule" --query 'State' --output text 2>/dev/null) \
+  || fail "EventBridge rule $rule does not exist"
+[ "$state" = "ENABLED" ] || fail "rule $rule is $state; a disabled rule leaks every run"
+
+# A rule with no target is the quiet failure here: it matches, fires, and delivers nowhere.
+target=$(aws events list-targets-by-rule --rule "$rule" --query 'Targets[0].Arn' --output text)
+case "$target" in
+  arn:aws:sqs:*:"${queue_url##*/}") ;;
+  *) fail "rule $rule targets $target, not the queue recorded in SSM (${queue_url##*/})" ;;
+esac
+ok "rule $rule → ${target##*:}"
+
+# The pattern is what keeps the queue from filling with PENDING and RUNNING transitions,
+# each of which costs a request and none of which settles anything.
+pattern=$(aws events describe-rule --name "$rule" --query 'EventPattern' --output text)
+printf '%s' "$pattern" | grep -q STOPPED || fail "rule $rule does not filter on STOPPED"
+printf '%s' "$pattern" | grep -q "$(aws ssm get-parameter \
+  --name "/intellidev/${env_name}/runtime/cluster-name" --query 'Parameter.Value' --output text)" \
+  || fail "rule $rule is not scoped to this environment's cluster"
+ok 'rule filters STOPPED transitions for this cluster only'
+
+# Region-wide, not just this VPC: a NAT gateway anywhere is a scale-to-zero regression.
+nats=$(aws ec2 describe-nat-gateways \
+  --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text)
+[ -z "$nats" ] || fail "NAT gateway(s) present: $nats"
+ok 'no NAT gateways in the region'
+
+printf '\nverify: all checks passed for %s\n' "$env_name"

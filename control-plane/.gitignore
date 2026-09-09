@@ -1,0 +1,40 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+# local run scratch
+.tmp/
+.work/
+*.log
+
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# personal harness settings; .claude/settings.json is shared
+.claude/settings.local.json
+
+# Local docker-mode fixtures (bind-mounted into the runner; /Users is what Docker Desktop shares)
+.intellidev-local/
+
+# cdk synth output
+cdk.out/
+
+# local control-plane work root
+.intellidev-work/
+
+# `supabase link` recreates this; a linked dir makes `supabase db push` one
+# keystroke away, and pushing from here would corrupt the product repo's
+# migration history. Nothing in this repo needs it — see db/README.md.
+supabase/
+
+# drizzle-kit writes these for `generate`'s schema diffing, which this repo does not
+# use — migrations are hand-written SQL. Only meta/_journal.json is needed, by the
+# migrator. Keeping snapshots would mean committing generated state that drifts.
+db/migrations/meta/*_snapshot.json

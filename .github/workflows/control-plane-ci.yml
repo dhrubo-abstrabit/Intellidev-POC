@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only when something the control plane is built from actually changed.
+      #
+      # This repo hosts a Next app as well, and Amplify redeploys that on every push to main.
+      # Without these filters a frontend commit would push container images and run `cdk deploy`
+      # — minutes of AWS work, and a new task definition revision, for a change that touched no
+      # code the control plane runs.
+      - 'control-plane/**'
+      - 'db/**'
+      - '.github/workflows/control-plane-*.yml'
+  pull_request:
+    paths:
+      # Only when something the control plane is built from actually changed.
+      #
+      # This repo hosts a Next app as well, and Amplify redeploys that on every push to main.
+      # Without these filters a frontend commit would push container images and run `cdk deploy`
+      # — minutes of AWS work, and a new task definition revision, for a change that touched no
+      # code the control plane runs.
+      - 'control-plane/**'
+      - 'db/**'
+      - '.github/workflows/control-plane-*.yml'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The pnpm monorepo root is the subtree, not the repository root — the
+        # repository root is the Next app and uses npm.
+        working-directory: control-plane
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both setup actions below read the *repository* root, which `defaults.run.working-directory`
+      # does not move — that applies to `run:` steps only. The root here is the Next app: it has no
+      # `packageManager` field and no `pnpm-lock.yaml`, so each action has to be pointed at the
+      # subtree by hand. Without that, pnpm/action-setup cannot determine a version and setup-node
+      # throws `Dependencies lock file is not found` — both before a single install runs.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: control-plane/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: control-plane/.nvmrc
+          cache: pnpm
+          cache-dependency-path: control-plane/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: format
+        run: pnpm format:check
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: test
+        run: pnpm test

@@ -1,0 +1,104 @@
+import type { HarnessId, StageId, StageRecord } from '@intellidev/shared'
+
+/** Injected so the engine is testable without a shell. */
+export interface CommandRunner {
+  run(
+    command: string,
+    opts: { cwd: string; timeoutSec: number },
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>
+}
+
+/**
+ * Deterministic steps that are ours, not the model's. Implemented in T6 (git
+ * workflow); the engine only needs the seam so its own logic can be proven first.
+ */
+export interface BuiltinActions {
+  createBranch(ctx: StageContext): Promise<{ branch: string; from: string }>
+  /** Commits whatever the agent stages left in the worktree. Null when nothing changed. */
+  commit(ctx: StageContext): Promise<{ sha: string; filesChanged: number } | null>
+  /**
+   * Returns the branches it actually used, not only the pull request.
+   *
+   * FOUND BY READING THE EVENT STREAM. `pr.opened` reported `head: "pr"` — the stage id — and a
+   * hard-coded `base: "main"`, because the engine had no way to learn either and guessed. The
+   * pull request itself was correct the whole time, so the only casualty was anyone trying to
+   * find the branch from the log.
+   */
+  openPullRequest(
+    ctx: StageContext,
+  ): Promise<{ number: number; url: string; head?: string; base?: string }>
+  /**
+   * Make the work done so far survive this container.
+   *
+   * Called before a run parks for approval, because parking *destroys the container* — that is
+   * how waiting for a person costs nothing — and the worktree goes with it.
+   *
+   * FOUND BY APPROVING A PARKED RUN. The gate sat between `code` and `commit`, which is the
+   * natural place for it: review the change before it is committed. `code` edited a file, the
+   * run parked, the container was destroyed, and the container that resumed cloned the branch
+   * fresh and found nothing — `commit` committed nothing and `pr` reported "no files changed".
+   * Approving produced an empty run, every time.
+   *
+   * Null when there was nothing to preserve, which is the ordinary case for a gate after a
+   * read-only stage.
+   */
+  preserveWork(ctx: StageContext): Promise<{ sha: string; branch: string } | null>
+}
+
+/**
+ * Where a stage's structured output arrives from. In the real system the MCP
+ * gateway's `stage_advance` tool writes it here (T7); Codex can also produce it
+ * natively via `--output-schema`.
+ */
+export interface StageOutputSink {
+  /** Consume the output for a stage, if the agent produced one. */
+  take(stage: StageId): unknown | undefined
+}
+
+export interface StageContext {
+  runId: string
+  stage: StageId
+  attempt: number
+  cwd: string
+  harness: HarnessId
+  /** Harness-native session id from a previous attempt, if any. */
+  resume?: string
+  /** Steers queued but not yet delivered, carried into the next attempt. */
+  pendingSteers: string[]
+}
+
+/** Persisted after every transition, so a killed process resumes at its last gate. */
+export interface RunState {
+  runId: string
+  templateName: string
+  /** Index into the template's stage list. */
+  cursor: number
+  /** Gate failures per stage, which is what `maxAttempts` bounds. */
+  gateFailures: Partial<Record<StageId, number>>
+  /** How many times each stage has been entered, for reporting. */
+  visits: Partial<Record<StageId, number>>
+  records: StageRecord[]
+  status: 'running' | 'succeeded' | 'failed' | 'parked' | 'cancelled'
+  /** Per-stage harness session ids, so a resumed stage continues its thread. */
+  resumeTokens: Partial<Record<StageId, string>>
+  /** Steers that arrived while a non-steerable harness was mid-stage. */
+  pendingSteers: string[]
+  /**
+   * Approval decisions already made, by stage.
+   *
+   * Without this a resumed run re-reaches the same stage, asks for approval again, and parks —
+   * for ever. The decision has to live in the state the next container loads, because the
+   * container that asked for it is gone by the time anyone answers.
+   *
+   * `rejected` is recorded rather than deleted so a run cannot be resumed into pretending the
+   * question was never asked.
+   */
+  approvals?: Partial<Record<StageId, 'approved' | 'rejected'>>
+  totalStageRuns: number
+  failureReason?: string
+}
+
+export interface RunStateStore {
+  load(): Promise<RunState | null>
+  save(state: RunState): Promise<void>
+}

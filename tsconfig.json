@@ -30,5 +30,12 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // The control plane is its own monorepo with its own tsconfig, path aliases and node
+    // types. `include` here is `**/*.ts`, so without this line `next build` would try to
+    // typecheck all of it against this project's settings and fail the Amplify deploy —
+    // which is a production break caused by a directory being added, not by any code.
+    "control-plane"
+  ]
 }
