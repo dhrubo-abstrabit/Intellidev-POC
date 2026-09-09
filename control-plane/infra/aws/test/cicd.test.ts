@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { Template } from 'aws-cdk-lib/assertions'
 import { buildApp } from '../lib/build-app.js'
@@ -160,11 +162,37 @@ describe('the deploy role', () => {
   })
 })
 
+/**
+ * The deploy workflow lives in a different place depending on which repository this tree is in:
+ * on its own it is `.github/workflows/deploy.yml` at the root, and vendored into the app
+ * repository as a subtree it is `.github/workflows/control-plane-deploy.yml` one level further
+ * up, so that an Amplify commit does not trigger a control-plane deploy.
+ *
+ * So search upward for either name rather than hard-coding one layout. Throwing when neither is
+ * found is the point: a workflow this file cannot see is a workflow whose assertions below would
+ * otherwise pass by never running.
+ */
+function findDeployWorkflow(): { body: string; root: string } {
+  const names = ['deploy.yml', 'control-plane-deploy.yml']
+  const tried: string[] = []
+  let dir = fileURLToPath(new URL('.', import.meta.url))
+  for (;;) {
+    for (const name of names) {
+      const candidate = join(dir, '.github', 'workflows', name)
+      tried.push(candidate)
+      // `root` is what an action sees as the repository root, which is what the paths inside
+      // the workflow are resolved against.
+      if (existsSync(candidate)) return { body: readFileSync(candidate, 'utf8'), root: dir }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  throw new Error(`no deploy workflow found. Looked for:\n${tried.join('\n')}`)
+}
+
 describe('the deploy workflow', () => {
-  const workflow = readFileSync(
-    new URL('../../../.github/workflows/deploy.yml', import.meta.url),
-    'utf8',
-  )
+  const { body: workflow, root } = findDeployWorkflow()
 
   it('never separates pushing an image from deploying what pins it', () => {
     /**
@@ -211,5 +239,45 @@ describe('the deploy workflow', () => {
   it('never deploys its own identity', () => {
     // A role that can widen its own trust policy is not a boundary.
     expect(workflow).not.toContain('Intellidev-dev-Cicd')
+  })
+
+  it('names only files that exist', () => {
+    // Every one of these is read by an action rather than by a `run:` step, so a wrong path is
+    // not a failing command — it is a job that dies during setup, before any install.
+    const refs = [
+      ...workflow.matchAll(/(node-version-file|package_json_file|cache-dependency-path):\s*(\S+)/g),
+    ]
+    expect(refs.length).toBeGreaterThan(0)
+    for (const [, key, value] of refs) {
+      expect(existsSync(join(root, value!)), `${key} -> ${value}`).toBe(true)
+    }
+  })
+
+  it('points pnpm at the workspace root when that is not the repository root', () => {
+    /**
+     * FOUND BY READING IT AFTER VENDORING THIS TREE INTO THE APP REPOSITORY. Every job sets
+     * `defaults.run.working-directory`, but that moves `run:` steps only — an action still
+     * reads the repository root. There that root is a Next app with no `packageManager` field
+     * and no `pnpm-lock.yaml`, so pnpm/action-setup cannot determine a version and setup-node
+     * throws `Dependencies lock file is not found`. Both jobs would fail before installing
+     * anything, on every control-plane change.
+     */
+    // Steps, not prose: the comment explaining all this in the workflow names both actions,
+    // and counting those mentions is how the first version of this test failed.
+    const setups = workflow.match(/^\s*- uses: pnpm\/action-setup/gm)?.length ?? 0
+    const caches = workflow.match(/^\s*cache: pnpm$/gm)?.length ?? 0
+    expect(setups).toBeGreaterThan(0)
+
+    const workspace = fileURLToPath(new URL('../../..', import.meta.url))
+    if (resolve(workspace) === resolve(root)) {
+      // Standing alone: the workspace *is* the repository root, so both actions find what they
+      // look for by default. This is the assertion that they do.
+      expect(existsSync(join(root, 'pnpm-lock.yaml'))).toBe(true)
+      return
+    }
+
+    // Vendored: each one has to be pointed at the workspace by hand.
+    expect(workflow.match(/^\s*package_json_file:/gm)?.length ?? 0).toBe(setups)
+    expect(workflow.match(/^\s*cache-dependency-path:/gm)?.length ?? 0).toBe(caches)
   })
 })

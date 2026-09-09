@@ -10,6 +10,16 @@ name: deploy
 on:
   push:
     branches: [main]
+    paths:
+      # Only when something the control plane is built from actually changed.
+      #
+      # This repo hosts a Next app as well, and Amplify redeploys that on every push to main.
+      # Without these filters a frontend commit would push container images and run `cdk deploy`
+      # — minutes of AWS work, and a new task definition revision, for a change that touched no
+      # code the control plane runs.
+      - 'control-plane/**'
+      - 'db/**'
+      - '.github/workflows/control-plane-*.yml'
   # So a deploy can be re-run without an empty commit — a failed push or a transient AWS error
   # should not need the history rewritten to retry.
   workflow_dispatch:
@@ -35,14 +45,27 @@ jobs:
   # ship something the suite would have caught.
   check:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The pnpm monorepo root is the subtree, not the repository root — the
+        # repository root is the Next app and uses npm.
+        working-directory: control-plane
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # Both setup actions below read the *repository* root, which `defaults.run.working-directory`
+      # does not move — that applies to `run:` steps only. The root here is the Next app: it has no
+      # `packageManager` field and no `pnpm-lock.yaml`, so each action has to be pointed at the
+      # subtree by hand. Without that, pnpm/action-setup cannot determine a version and setup-node
+      # throws `Dependencies lock file is not found` — both before a single install runs.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: control-plane/package.json
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: control-plane/.nvmrc
           cache: pnpm
+          cache-dependency-path: control-plane/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm typecheck
@@ -67,15 +90,17 @@ jobs:
         with:
           filters: |
             runner:
-              - 'packages/adapter/**'
-              - 'packages/shared/**'
-              - 'infra/docker/Dockerfile'
+              - 'control-plane/packages/adapter/**'
+              - 'control-plane/packages/shared/**'
+              - 'control-plane/infra/docker/Dockerfile'
             controlPlane:
-              - 'packages/control-plane/**'
-              - 'packages/shared/**'
-              - 'infra/docker/control-plane.Dockerfile'
+              - 'control-plane/packages/control-plane/**'
+              - 'control-plane/packages/shared/**'
+              - 'control-plane/infra/docker/control-plane.Dockerfile'
             infra:
-              - 'infra/aws/**'
+              - 'control-plane/infra/aws/**'
+              # At the repository root now, not inside the subtree.
+              - 'db/**'
 
   # The runner image, then the stack that pins it.
   #
@@ -84,16 +109,24 @@ jobs:
   # previous image while everything looked fine.
   runner:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The pnpm monorepo root is the subtree, not the repository root — the repository
+        # root is the Next app and uses npm.
+        working-directory: control-plane
     needs: changes
     if: needs.changes.outputs.runner == 'true'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: control-plane/package.json
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: control-plane/.nvmrc
           cache: pnpm
+          cache-dependency-path: control-plane/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -109,16 +142,24 @@ jobs:
 
   control-plane:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The pnpm monorepo root is the subtree, not the repository root — the repository
+        # root is the Next app and uses npm.
+        working-directory: control-plane
     needs: changes
     if: needs.changes.outputs.controlPlane == 'true'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: control-plane/package.json
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: control-plane/.nvmrc
           cache: pnpm
+          cache-dependency-path: control-plane/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -146,6 +187,11 @@ jobs:
   # image changed would otherwise deploy twice concurrently and race itself.
   infra:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The pnpm monorepo root is the subtree, not the repository root — the repository
+        # root is the Next app and uses npm.
+        working-directory: control-plane
     needs: [changes, runner, control-plane]
     # `always()` because the image jobs are skipped on most commits, and a skipped dependency
     # would otherwise skip this too.
@@ -154,10 +200,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: control-plane/package.json
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: control-plane/.nvmrc
           cache: pnpm
+          cache-dependency-path: control-plane/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - uses: aws-actions/configure-aws-credentials@v4
         with:
