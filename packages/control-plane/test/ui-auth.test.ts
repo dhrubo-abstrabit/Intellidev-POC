@@ -136,6 +136,32 @@ describe('the stage editor', () => {
     }
   })
 
+  it('describes the version on screen, not the current one', () => {
+    /**
+     * FOUND BY SWITCHING. `/api/artifacts/:id` returns the current version's row, so viewing v1
+     * kept v2's title and said "written by the code stage" for something the design stage had
+     * written — the two facts a history exists to keep straight, both wrong at once.
+     */
+    expect(page).toContain(
+      'state.artifactVersions ?? []).find((v) => v.version === state.artifactVersion)',
+    )
+    expect(page).toContain('shown.title || artifact.name')
+    // The kind too: a note that became a diagram must not render as what it used to be.
+    expect(page).toContain('artifact.kind = shown.kind ?? artifact.kind')
+  })
+
+  it('hides the version picker when there is only one', () => {
+    // A picker with a single option is noise on the overwhelmingly common case.
+    expect(page).toContain("$('artifactVersionRow').hidden = versions.length < 2")
+  })
+
+  it('reads an earlier version without promoting it', () => {
+    // Comparing two revisions must not change what everyone else sees; promoting is the
+    // separate button beside the picker.
+    expect(page).toContain('/api/artifacts/${id}/content?version=')
+    expect(page).toContain('/api/artifacts/${artifact.id}/current')
+  })
+
   it('says a task is waiting on approval rather than blocked', () => {
     /**
      * FOUND BY READING IT. The pill printed the stored status with underscores swapped, so a

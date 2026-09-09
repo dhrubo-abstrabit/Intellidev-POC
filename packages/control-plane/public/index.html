@@ -2665,10 +2665,20 @@
           state.artifactBlob = null
         }
 
-        $('artifactTitle').textContent = artifact.title || artifact.name
+        /**
+         * The heading describes the version on screen, not the current one.
+         *
+         * FOUND BY SWITCHING. `/api/artifacts/:id` returns the *current* version's row, so
+         * looking at v1 kept v2's title and said "written by the code stage" for something the
+         * design stage wrote — the two facts a version history exists to keep straight.
+         */
+        const shown =
+          (state.artifactVersions ?? []).find((v) => v.version === state.artifactVersion) ??
+          artifact
+        $('artifactTitle').textContent = shown.title || artifact.name
         $('artifactMeta').textContent =
-          `${artifact.name} · ${ARTIFACT_KIND_WORDS[artifact.kind] ?? artifact.kind}` +
-          `${artifact.stage ? ` · written by the ${artifact.stage} stage` : ''}` +
+          `${artifact.name} · ${ARTIFACT_KIND_WORDS[shown.kind] ?? shown.kind}` +
+          `${shown.stage ? ` · written by the ${shown.stage} stage` : ''}` +
           `${artifact.versionCount > 1 ? ` · version ${state.artifactVersion} of ${artifact.versionCount}` : ''}`
         $('artifactSource').textContent = ''
         /**
@@ -2694,6 +2704,11 @@
          */
         $('artifactDownload').hidden = !state.artifactBlob
         $('artifactRaw').hidden = artifact.kind === 'image' || artifact.kind === 'file'
+
+        // The kind of the version on screen, for the same reason: a note that became a diagram
+        // must not be rendered as the one it used to be.
+        artifact.kind = shown.kind ?? artifact.kind
+        artifact.contentType = shown.contentType ?? artifact.contentType
 
         $('artifactDialog').showModal()
         $('artifactFrame').srcdoc =
@@ -2761,11 +2776,14 @@
           $('artifactSource').textContent = body.error ?? 'could not switch version'
           return
         }
-        $('artifactSource').textContent = `version ${state.artifactVersion} is now the current one`
+        const promoted = state.artifactVersion
         // The list shows "v2 of 3", so it has to be re-read.
         if (state.selected) await select(state.selected)
         state.artifactBlob = null
-        await openArtifact(artifact.id, state.artifactVersion)
+        await openArtifact(artifact.id, promoted)
+        // Said after reopening, not before: `openArtifact` clears this line, so the earlier
+        // order set the confirmation and then wiped it in the same click.
+        $('artifactSource').textContent = `version ${promoted} is now the current one`
       }
 
       $('closeArtifact').onclick = () => {
