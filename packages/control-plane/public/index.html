@@ -802,6 +802,20 @@
       <div class="sheet-head">
         <div class="name" id="artifactTitle">Artifact</div>
         <p class="hint" id="artifactMeta" style="margin: 4px 0 0"></p>
+        <!--
+          Which revision is on screen.
+
+          An iteration is a version of the same artifact rather than a second one, so the history
+          is the thing worth navigating. Looking at an earlier version does not change what
+          anyone else sees — that takes the button beside it.
+        -->
+        <div class="row" id="artifactVersionRow" style="margin-top: 8px; gap: 6px" hidden>
+          <label class="hint" for="artifactVersion" style="white-space: nowrap">Version</label>
+          <select id="artifactVersion" style="flex: 1"></select>
+          <button type="button" id="artifactMakeCurrent" class="secondary">
+            Make this the current one
+          </button>
+        </div>
       </div>
       <div class="sheet-body" style="padding: 0">
         <iframe
@@ -2468,7 +2482,10 @@
                   <p class="hint" style="margin: 2px 0 0">
                     ${escapeHtmlText(a.name)} · ${ARTIFACT_KIND_WORDS[a.kind] ?? a.kind}${
                       a.stage ? ` · from ${escapeHtmlText(a.stage)}` : ''
-                    } · ${Math.max(1, Math.round(a.bytes / 1024))} KB
+                    } · ${Math.max(1, Math.round(a.bytes / 1024))} KB${
+                      // Only when there is a history worth mentioning.
+                      a.versionCount > 1 ? ` · v${a.version} of ${a.versionCount}` : ''
+                    }
                   </p>
                 </div>
                 <button type="button" class="secondary" data-artifact="${escapeAttr(a.id)}">
@@ -2593,11 +2610,34 @@
       </html>`
       }
 
-      async function openArtifact(id) {
+      async function openArtifact(id, version) {
         const res = await fetch(`/api/artifacts/${id}`)
         if (!res.ok) return
         const { artifact } = await res.json()
         state.artifact = artifact
+        /**
+         * The revision on screen, which is not necessarily the current one.
+         *
+         * Reading an earlier version is a private act — it changes nothing for anyone else, and
+         * that is the point: you compare before you decide. Promoting one is the separate
+         * button.
+         */
+        state.artifactVersion = version ?? artifact.version
+
+        state.artifactVersions = await fetch(`/api/artifacts/${id}/versions`)
+          .then((r) => (r.ok ? r.json() : { versions: [] }))
+          .then((b) => b.versions ?? [])
+          .catch(() => [])
+        renderArtifactVersions()
+
+        // The body on the row is the *current* version's. Looking at another means fetching it.
+        if (state.artifactVersion !== artifact.version) {
+          const older = await fetch(`/api/artifacts/${id}/content?version=${state.artifactVersion}`)
+          if (older.ok) {
+            artifact.body = artifact.storage === 'inline' ? await older.text() : undefined
+            if (artifact.storage !== 'inline') state.artifactBlob = await older.blob()
+          }
+        }
 
         /**
          * The bytes, for the kinds whose body is not in the row.
@@ -2606,8 +2646,8 @@
          * with the page's bearer — the frame has no credential of its own and must not be given
          * one — and turned into a data URI the frame can show, or a blob the footer can offer.
          */
-        if (artifact.storage !== 'inline') {
-          const bytes = await fetch(`/api/artifacts/${id}/content`)
+        if (artifact.storage !== 'inline' && !state.artifactBlob) {
+          const bytes = await fetch(`/api/artifacts/${id}/content?version=${state.artifactVersion}`)
           if (!bytes.ok) {
             $('artifactSource').textContent = 'could not load this artifact’s content'
             return
@@ -2628,7 +2668,8 @@
         $('artifactTitle').textContent = artifact.title || artifact.name
         $('artifactMeta').textContent =
           `${artifact.name} · ${ARTIFACT_KIND_WORDS[artifact.kind] ?? artifact.kind}` +
-          `${artifact.stage ? ` · written by the ${artifact.stage} stage` : ''}`
+          `${artifact.stage ? ` · written by the ${artifact.stage} stage` : ''}` +
+          `${artifact.versionCount > 1 ? ` · version ${state.artifactVersion} of ${artifact.versionCount}` : ''}`
         $('artifactSource').textContent = ''
         /**
          * Shown first, then filled.
@@ -2667,10 +2708,74 @@
             : artifactDocument(artifact)
       }
 
+      /**
+       * The history, and which of it is on screen.
+       *
+       * Hidden entirely when there is only one version: a picker with a single option is noise
+       * on the overwhelmingly common case.
+       */
+      function renderArtifactVersions() {
+        const versions = state.artifactVersions ?? []
+        $('artifactVersionRow').hidden = versions.length < 2
+        if (versions.length < 2) return
+
+        $('artifactVersion').innerHTML = versions
+          .map((v) => {
+            const when = new Date(v.createdAt).toLocaleString()
+            const marks = [
+              `v${v.version}`,
+              v.isCurrent ? 'current' : null,
+              v.stage ? `from ${v.stage}` : null,
+              when,
+            ].filter(Boolean)
+            return `<option value="${v.version}" ${
+              v.version === state.artifactVersion ? 'selected' : ''
+            }>${escapeHtmlText(marks.join(' · '))}</option>`
+          })
+          .join('')
+
+        // Nothing to promote when the one on screen is already the current one.
+        const shown = versions.find((v) => v.version === state.artifactVersion)
+        $('artifactMakeCurrent').disabled = Boolean(shown?.isCurrent)
+      }
+
+      $('artifactVersion').onchange = () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        // Re-opened at the chosen version, which re-fetches its bytes. Reading is private: it
+        // changes nothing for anyone else until the button below is pressed.
+        state.artifactBlob = null
+        void openArtifact(artifact.id, Number($('artifactVersion').value))
+      }
+
+      $('artifactMakeCurrent').onclick = async () => {
+        const artifact = state.artifact
+        if (!artifact) return
+        const res = await fetch(`/api/artifacts/${artifact.id}/current`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ version: state.artifactVersion }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          $('artifactSource').textContent = body.error ?? 'could not switch version'
+          return
+        }
+        $('artifactSource').textContent = `version ${state.artifactVersion} is now the current one`
+        // The list shows "v2 of 3", so it has to be re-read.
+        if (state.selected) await select(state.selected)
+        state.artifactBlob = null
+        await openArtifact(artifact.id, state.artifactVersion)
+      }
+
       $('closeArtifact').onclick = () => {
         // Emptied on close so the next open cannot show the previous artifact for a moment
-        // while its document parses.
+        // while its document parses — and the version state with it, or reopening a different
+        // artifact would start on a revision number that belonged to the last one.
         $('artifactFrame').srcdoc = ''
+        state.artifactVersion = undefined
+        state.artifactVersions = []
+        state.artifactBlob = null
         $('artifactDialog').close()
       }
 

@@ -773,34 +773,79 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * access to an artifact — so one appearing in a proxy log, a referrer or somebody's history
    * is worth nothing.
    */
-  app.get<{ Params: { id: string } }>('/api/artifacts/:id/content', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { version?: string } }>(
+    '/api/artifacts/:id/content',
+    async (request, reply) => {
+      const artifact = await store.getTaskArtifact(request.params.id)
+      if (!artifact || artifact.projectId !== opts.scope.projectId) {
+        return reply.code(404).send({ error: 'no such artifact' })
+      }
+      /**
+       * A particular revision, or the current one.
+       *
+       * Which is what lets someone read two versions side by side before deciding — a switch that
+       * had to happen first would make comparing them a change to what everybody else sees.
+       */
+      const wanted = request.query.version === undefined ? undefined : Number(request.query.version)
+      if (wanted !== undefined && (!Number.isInteger(wanted) || wanted < 1)) {
+        return reply.code(400).send({ error: 'version must be a positive integer' })
+      }
+      const content = await store.readTaskArtifactContent(artifact.id, wanted)
+      // The row exists and the bytes do not, which means the two have diverged. A 404 naming the
+      // artifact says more than a 500 would.
+      if (!content) return reply.code(404).send({ error: 'this artifact has no content stored' })
+
+      return (
+        reply
+          .type(content.contentType)
+          /**
+           * These bytes were written by an agent, so nothing downstream may guess a type for
+           * them, and nothing may render them as a document in this origin.
+           *
+           * `nosniff` stops the type being second-guessed. `attachment` means a browser opening
+           * this URL directly downloads it rather than executing it as a page — the preview reads
+           * it through `fetch` and inlines it, so nothing that should render is affected.
+           */
+          .header('x-content-type-options', 'nosniff')
+          .header('content-disposition', `attachment; filename="${artifact.name}"`)
+          // The content hash, so a browser can revalidate instead of re-fetching a screenshot.
+          .header('etag', `"${content.sha256}"`)
+          .header('cache-control', 'private, max-age=0, must-revalidate')
+          .send(content.bytes)
+      )
+    },
+  )
+
+  /** An artifact's history, newest first, so a person can choose between revisions. */
+  app.get<{ Params: { id: string } }>('/api/artifacts/:id/versions', async (request, reply) => {
     const artifact = await store.getTaskArtifact(request.params.id)
     if (!artifact || artifact.projectId !== opts.scope.projectId) {
       return reply.code(404).send({ error: 'no such artifact' })
     }
-    const content = await store.readTaskArtifactContent(artifact.id)
-    // The row exists and the bytes do not, which means the two have diverged. A 404 naming the
-    // artifact says more than a 500 would.
-    if (!content) return reply.code(404).send({ error: 'this artifact has no content stored' })
+    return { versions: await store.listTaskArtifactVersions(artifact.id) }
+  })
 
-    return (
-      reply
-        .type(content.contentType)
-        /**
-         * These bytes were written by an agent, so nothing downstream may guess a type for
-         * them, and nothing may render them as a document in this origin.
-         *
-         * `nosniff` stops the type being second-guessed. `attachment` means a browser opening
-         * this URL directly downloads it rather than executing it as a page — the preview reads
-         * it through `fetch` and inlines it, so nothing that should render is affected.
-         */
-        .header('x-content-type-options', 'nosniff')
-        .header('content-disposition', `attachment; filename="${artifact.name}"`)
-        // The content hash, so a browser can revalidate instead of re-fetching a screenshot.
-        .header('etag', `"${content.sha256}"`)
-        .header('cache-control', 'private, max-age=0, must-revalidate')
-        .send(content.bytes)
-    )
+  /**
+   * Switch which version the artifact shows.
+   *
+   * A pointer move. Nothing is copied, so switching back and forth costs one column update
+   * either way and the history stays exactly as long as it was.
+   */
+  app.post<{ Params: { id: string } }>('/api/artifacts/:id/current', async (request, reply) => {
+    const artifact = await store.getTaskArtifact(request.params.id)
+    if (!artifact || artifact.projectId !== opts.scope.projectId) {
+      return reply.code(404).send({ error: 'no such artifact' })
+    }
+    const wanted = Number((request.body as { version?: unknown } | undefined)?.version)
+    if (!Number.isInteger(wanted) || wanted < 1) {
+      return reply.code(400).send({ error: 'version must be a positive integer' })
+    }
+    const switched = await store.setCurrentArtifactVersion(artifact.id, wanted)
+    // 404 on the version rather than 400: the artifact exists and that revision does not, which
+    // is what a picker showing a stale history would ask for.
+    if (!switched) return reply.code(404).send({ error: `no version ${wanted} of this artifact` })
+    const { body: _body, ...summary } = switched
+    return { artifact: summary }
   })
 
   app.delete<{ Params: { id: string } }>('/api/artifacts/:id', async (request, reply) => {
@@ -1573,7 +1618,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
    * This is the half that makes artifacts more than a viewer: the stage after `design` can read
    * what `design` drew, which prose in an event log cannot give it.
    */
-  app.get<{ Params: { id: string; name: string } }>(
+  app.get<{ Params: { id: string; name: string }; Querystring: { version?: string } }>(
     '/internal/runs/:id/artifacts/:name',
     async (request, reply) => {
       const resolved = await artifactScope(request.headers['authorization'], request.params.id)
@@ -1581,7 +1626,25 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
       const found = await store.findTaskArtifact(resolved.run.taskId, request.params.name)
       if (!found) return reply.code(404).send({ error: `no artifact named ${request.params.name}` })
-      return { artifact: found }
+
+      /**
+       * An earlier revision, when one is asked for.
+       *
+       * A later stage usually wants the current version — which is what `findTaskArtifact`
+       * returns — but a stage revising something may want to see what it looked like before.
+       */
+      const wanted = request.query.version === undefined ? undefined : Number(request.query.version)
+      if (wanted === undefined) return { artifact: found }
+      if (!Number.isInteger(wanted) || wanted < 1) {
+        return reply.code(400).send({ error: 'version must be a positive integer' })
+      }
+      const content = await store.readTaskArtifactContent(found.id, wanted)
+      if (!content) {
+        return reply.code(404).send({ error: `no version ${wanted} of ${request.params.name}` })
+      }
+      return {
+        artifact: { ...found, version: wanted, body: content.bytes.toString('utf8') },
+      }
     },
   )
 

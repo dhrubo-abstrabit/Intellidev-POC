@@ -18,9 +18,12 @@ import {
   type TaskRow,
   type StageTemplateInput,
   type TaskArtifactRow,
+  type ArtifactKind,
+  type ArtifactStorage,
   type TaskArtifactSummary,
   type TaskArtifactInput,
   type TaskArtifactContent,
+  type TaskArtifactVersionRow,
 } from './types.js'
 import {
   BlobStoreUnavailable,
@@ -57,7 +60,7 @@ interface Subscription {
 
 export class InMemoryStore implements Store {
   private readonly stageTemplates = new Map<string, StageTemplateRow>()
-  private readonly artifacts = new Map<string, TaskArtifactRow>()
+  private readonly artifacts = new Map<string, MemoryArtifact>()
   /** Where non-text artifact bytes go. See `PostgresStore.useArtifactBlobs`. */
   private blobs: ArtifactBlobs | undefined
 
@@ -180,11 +183,19 @@ export class InMemoryStore implements Store {
 
   // --- task artifacts ------------------------------------------------------
 
+  /** Kept per artifact, matching the Postgres store so the contract tests cover both. */
+  private artifactVersionsKept = 20
+
+  /** Set by a test that wants to prove pruning without writing twenty rows. */
+  useArtifactVersionsKept(kept: number): void {
+    this.artifactVersionsKept = kept
+  }
+
   async listTaskArtifacts(taskId: string): Promise<TaskArtifactSummary[]> {
     return [...this.artifacts.values()]
       .filter((a) => a.taskId === taskId)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map(withoutBody)
+      .map((a) => withoutBody(this.currentRow(a)))
   }
 
   async listProjectArtifacts(scope: ProjectScope, limit = 100): Promise<TaskArtifactSummary[]> {
@@ -192,27 +203,53 @@ export class InMemoryStore implements Store {
       .filter((a) => a.projectId === scope.projectId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, limit)
-      .map(withoutBody)
+      .map((a) => withoutBody(this.currentRow(a)))
   }
 
   async getTaskArtifact(id: string): Promise<TaskArtifactRow | undefined> {
-    return this.artifacts.get(id)
+    const artifact = this.artifacts.get(id)
+    return artifact ? this.currentRow(artifact) : undefined
   }
 
   async findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined> {
-    return [...this.artifacts.values()].find((a) => a.taskId === taskId && a.name === name)
+    const artifact = [...this.artifacts.values()].find(
+      (a) => a.taskId === taskId && a.name === name,
+    )
+    return artifact ? this.currentRow(artifact) : undefined
+  }
+
+  async listTaskArtifactVersions(id: string): Promise<TaskArtifactVersionRow[]> {
+    const artifact = this.artifacts.get(id)
+    if (!artifact) return []
+    return [...artifact.versions]
+      .sort((a, b) => b.version - a.version)
+      .map((v) => ({
+        version: v.version,
+        kind: v.kind,
+        contentType: v.contentType,
+        ...(v.title ? { title: v.title } : {}),
+        storage: v.storage,
+        sha256: v.sha256,
+        bytes: v.bytes,
+        ...(v.runId ? { runId: v.runId } : {}),
+        ...(v.stage ? { stage: v.stage } : {}),
+        createdAt: v.createdAt,
+        isCurrent: v.version === artifact.currentVersion,
+      }))
+  }
+
+  async setCurrentArtifactVersion(
+    id: string,
+    version: number,
+  ): Promise<TaskArtifactRow | undefined> {
+    const artifact = this.artifacts.get(id)
+    if (!artifact?.versions.some((v) => v.version === version)) return undefined
+    artifact.currentVersion = version
+    artifact.updatedAt = new Date().toISOString()
+    return this.currentRow(artifact)
   }
 
   async saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow> {
-    /**
-     * A name is a natural key within a task, so writing the same one again is an edit.
-     *
-     * Postgres enforces that with a unique index and this store has to be told, or the two
-     * disagree — and the disagreement shows up as a test that passes here and a 500 in
-     * production. That is not hypothetical: it is exactly how the stage editor came to fail on
-     * every second save.
-     */
-    const existing = await this.findTaskArtifact(input.taskId, input.name)
     const bytes = Buffer.isBuffer(input.content)
       ? input.content
       : Buffer.from(input.content, 'utf8')
@@ -225,69 +262,139 @@ export class InMemoryStore implements Store {
     // deployment-without-one case behaves.
     if (storage === 's3' && !this.blobs) throw new BlobStoreUnavailable(input.kind)
 
-    const id = existing?.id ?? randomUUID()
+    /**
+     * A name that already exists gains a version rather than becoming a second artifact.
+     *
+     * Postgres enforces the name's uniqueness with an index and this store has to be told, or
+     * the two disagree — and the disagreement shows up as a test that passes here and a 500 in
+     * production, which is exactly how the stage editor came to fail on every second save.
+     */
+    const existing = [...this.artifacts.values()].find(
+      (a) => a.taskId === input.taskId && a.name === input.name,
+    )
     const now = new Date().toISOString()
+    const artifact: MemoryArtifact =
+      existing ??
+      ({
+        id: randomUUID(),
+        clientSpaceId: scope.clientSpaceId,
+        projectId: scope.projectId,
+        taskId: input.taskId,
+        name: input.name,
+        currentVersion: 0,
+        versions: [],
+        createdAt: now,
+        updatedAt: now,
+      } satisfies MemoryArtifact)
+
+    const version = Math.max(0, ...artifact.versions.map((v) => v.version)) + 1
 
     let storageKey: string | undefined
     if (storage === 's3') {
+      // The version is in the name, so a revision is a new object rather than a mutation of
+      // bytes an earlier version still claims.
       storageKey = await this.blobs!.put({
         projectId: scope.projectId,
         taskId: input.taskId,
-        artifactId: id,
-        name: input.name,
+        artifactId: artifact.id,
+        name: `v${version}-${input.name}`,
         contentType,
         bytes,
       })
     }
 
-    const row: TaskArtifactRow = {
-      id,
-      clientSpaceId: scope.clientSpaceId,
-      projectId: scope.projectId,
-      taskId: input.taskId,
-      ...(input.runId ? { runId: input.runId } : {}),
-      ...(input.stage ? { stage: input.stage } : {}),
-      name: input.name,
+    artifact.versions.push({
+      version,
       kind: input.kind,
-      ...(input.title ? { title: input.title } : {}),
-      ...(storage === 'inline' ? { body: bytes.toString('utf8') } : {}),
       contentType,
+      ...(input.title ? { title: input.title } : {}),
       storage,
+      ...(storage === 'inline' ? { body: bytes.toString('utf8') } : {}),
       ...(storageKey ? { storageKey } : {}),
       sha256: sha256Hex(bytes),
       // Bytes, not characters, matching the column's `octet_length` constraint.
       bytes: bytes.byteLength,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.stage ? { stage: input.stage } : {}),
+      createdAt: now,
+    })
+    artifact.currentVersion = version
+    artifact.updatedAt = now
+    this.artifacts.set(artifact.id, artifact)
+
+    // Oldest first, and never the current one: someone may switch back to v1 and keep working
+    // from it, and the pointer must not be left dangling.
+    const overBy = artifact.versions.length - this.artifactVersionsKept
+    if (overBy > 0) {
+      const doomed = [...artifact.versions]
+        .sort((a, b) => a.version - b.version)
+        .filter((v) => v.version !== artifact.currentVersion)
+        .slice(0, overBy)
+      for (const v of doomed) {
+        if (v.storageKey) await this.blobs?.delete(v.storageKey).catch(() => undefined)
+      }
+      artifact.versions = artifact.versions.filter((v) => !doomed.includes(v))
     }
 
-    // The bytes an overwrite replaced, once the new ones are in place.
-    if (existing?.storageKey && existing.storageKey !== storageKey) {
-      await this.blobs?.delete(existing.storageKey).catch(() => undefined)
-    }
-    this.artifacts.set(row.id, row)
-    return row
+    return this.currentRow(artifact)
   }
 
-  async readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined> {
-    const row = this.artifacts.get(id)
-    if (!row) return undefined
-    if (row.storage === 'inline') {
-      return row.body === undefined
+  async readTaskArtifactContent(
+    id: string,
+    version?: number,
+  ): Promise<TaskArtifactContent | undefined> {
+    const artifact = this.artifacts.get(id)
+    if (!artifact) return undefined
+    const v = artifact.versions.find(
+      (candidate) => candidate.version === (version ?? artifact.currentVersion),
+    )
+    if (!v) return undefined
+    if (v.storage === 'inline') {
+      return v.body === undefined
         ? undefined
-        : { contentType: row.contentType, bytes: Buffer.from(row.body, 'utf8'), sha256: row.sha256 }
+        : { contentType: v.contentType, bytes: Buffer.from(v.body, 'utf8'), sha256: v.sha256 }
     }
-    if (!row.storageKey || !this.blobs) return undefined
-    const bytes = await this.blobs.get(row.storageKey)
-    return bytes ? { contentType: row.contentType, bytes, sha256: row.sha256 } : undefined
+    if (!v.storageKey || !this.blobs) return undefined
+    const bytes = await this.blobs.get(v.storageKey)
+    return bytes ? { contentType: v.contentType, bytes, sha256: v.sha256 } : undefined
   }
 
   async deleteTaskArtifact(id: string): Promise<boolean> {
-    // The object goes with the row, as in the Postgres store — so a contract test covers both.
-    const key = this.artifacts.get(id)?.storageKey
+    // Every version's object goes with the artifact, as in the Postgres store — so a contract
+    // test covers both.
+    const artifact = this.artifacts.get(id)
     const removed = this.artifacts.delete(id)
-    if (key) await this.blobs?.delete(key).catch(() => undefined)
+    for (const v of artifact?.versions ?? []) {
+      if (v.storageKey) await this.blobs?.delete(v.storageKey).catch(() => undefined)
+    }
     return removed
+  }
+
+  /** The identity joined to the version it currently shows, which is what a read returns. */
+  private currentRow(artifact: MemoryArtifact): TaskArtifactRow {
+    const v = artifact.versions.find((candidate) => candidate.version === artifact.currentVersion)
+    if (!v) throw new Error(`artifact ${artifact.id} has no version ${artifact.currentVersion}`)
+    return {
+      id: artifact.id,
+      clientSpaceId: artifact.clientSpaceId,
+      projectId: artifact.projectId,
+      taskId: artifact.taskId,
+      name: artifact.name,
+      version: v.version,
+      versionCount: artifact.versions.length,
+      kind: v.kind,
+      ...(v.title ? { title: v.title } : {}),
+      ...(v.body === undefined ? {} : { body: v.body }),
+      contentType: v.contentType,
+      storage: v.storage,
+      ...(v.storageKey ? { storageKey: v.storageKey } : {}),
+      sha256: v.sha256,
+      bytes: v.bytes,
+      ...(v.runId ? { runId: v.runId } : {}),
+      ...(v.stage ? { stage: v.stage } : {}),
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt,
+    }
   }
 
   async listProjectRepos(scope: ProjectScope): Promise<ProjectRepoRow[]> {
@@ -558,4 +665,39 @@ function parseRepoUrl(repoUrl: string): { owner: string; repo: string } | undefi
 function withoutBody(row: TaskArtifactRow): TaskArtifactSummary {
   const { body: _body, ...summary } = row
   return summary
+}
+
+/**
+ * How an artifact is held in memory: an identity with its versions.
+ *
+ * Mirrors the two tables rather than the row a read returns, because the shape is what the
+ * behaviour turns on — a name gaining a version instead of becoming a second artifact, and a
+ * switch being a change of pointer. Flattening it here would let this store pass tests that
+ * Postgres fails.
+ */
+interface MemoryArtifactVersion {
+  version: number
+  kind: ArtifactKind
+  contentType: string
+  title?: string
+  storage: ArtifactStorage
+  body?: string
+  storageKey?: string
+  sha256: string
+  bytes: number
+  runId?: string
+  stage?: string
+  createdAt: string
+}
+
+interface MemoryArtifact {
+  id: string
+  clientSpaceId: string
+  projectId: string
+  taskId: string
+  name: string
+  currentVersion: number
+  versions: MemoryArtifactVersion[]
+  createdAt: string
+  updatedAt: string
 }

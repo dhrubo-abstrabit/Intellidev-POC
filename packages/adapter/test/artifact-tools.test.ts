@@ -50,18 +50,28 @@ function fakeStore(over: Partial<ArtifactStore> = {}) {
   const written: Array<Record<string, unknown>> = []
   const store: ArtifactStore = {
     async put(input) {
-      written.push({ ...input })
-      return { name: input.name, kind: input.kind, bytes: input.body.length }
+      // A name already written becomes a version of it, as the real store does.
+      const version = written.filter((w) => w['name'] === input.name).length + 1
+      written.push({ ...input, version })
+      return { name: input.name, kind: input.kind, bytes: input.body.length, version }
     },
     async list() {
-      return written.map((w) => ({
-        name: String(w['name']),
-        kind: String(w['kind']),
-        bytes: 1,
-      }))
+      const names = [...new Set(written.map((w) => String(w['name'])))]
+      return names.map((name) => {
+        const all = written.filter((w) => w['name'] === name)
+        const current = all[all.length - 1]!
+        return {
+          name,
+          kind: String(current['kind']),
+          bytes: 1,
+          version: Number(current['version']),
+          versionCount: all.length,
+        }
+      })
     },
-    async read(name) {
-      const found = written.find((w) => w['name'] === name)
+    async read(name, version) {
+      const all = written.filter((w) => w['name'] === name)
+      const found = version === undefined ? all[all.length - 1] : all[version - 1]
       return found
         ? { name: String(found['name']), kind: String(found['kind']), body: String(found['body']) }
         : undefined
@@ -229,5 +239,75 @@ describe('the artifact tools', () => {
 
     expect(listed).toContain('notes.md')
     expect(listed).not.toContain('should not appear')
+  })
+})
+
+describe('iterating on an artifact', () => {
+  /**
+   * The tool descriptions are the only thing steering an agent here, so what they *say* matters
+   * as much as what the store does: told that a repeated name replaces the artifact, an agent
+   * avoids reusing one and invents `architecture-v2.mmd` instead — which is the outcome
+   * versioning exists to prevent.
+   */
+  it('tells the agent that reusing a name makes a version', () => {
+    const { store } = fakeStore()
+    const tools = buildBuiltinTools(context({ artifacts: store }))
+    const description = tool(tools, 'write_artifact').description ?? ''
+
+    expect(description).toMatch(/new \*version\*/)
+    // And that nothing is lost, so it has no reason to hedge with a second name.
+    expect(description).toMatch(/earlier versions stay readable/)
+  })
+
+  it('reports the version it saved', async () => {
+    // So the agent's own summary can say which revision it produced.
+    const { store } = fakeStore()
+    const tools = buildBuiltinTools(context({ artifacts: store }))
+    await tool(tools, 'write_artifact').handler({
+      name: 'architecture.mmd',
+      kind: 'mermaid',
+      body: 'first',
+    })
+
+    const second = await tool(tools, 'write_artifact').handler({
+      name: 'architecture.mmd',
+      kind: 'mermaid',
+      body: 'second',
+    })
+
+    expect(second).toMatch(/version 2/)
+  })
+
+  it('reads the current version by default and an earlier one on request', async () => {
+    const { store } = fakeStore()
+    const tools = buildBuiltinTools(context({ artifacts: store }))
+    await tool(tools, 'write_artifact').handler({ name: 'notes.md', kind: 'markdown', body: 'one' })
+    await tool(tools, 'write_artifact').handler({ name: 'notes.md', kind: 'markdown', body: 'two' })
+
+    expect(await tool(tools, 'read_artifact').handler({ name: 'notes.md' })).toBe('two')
+    expect(await tool(tools, 'read_artifact').handler({ name: 'notes.md', version: 1 })).toBe('one')
+  })
+
+  it('ignores a version that is not an integer rather than failing the read', async () => {
+    // A model passing "1" or 1.5 should still get the artifact, not an error about types.
+    const { store } = fakeStore()
+    const tools = buildBuiltinTools(context({ artifacts: store }))
+    await tool(tools, 'write_artifact').handler({ name: 'notes.md', kind: 'markdown', body: 'one' })
+
+    expect(await tool(tools, 'read_artifact').handler({ name: 'notes.md', version: '1' })).toBe(
+      'one',
+    )
+  })
+
+  it('shows how many versions exist when listing', async () => {
+    // So an agent can tell a revised artifact from a fresh one before deciding to read it.
+    const { store } = fakeStore()
+    const tools = buildBuiltinTools(context({ artifacts: store }))
+    await tool(tools, 'write_artifact').handler({ name: 'notes.md', kind: 'markdown', body: 'one' })
+    await tool(tools, 'write_artifact').handler({ name: 'notes.md', kind: 'markdown', body: 'two' })
+
+    const listed = await tool(tools, 'list_artifacts').handler({})
+
+    expect(listed).toContain('"versionCount": 2')
   })
 })

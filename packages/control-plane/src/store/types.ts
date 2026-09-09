@@ -109,10 +109,14 @@ export interface TaskArtifactRow {
   stage?: string
   /** How a later stage refers to it, and what makes a re-render an overwrite. */
   name: string
+  /** Which version this row's content came from. */
+  version: number
+  /** How many versions exist, so a list can say "v3 of 3" without a second query. */
+  versionCount: number
   kind: ArtifactKind
   title?: string
   /**
-   * The bytes, when they live in this row.
+   * The bytes of that version, when they live in the row.
    *
    * Absent for an artifact stored as an object — an image, or an html body too large for a
    * column. Read those through `readTaskArtifactContent`, which answers for both homes.
@@ -138,6 +142,27 @@ export interface TaskArtifactRow {
  * otherwise send a megabyte of markdown to render a sidebar.
  */
 export type TaskArtifactSummary = Omit<TaskArtifactRow, 'body'>
+
+/**
+ * One entry in an artifact's history, for a picker.
+ *
+ * No body: choosing which version to look at should not cost the bytes of all of them.
+ */
+export interface TaskArtifactVersionRow {
+  version: number
+  kind: ArtifactKind
+  contentType: string
+  title?: string
+  storage: ArtifactStorage
+  sha256: string
+  bytes: number
+  /** The run and stage that produced this version — the question a history exists to answer. */
+  runId?: string
+  stage?: string
+  createdAt: string
+  /** Whether this is the one the artifact currently shows. */
+  isCurrent: boolean
+}
 
 /**
  * What a caller supplies. The store decides the rest.
@@ -334,7 +359,19 @@ export interface Store {
    * One method for both homes, so nothing outside the store branches on `storage`. That is the
    * whole point of recording it: callers ask for content and get content.
    */
-  readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined>
+  readTaskArtifactContent(id: string, version?: number): Promise<TaskArtifactContent | undefined>
+  /** An artifact's history, newest first. */
+  listTaskArtifactVersions(id: string): Promise<TaskArtifactVersionRow[]>
+  /**
+   * Switch which version an artifact shows.
+   *
+   * A pointer move, not a copy. Copying the chosen bytes back over the top would make "which
+   * version is this" unanswerable — the copy is indistinguishable from a new revision — and
+   * would double the storage on every switch.
+   *
+   * Undefined when there is no such version, so a caller can 404 rather than guess.
+   */
+  setCurrentArtifactVersion(id: string, version: number): Promise<TaskArtifactRow | undefined>
   /**
    * Where non-text artifact bytes go, set at boot.
    *
@@ -346,6 +383,14 @@ export interface Store {
    * need a bucket are refused on write.
    */
   useArtifactBlobs(blobs: ArtifactBlobs | undefined): void
+  /**
+   * How many versions of one artifact to keep.
+   *
+   * On the contract so a test can prove the pruning on both stores without writing twenty rows
+   * to a database eighty-five milliseconds away — and so a deployment that wants deeper history
+   * can set it once at boot.
+   */
+  useArtifactVersionsKept(kept: number): void
   deleteTaskArtifact(id: string): Promise<boolean>
   /**
    * Removes a repository from a project's allowlist.

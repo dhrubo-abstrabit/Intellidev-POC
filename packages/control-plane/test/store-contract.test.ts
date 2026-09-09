@@ -457,6 +457,177 @@ function contract(
           expect(byHand.stage).toBeUndefined()
         })
 
+        describe('versions', () => {
+          /**
+           * An iteration is a version, not a second artifact — and not a silent replacement.
+           *
+           * Overwriting by name was the right instinct with the wrong half implemented: an agent
+           * redrawing a diagram means to revise *that* diagram, but the earlier attempt is often
+           * the better one and there was no way back to it.
+           */
+          it('adds a version instead of a second artifact', async () => {
+            const task = await store.createTask(TASK, scope)
+
+            const first = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'graph TD\n  A --> B' }),
+              taskId: task.id,
+            })
+            const second = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'graph TD\n  A --> C' }),
+              taskId: task.id,
+            })
+
+            // The same artifact, moved on.
+            expect(second.id).toBe(first.id)
+            expect(first.version).toBe(1)
+            expect(second.version).toBe(2)
+            expect(second.versionCount).toBe(2)
+            // And one entry in the list, not two.
+            expect(await store.listTaskArtifacts(task.id)).toHaveLength(1)
+          })
+
+          it('keeps the earlier content readable', async () => {
+            // The point of the whole thing: the previous attempt survives.
+            const task = await store.createTask(TASK, scope)
+            const v1 = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'the first attempt' }),
+              taskId: task.id,
+            })
+            await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'the second attempt' }),
+              taskId: task.id,
+            })
+
+            const older = await store.readTaskArtifactContent(v1.id, 1)
+            const current = await store.readTaskArtifactContent(v1.id)
+
+            expect(older?.bytes.toString('utf8')).toBe('the first attempt')
+            expect(current?.bytes.toString('utf8')).toBe('the second attempt')
+          })
+
+          it('lists the history newest first, marking the current one', async () => {
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'one' }),
+              taskId: task.id,
+              stage: 'design',
+            })
+            await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'two' }),
+              taskId: task.id,
+              stage: 'code',
+            })
+
+            const history = await store.listTaskArtifactVersions(a.id)
+
+            expect(history.map((v) => v.version)).toEqual([2, 1])
+            expect(history[0]?.isCurrent).toBe(true)
+            expect(history[1]?.isCurrent).toBe(false)
+            /**
+             * Which stage produced each version.
+             *
+             * Previously the run and stage lived on the artifact, so an overwrite lost who wrote
+             * the earlier content — exactly the question a history exists to answer.
+             */
+            expect(history.map((v) => v.stage)).toEqual(['code', 'design'])
+            // No bodies: choosing what to look at should not cost the bytes of everything.
+            expect(history[0]).not.toHaveProperty('body')
+          })
+
+          it('switches which version is shown, without copying anything', async () => {
+            // A pointer move. Copying the chosen bytes back over the top would make "which
+            // version is this" unanswerable, since the copy looks like a new revision.
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'the good one' }),
+              taskId: task.id,
+            })
+            await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'the regression' }),
+              taskId: task.id,
+            })
+
+            const switched = await store.setCurrentArtifactVersion(a.id, 1)
+
+            expect(switched?.version).toBe(1)
+            expect(switched?.body).toBe('the good one')
+            // Still two versions — nothing was written to go back.
+            expect(switched?.versionCount).toBe(2)
+            // And a plain read now returns the chosen one.
+            expect((await store.getTaskArtifact(a.id))?.body).toBe('the good one')
+          })
+
+          it('refuses to point at a version that does not exist', async () => {
+            // The pointer is a deferred foreign key, so an unchecked switch would fail at commit
+            // with a constraint name rather than an answer a caller can turn into a 404.
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, { ...diagram(), taskId: task.id })
+
+            expect(await store.setCurrentArtifactVersion(a.id, 99)).toBeUndefined()
+            expect((await store.getTaskArtifact(a.id))?.version).toBe(1)
+          })
+
+          it('carries on numbering after a switch backwards', async () => {
+            /**
+             * Someone switches to v1, keeps working, and saves. That must become v3 — not a
+             * second v2, which the primary key would reject, and not v2 again, which would
+             * overwrite history that is still referenced.
+             */
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'one' }),
+              taskId: task.id,
+            })
+            await store.saveTaskArtifact(scope, { ...diagram({ content: 'two' }), taskId: task.id })
+            await store.setCurrentArtifactVersion(a.id, 1)
+
+            const next = await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'three' }),
+              taskId: task.id,
+            })
+
+            expect(next.version).toBe(3)
+            expect(next.versionCount).toBe(3)
+          })
+
+          it('lets a version change what kind it is', async () => {
+            // A note that gains a diagram may legitimately move from markdown to mermaid, and
+            // each version still has to be served as what it actually is.
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'design.md',
+              kind: 'markdown',
+              content: '# notes',
+            })
+            await store.saveTaskArtifact(scope, {
+              taskId: task.id,
+              name: 'design.md',
+              kind: 'mermaid',
+              content: 'graph TD\n  A --> B',
+            })
+
+            expect((await store.getTaskArtifact(a.id))?.kind).toBe('mermaid')
+            const history = await store.listTaskArtifactVersions(a.id)
+            expect(history.map((v) => v.kind)).toEqual(['mermaid', 'markdown'])
+            // And the content type follows the kind, so v1 is not served as a diagram.
+            expect(history[1]?.contentType).toContain('markdown')
+          })
+
+          it('deletes the whole history with the artifact', async () => {
+            const task = await store.createTask(TASK, scope)
+            const a = await store.saveTaskArtifact(scope, { ...diagram(), taskId: task.id })
+            await store.saveTaskArtifact(scope, {
+              ...diagram({ content: 'second' }),
+              taskId: task.id,
+            })
+
+            expect(await store.deleteTaskArtifact(a.id)).toBe(true)
+            expect(await store.listTaskArtifactVersions(a.id)).toHaveLength(0)
+            expect(await store.getTaskArtifact(a.id)).toBeUndefined()
+          })
+        })
+
         describe('bytes that do not belong in a column', () => {
           /**
            * The extension this schema was shaped for.
@@ -588,9 +759,14 @@ function contract(
             store.useArtifactBlobs(undefined)
           })
 
-          it('removes the previous object when an artifact is overwritten', async () => {
-            // Otherwise the bucket grows for ever with objects nothing references.
-            const { blobs, objects, deleted } = fakeBlobs()
+          it('keeps an object per version, since the older one is still readable', async () => {
+            /**
+             * This used to assert the opposite — that overwriting removed the previous object —
+             * which was right when a name held one revision. Versioning changed the contract:
+             * the earlier bytes are the thing being kept, so both objects exist and the version
+             * number is in the key so neither mutates the other.
+             */
+            const { blobs, objects } = fakeBlobs()
             store.useArtifactBlobs(blobs)
             const task = await store.createTask(TASK, scope)
             const first = await store.saveTaskArtifact(scope, {
@@ -610,13 +786,48 @@ function contract(
             })
 
             expect(second.id).toBe(first.id)
-            // One object for one artifact, whatever it has been through.
-            expect(objects.size).toBe(1)
-            expect(second.bytes).toBe(png.byteLength + 1)
-            expect(
-              deleted.length + (first.storageKey === second.storageKey ? 1 : 0),
-            ).toBeGreaterThan(0)
+            expect(second.version).toBe(2)
+            expect(objects.size).toBe(2)
+            // And both are readable, byte for byte.
+            expect((await store.readTaskArtifactContent(first.id, 1))?.bytes.equals(png)).toBe(true)
+            expect((await store.readTaskArtifactContent(first.id, 2))?.bytes.byteLength).toBe(
+              png.byteLength + 1,
+            )
             store.useArtifactBlobs(undefined)
+          })
+
+          it('prunes the oldest versions past the cap, and their objects', async () => {
+            /**
+             * History is bounded. An agent iterating in a loop would otherwise grow a bucket
+             * without limit, and nobody scrolls back twenty revisions.
+             *
+             * The cap is lowered for the test rather than writing twenty rows to a database
+             * eighty-five milliseconds away.
+             */
+            const { blobs, objects } = fakeBlobs()
+            store.useArtifactBlobs(blobs)
+            // Lowered on the store under test, so this proves the same code path on both.
+            store.useArtifactVersionsKept(3)
+            const task = await store.createTask(TASK, scope)
+
+            for (let i = 1; i <= 5; i++) {
+              await store.saveTaskArtifact(scope, {
+                taskId: task.id,
+                name: 'screenshot.png',
+                kind: 'image',
+                contentType: 'image/png',
+                content: Buffer.concat([png, Buffer.from([i])]),
+              })
+            }
+
+            const history = await store.listTaskArtifactVersions(
+              (await store.findTaskArtifact(task.id, 'screenshot.png'))!.id,
+            )
+            expect(history.map((v) => v.version)).toEqual([5, 4, 3])
+            // The objects went with the rows rather than being left in the bucket.
+            expect(objects.size).toBe(3)
+            store.useArtifactBlobs(undefined)
+            store.useArtifactVersionsKept(20)
           })
 
           it('takes the object with the row when an artifact is deleted', async () => {

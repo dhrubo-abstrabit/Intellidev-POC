@@ -281,6 +281,13 @@ export const stageTemplates = runner.table(
  * already the only thing a container can reach, and a bucket would buy presigned reads and a
  * lifecycle policy for kilobytes. The migration's CHECK constraint is what keeps that true.
  */
+/**
+ * An artifact's identity: a task and a name, plus which version it is showing.
+ *
+ * No content at all. An iteration is a version rather than a replacement, and two possible homes
+ * for the same bytes is how they come to disagree — so the body, its type and its hash all live
+ * on the version row, and this one only points at the current one.
+ */
 export const taskArtifacts = runner.table(
   'task_artifacts',
   {
@@ -288,30 +295,48 @@ export const taskArtifacts = runner.table(
     clientSpaceId: uuid('client_space_id').notNull(),
     projectId: uuid('project_id').notNull(),
     taskId: uuid('task_id').notNull(),
-    /** Which run and stage wrote it. Null once the run is pruned, or if a person added it. */
-    runId: uuid('run_id'),
-    stage: text('stage'),
-    /** How a later stage refers to it, and what makes a re-render an overwrite. */
+    /** How a later stage refers to it, and what makes a re-render a new version of it. */
     name: text('name').notNull(),
-    /** Exactly what the preview can render: html, markdown or mermaid. */
-    kind: text('kind').notNull(),
-    title: text('title'),
-    /** Null when the bytes are an object; see `storage`. */
-    body: text('body'),
-    /** What the bytes are, for serving them — distinct from `kind`, which is how to show them. */
-    contentType: text('content_type').notNull(),
-    /** `inline` (the bytes are in `body`) or `s3` (`storageKey` names the object). */
-    storage: text('storage').notNull(),
-    storageKey: text('storage_key'),
-    sha256: text('sha256').notNull(),
-    /** The size of the content, wherever it lives. */
-    bytes: integer('bytes').notNull(),
+    /** Which version is shown and read. Switching is an update of this column, nothing more. */
+    currentVersion: integer('current_version').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('task_artifacts_task_idx').on(table.taskId),
     index('task_artifacts_project_recent_idx').on(table.projectId, table.updatedAt),
+  ],
+)
+
+/**
+ * One revision of an artifact's content.
+ *
+ * `kind` and `contentType` are here rather than on the identity because they describe the
+ * bytes: a note that gains a diagram may move from markdown to mermaid, and each version still
+ * has to be served as what it actually is.
+ */
+export const taskArtifactVersions = runner.table(
+  'task_artifact_versions',
+  {
+    artifactId: uuid('artifact_id').notNull(),
+    /** Dense and per artifact, starting at 1 — assigned by the writer, not by a sequence. */
+    version: integer('version').notNull(),
+    kind: text('kind').notNull(),
+    contentType: text('content_type').notNull(),
+    title: text('title'),
+    storage: text('storage').notNull(),
+    body: text('body'),
+    storageKey: text('storage_key'),
+    sha256: text('sha256').notNull(),
+    bytes: integer('bytes').notNull(),
+    /** Which run and stage produced *this* version — the question a history exists to answer. */
+    runId: uuid('run_id'),
+    stage: text('stage'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.artifactId, table.version] }),
+    index('artifact_versions_recent_idx').on(table.artifactId, table.version),
   ],
 )
 

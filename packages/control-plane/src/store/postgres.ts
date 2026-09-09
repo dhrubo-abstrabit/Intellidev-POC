@@ -26,10 +26,12 @@ import {
   type TaskArtifactSummary,
   type TaskArtifactInput,
   type TaskArtifactContent,
+  type TaskArtifactVersionRow,
   type ArtifactStorage,
 } from './types.js'
 import {
   BlobStoreUnavailable,
+  artifactObjectKey,
   chooseStorage,
   defaultContentType,
   sha256Hex,
@@ -42,6 +44,7 @@ import {
   runTokens,
   runs,
   stageTemplates,
+  taskArtifactVersions,
   taskArtifacts,
   taskSpecs,
 } from './schema.js'
@@ -80,6 +83,13 @@ interface Subscription {
 
 export interface PostgresStoreOptions {
   readonly connectionString: string
+  /**
+   * How many versions of one artifact to keep. Defaults to 20.
+   *
+   * An option so a test can prove the pruning without writing twenty rows to a database
+   * eighty-five milliseconds away, and so a deployment that wants deeper history can say so.
+   */
+  readonly artifactVersionsKept?: number
   /**
    * Connections this store may hold. Small on purpose.
    *
@@ -138,6 +148,7 @@ export class PostgresStore implements Store {
   private notify: NotifyListener | undefined
 
   constructor(private readonly opts: PostgresStoreOptions) {
+    if (opts.artifactVersionsKept) this.artifactVersionsKept = opts.artifactVersionsKept
     this.pool = new pg.Pool({
       connectionString: opts.connectionString,
       max: opts.maxConnections ?? 5,
@@ -503,43 +514,209 @@ export class PostgresStore implements Store {
 
   // --- task artifacts ------------------------------------------------------
 
+  /**
+   * How many versions of one artifact are kept.
+   *
+   * An agent iterating on a diagram can produce a dozen in a run, and every one of them is a
+   * row and possibly an object. Twenty is far more history than anybody scrolls through and
+   * still a bound, so the oldest are pruned rather than the bucket growing without limit.
+   *
+   * Never prunes the current version, whatever it is: someone may switch back to v1 and keep
+   * working from it, and the pointer must not be left dangling.
+   *
+   * An option rather than a constant so a test can prove the pruning without writing twenty
+   * rows to a database eighty-five milliseconds away, and so a deployment that wants deeper
+   * history can have it.
+   */
+  private artifactVersionsKept = 20
+
+  /** Overrides the deployment default. See `Store.useArtifactVersionsKept`. */
+  useArtifactVersionsKept(kept: number): void {
+    this.artifactVersionsKept = kept
+  }
+
   async listTaskArtifacts(taskId: string): Promise<TaskArtifactSummary[]> {
-    // Columns listed rather than `select()`: the body is the one column this must not fetch,
-    // and `select()` would quietly start including it the day a new field is added.
-    const rows = await this.db
-      .select(ARTIFACT_SUMMARY_COLUMNS)
-      .from(taskArtifacts)
-      .where(eq(taskArtifacts.taskId, taskId))
-      .orderBy(asc(taskArtifacts.name))
-    return rows.map(toArtifactSummary)
+    return await this.artifactSummaries(eq(taskArtifacts.taskId, taskId), asc(taskArtifacts.name))
   }
 
   async listProjectArtifacts(scope: ProjectScope, limit = 100): Promise<TaskArtifactSummary[]> {
-    const rows = await this.db
-      .select(ARTIFACT_SUMMARY_COLUMNS)
+    return await this.artifactSummaries(
+      eq(taskArtifacts.projectId, scope.projectId),
+      desc(taskArtifacts.updatedAt),
+      limit,
+    )
+  }
+
+  /**
+   * Identity joined to the version it currently shows.
+   *
+   * One query rather than a read per artifact: a project list is the hot path here, and the
+   * body is the one column left out — naming them explicitly rather than `select()` so a column
+   * added later cannot quietly start dragging megabytes into a sidebar.
+   */
+  private async artifactSummaries(
+    where: ReturnType<typeof eq>,
+    order: ReturnType<typeof asc>,
+    limit?: number,
+  ): Promise<TaskArtifactSummary[]> {
+    const query = this.db
+      .select({
+        id: taskArtifacts.id,
+        clientSpaceId: taskArtifacts.clientSpaceId,
+        projectId: taskArtifacts.projectId,
+        taskId: taskArtifacts.taskId,
+        name: taskArtifacts.name,
+        version: taskArtifacts.currentVersion,
+        kind: taskArtifactVersions.kind,
+        title: taskArtifactVersions.title,
+        contentType: taskArtifactVersions.contentType,
+        storage: taskArtifactVersions.storage,
+        storageKey: taskArtifactVersions.storageKey,
+        sha256: taskArtifactVersions.sha256,
+        bytes: taskArtifactVersions.bytes,
+        runId: taskArtifactVersions.runId,
+        stage: taskArtifactVersions.stage,
+        createdAt: taskArtifacts.createdAt,
+        updatedAt: taskArtifacts.updatedAt,
+        versionCount: sql<number>`(
+          select count(*)::int from ${taskArtifactVersions} v
+           where v.artifact_id = ${taskArtifacts.id}
+        )`,
+      })
       .from(taskArtifacts)
-      .where(eq(taskArtifacts.projectId, scope.projectId))
-      .orderBy(desc(taskArtifacts.updatedAt))
-      .limit(limit)
+      .innerJoin(
+        taskArtifactVersions,
+        and(
+          eq(taskArtifactVersions.artifactId, taskArtifacts.id),
+          eq(taskArtifactVersions.version, taskArtifacts.currentVersion),
+        ),
+      )
+      .where(where)
+      .orderBy(order)
+      .$dynamic()
+
+    const rows = await (limit ? query.limit(limit) : query)
     return rows.map(toArtifactSummary)
   }
 
   async getTaskArtifact(id: string): Promise<TaskArtifactRow | undefined> {
-    const [row] = await this.db
-      .select()
+    return await this.artifactAtVersion(id)
+  }
+
+  async findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined> {
+    const [found] = await this.db
+      .select({ id: taskArtifacts.id })
       .from(taskArtifacts)
+      .where(and(eq(taskArtifacts.taskId, taskId), eq(taskArtifacts.name, name)))
+      .limit(1)
+    return found ? await this.artifactAtVersion(found.id) : undefined
+  }
+
+  /** One artifact at a given version, or at its current one. */
+  private async artifactAtVersion(
+    id: string,
+    version?: number,
+  ): Promise<TaskArtifactRow | undefined> {
+    const [row] = await this.db
+      .select({
+        id: taskArtifacts.id,
+        clientSpaceId: taskArtifacts.clientSpaceId,
+        projectId: taskArtifacts.projectId,
+        taskId: taskArtifacts.taskId,
+        name: taskArtifacts.name,
+        version: taskArtifactVersions.version,
+        kind: taskArtifactVersions.kind,
+        title: taskArtifactVersions.title,
+        body: taskArtifactVersions.body,
+        contentType: taskArtifactVersions.contentType,
+        storage: taskArtifactVersions.storage,
+        storageKey: taskArtifactVersions.storageKey,
+        sha256: taskArtifactVersions.sha256,
+        bytes: taskArtifactVersions.bytes,
+        runId: taskArtifactVersions.runId,
+        stage: taskArtifactVersions.stage,
+        createdAt: taskArtifacts.createdAt,
+        updatedAt: taskArtifacts.updatedAt,
+        versionCount: sql<number>`(
+          select count(*)::int from ${taskArtifactVersions} v
+           where v.artifact_id = ${taskArtifacts.id}
+        )`,
+      })
+      .from(taskArtifacts)
+      .innerJoin(
+        taskArtifactVersions,
+        and(
+          eq(taskArtifactVersions.artifactId, taskArtifacts.id),
+          version === undefined
+            ? eq(taskArtifactVersions.version, taskArtifacts.currentVersion)
+            : eq(taskArtifactVersions.version, version),
+        ),
+      )
       .where(eq(taskArtifacts.id, id))
       .limit(1)
     return row ? toArtifact(row) : undefined
   }
 
-  async findTaskArtifact(taskId: string, name: string): Promise<TaskArtifactRow | undefined> {
-    const [row] = await this.db
-      .select()
+  async listTaskArtifactVersions(id: string): Promise<TaskArtifactVersionRow[]> {
+    const [artifact] = await this.db
+      .select({ current: taskArtifacts.currentVersion })
       .from(taskArtifacts)
-      .where(and(eq(taskArtifacts.taskId, taskId), eq(taskArtifacts.name, name)))
+      .where(eq(taskArtifacts.id, id))
       .limit(1)
-    return row ? toArtifact(row) : undefined
+    if (!artifact) return []
+
+    const rows = await this.db
+      .select({
+        version: taskArtifactVersions.version,
+        kind: taskArtifactVersions.kind,
+        contentType: taskArtifactVersions.contentType,
+        title: taskArtifactVersions.title,
+        storage: taskArtifactVersions.storage,
+        sha256: taskArtifactVersions.sha256,
+        bytes: taskArtifactVersions.bytes,
+        runId: taskArtifactVersions.runId,
+        stage: taskArtifactVersions.stage,
+        createdAt: taskArtifactVersions.createdAt,
+      })
+      .from(taskArtifactVersions)
+      .where(eq(taskArtifactVersions.artifactId, id))
+      .orderBy(desc(taskArtifactVersions.version))
+
+    return rows.map((row) => ({
+      version: row.version,
+      kind: row.kind as ArtifactKind,
+      contentType: row.contentType,
+      ...(row.title ? { title: row.title } : {}),
+      storage: row.storage as ArtifactStorage,
+      sha256: row.sha256,
+      bytes: row.bytes,
+      ...(row.runId ? { runId: row.runId } : {}),
+      ...(row.stage ? { stage: row.stage } : {}),
+      createdAt: row.createdAt.toISOString(),
+      isCurrent: row.version === artifact.current,
+    }))
+  }
+
+  async setCurrentArtifactVersion(
+    id: string,
+    version: number,
+  ): Promise<TaskArtifactRow | undefined> {
+    // Checked first, because the foreign key is deferred: pointing at a version that does not
+    // exist would fail at commit with a constraint name rather than a useful answer.
+    const [exists] = await this.db
+      .select({ version: taskArtifactVersions.version })
+      .from(taskArtifactVersions)
+      .where(
+        and(eq(taskArtifactVersions.artifactId, id), eq(taskArtifactVersions.version, version)),
+      )
+      .limit(1)
+    if (!exists) return undefined
+
+    await this.db
+      .update(taskArtifacts)
+      .set({ currentVersion: version, updatedAt: new Date() })
+      .where(eq(taskArtifacts.id, id))
+    return await this.artifactAtVersion(id)
   }
 
   async saveTaskArtifact(scope: ProjectScope, input: TaskArtifactInput): Promise<TaskArtifactRow> {
@@ -556,101 +733,140 @@ export class PostgresStore implements Store {
     if (storage === 's3' && !this.blobs) throw new BlobStoreUnavailable(input.kind)
 
     /**
-     * The row is written first, then the object, then the row is pointed at it.
+     * The identity row and the new version are written in one transaction.
      *
-     * Two writes for an object-backed artifact, and the order is what makes a failure
-     * recoverable: a row that exists with no object is a visible artifact that fails to load,
-     * which is diagnosable — an object with no row is a bucket that silently grows for ever.
-     *
-     * The id is needed before the key, because the key includes it: overwriting a name must
-     * write a *new* object rather than mutate one a half-finished read is streaming.
+     * `current_version` is a deferred foreign key into the versions table, so the pair only has
+     * to be coherent at commit — which is what lets the artifact be created before the version
+     * it points at exists.
      */
-    const common = {
-      clientSpaceId: scope.clientSpaceId,
-      projectId: scope.projectId,
-      taskId: input.taskId,
-      runId: input.runId ?? null,
-      stage: input.stage ?? null,
-      name: input.name,
-      kind: input.kind,
-      title: input.title ?? null,
-      contentType,
-      sha256: sha256Hex(bytes),
-      bytes: bytes.byteLength,
-    }
+    const { artifactId, version, supersededKey } = await this.db.transaction(async (tx) => {
+      const [artifact] = await tx
+        .insert(taskArtifacts)
+        .values({
+          clientSpaceId: scope.clientSpaceId,
+          projectId: scope.projectId,
+          taskId: input.taskId,
+          name: input.name,
+          // Replaced below once the version number is known. A name that already exists keeps
+          // its id, which is what makes an iteration a version of the same artifact.
+          currentVersion: 1,
+        })
+        .onConflictDoUpdate({
+          target: [taskArtifacts.taskId, taskArtifacts.name],
+          set: { updatedAt: new Date() },
+        })
+        .returning({ id: taskArtifacts.id })
 
-    const previous = await this.findTaskArtifact(input.taskId, input.name)
+      const [highest] = await tx
+        .select({ version: taskArtifactVersions.version })
+        .from(taskArtifactVersions)
+        .where(eq(taskArtifactVersions.artifactId, artifact!.id))
+        .orderBy(desc(taskArtifactVersions.version))
+        .limit(1)
+      const next = (highest?.version ?? 0) + 1
 
-    const [row] = await this.db
-      .insert(taskArtifacts)
-      .values(
-        storage === 'inline'
-          ? { ...common, storage, body: bytes.toString('utf8'), storageKey: null }
-          : // A placeholder key, replaced below once the object is written. The constraint
-            // requires a key whenever `storage` is `s3`, and satisfying it with the row's own
-            // id keeps the invariant true at every instant rather than only at the end.
-            { ...common, storage, body: null, storageKey: `pending/${randomUUID()}` },
-      )
-      .onConflictDoUpdate({
-        target: [taskArtifacts.taskId, taskArtifacts.name],
-        set:
-          storage === 'inline'
-            ? {
-                ...common,
-                storage,
-                body: bytes.toString('utf8'),
-                storageKey: null,
-                updatedAt: new Date(),
-              }
-            : { ...common, storage, body: null, updatedAt: new Date() },
+      /**
+       * The key includes the version, so a new revision is a new object.
+       *
+       * Reusing one key per artifact would mutate bytes that an earlier version still claims,
+       * which is the one thing a history must not do.
+       */
+      const key =
+        storage === 's3'
+          ? artifactObjectKey({
+              projectId: scope.projectId,
+              taskId: input.taskId,
+              artifactId: artifact!.id,
+              name: `v${next}-${input.name}`,
+            })
+          : null
+
+      await tx.insert(taskArtifactVersions).values({
+        artifactId: artifact!.id,
+        version: next,
+        kind: input.kind,
+        contentType,
+        title: input.title ?? null,
+        storage,
+        body: storage === 'inline' ? bytes.toString('utf8') : null,
+        storageKey: key,
+        sha256: sha256Hex(bytes),
+        // Bytes, not characters: the column is checked against `octet_length`.
+        bytes: bytes.byteLength,
+        runId: input.runId ?? null,
+        stage: input.stage ?? null,
       })
-      .returning()
 
-    if (storage === 'inline') {
-      // An artifact that used to be an object and is now inline leaves its bytes behind.
-      if (previous?.storageKey) await this.blobs?.delete(previous.storageKey).catch(() => undefined)
-      return toArtifact(row!)
-    }
+      await tx
+        .update(taskArtifacts)
+        .set({ currentVersion: next, updatedAt: new Date() })
+        .where(eq(taskArtifacts.id, artifact!.id))
 
-    // The key the blob store chose, not one computed here: whoever writes the object names it.
-    const key = await this.blobs!.put({
-      projectId: scope.projectId,
-      taskId: input.taskId,
-      artifactId: row!.id,
-      name: input.name,
-      contentType,
-      bytes,
+      /**
+       * Prune inside the same transaction, and never the current version.
+       *
+       * The keys of anything pruned come back so their objects can be removed after the commit:
+       * deleting an object for a row that then failed to commit would leave an artifact pointing
+       * at bytes that are gone.
+       */
+      const pruned = await tx
+        .delete(taskArtifactVersions)
+        .where(
+          and(
+            eq(taskArtifactVersions.artifactId, artifact!.id),
+            ne(taskArtifactVersions.version, next),
+            lt(taskArtifactVersions.version, next - this.artifactVersionsKept + 1),
+          ),
+        )
+        .returning({ key: taskArtifactVersions.storageKey })
+
+      return {
+        artifactId: artifact!.id,
+        version: next,
+        supersededKey: pruned.map((row) => row.key).filter((k): k is string => Boolean(k)),
+      }
     })
-    const [pointed] = await this.db
-      .update(taskArtifacts)
-      .set({ storageKey: key })
-      .where(eq(taskArtifacts.id, row!.id))
-      .returning()
 
-    /**
-     * The previous object goes only once the new one is in place and referenced.
-     *
-     * The other order would leave a window where the row points at a key that has been
-     * deleted — an artifact that exists and cannot be read, which is the one failure this
-     * sequence is arranged to avoid.
-     */
-    if (previous?.storageKey && previous.storageKey !== key) {
-      await this.blobs!.delete(previous.storageKey).catch(() => undefined)
+    if (storage === 's3') {
+      const key = await this.blobs!.put({
+        projectId: scope.projectId,
+        taskId: input.taskId,
+        artifactId,
+        name: `v${version}-${input.name}`,
+        contentType,
+        bytes,
+      })
+      // The key the blob store chose, in case it differs from the one computed above.
+      await this.db
+        .update(taskArtifactVersions)
+        .set({ storageKey: key })
+        .where(
+          and(
+            eq(taskArtifactVersions.artifactId, artifactId),
+            eq(taskArtifactVersions.version, version),
+          ),
+        )
     }
-    return toArtifact(pointed!)
+
+    // Objects for versions that were pruned. After the commit, and never fatal: a leftover
+    // object costs storage, a failed save costs the work.
+    for (const key of supersededKey) await this.blobs?.delete(key).catch(() => undefined)
+
+    const saved = await this.artifactAtVersion(artifactId, version)
+    if (!saved) throw new Error(`artifact ${artifactId} vanished during save`)
+    return saved
   }
 
-  async readTaskArtifactContent(id: string): Promise<TaskArtifactContent | undefined> {
-    const row = await this.getTaskArtifact(id)
+  async readTaskArtifactContent(
+    id: string,
+    version?: number,
+  ): Promise<TaskArtifactContent | undefined> {
+    const row = await this.artifactAtVersion(id, version)
     if (!row) return undefined
     if (row.storage === 'inline') {
       return row.body === undefined
         ? undefined
-        : {
-            contentType: row.contentType,
-            bytes: Buffer.from(row.body, 'utf8'),
-            sha256: row.sha256,
-          }
+        : { contentType: row.contentType, bytes: Buffer.from(row.body, 'utf8'), sha256: row.sha256 }
     }
     if (!row.storageKey || !this.blobs) return undefined
     const bytes = await this.blobs.get(row.storageKey)
@@ -660,19 +876,28 @@ export class PostgresStore implements Store {
   }
 
   async deleteTaskArtifact(id: string): Promise<boolean> {
+    /**
+     * Every version's object goes with the artifact.
+     *
+     * The rows cascade from the foreign key; the objects do not, so they are collected first.
+     * A failure to remove one is not a failure to delete — the artifact is gone as far as
+     * anyone can tell, and failing here would leave a row somebody has been told is deleted.
+     */
+    const keys = await this.db
+      .select({ key: taskArtifactVersions.storageKey })
+      .from(taskArtifactVersions)
+      .where(eq(taskArtifactVersions.artifactId, id))
+
     const deleted = await this.db
       .delete(taskArtifacts)
       .where(eq(taskArtifacts.id, id))
-      .returning({ id: taskArtifacts.id, storageKey: taskArtifacts.storageKey })
-    /**
-     * The object goes after the row, and a failure to remove it is not a failure to delete.
-     *
-     * An object with no row is a bucket that grows for ever with nothing referencing it, but
-     * the artifact is gone as far as anyone can tell — whereas failing the delete because a
-     * bucket call timed out would leave a row somebody has already been told is deleted.
-     */
-    const key = deleted[0]?.storageKey
-    if (key) await this.blobs?.delete(key).catch(() => undefined)
+      .returning({ id: taskArtifacts.id })
+
+    if (deleted.length > 0) {
+      for (const { key } of keys) {
+        if (key) await this.blobs?.delete(key).catch(() => undefined)
+      }
+    }
     return deleted.length > 0
   }
 
@@ -1277,39 +1502,19 @@ function toRun(row: typeof runs.$inferSelect): RunRow {
 }
 
 /**
- * Every artifact column except the body.
+ * Shared by the row and summary mappers, which differ only in whether a body is present.
  *
- * Listed explicitly rather than selecting the table: the body is the one column a list must not
- * fetch, and `select()` would silently start including it the day a column is added.
+ * The shape is the identity row joined to one version, because that is what every read of an
+ * artifact is — there is no such thing as an artifact without a version.
  */
-const ARTIFACT_SUMMARY_COLUMNS = {
-  id: taskArtifacts.id,
-  clientSpaceId: taskArtifacts.clientSpaceId,
-  projectId: taskArtifacts.projectId,
-  taskId: taskArtifacts.taskId,
-  runId: taskArtifacts.runId,
-  stage: taskArtifacts.stage,
-  name: taskArtifacts.name,
-  kind: taskArtifacts.kind,
-  title: taskArtifacts.title,
-  contentType: taskArtifacts.contentType,
-  storage: taskArtifacts.storage,
-  storageKey: taskArtifacts.storageKey,
-  sha256: taskArtifacts.sha256,
-  bytes: taskArtifacts.bytes,
-  createdAt: taskArtifacts.createdAt,
-  updatedAt: taskArtifacts.updatedAt,
-} as const
-
-/** Shared by the row and summary mappers, which differ only in whether a body is present. */
 function toArtifactSummary(row: {
   id: string
   clientSpaceId: string
   projectId: string
   taskId: string
-  runId: string | null
-  stage: string | null
   name: string
+  version: number
+  versionCount: number
   kind: string
   title: string | null
   contentType: string
@@ -1317,6 +1522,8 @@ function toArtifactSummary(row: {
   storageKey: string | null
   sha256: string
   bytes: number
+  runId: string | null
+  stage: string | null
   createdAt: Date
   updatedAt: Date
 }): TaskArtifactSummary {
@@ -1325,22 +1532,21 @@ function toArtifactSummary(row: {
     clientSpaceId: row.clientSpaceId,
     projectId: row.projectId,
     taskId: row.taskId,
-    // Absent rather than null, matching every other optional field in this store: a UI checking
-    // truthiness and one checking `!== undefined` would otherwise disagree.
-    ...(row.runId ? { runId: row.runId } : {}),
-    ...(row.stage ? { stage: row.stage } : {}),
     name: row.name,
-    // Narrowed here, not asserted at the edge: the column has a CHECK constraint, so a value
+    version: row.version,
+    versionCount: row.versionCount,
+    // Narrowed here, not asserted at the edge: both columns have CHECK constraints, so a value
     // outside the set cannot be in the database to begin with.
     kind: row.kind as ArtifactKind,
     ...(row.title ? { title: row.title } : {}),
     contentType: row.contentType,
-    // Narrowed here, not asserted at the edge: both columns have CHECK constraints, so a value
-    // outside the set cannot be in the database to begin with.
     storage: row.storage as ArtifactStorage,
     ...(row.storageKey ? { storageKey: row.storageKey } : {}),
     sha256: row.sha256,
     bytes: row.bytes,
+    // Absent rather than null, matching every other optional field in this store.
+    ...(row.runId ? { runId: row.runId } : {}),
+    ...(row.stage ? { stage: row.stage } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }

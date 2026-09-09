@@ -50,6 +50,13 @@
       "when": 1788870000000,
       "tag": "0006_artifact_blobs",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788871000000,
+      "tag": "0007_artifact_versions",
+      "breakpoints": true
     }
   ]
 }

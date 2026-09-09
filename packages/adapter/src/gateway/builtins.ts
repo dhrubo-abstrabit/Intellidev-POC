@@ -47,11 +47,23 @@ export interface ArtifactStore {
     body: string
     title?: string
     stage?: string
-  }): Promise<{ name: string; kind: string; bytes: number }>
+  }): Promise<{ name: string; kind: string; bytes: number; version?: number }>
   list(): Promise<
-    Array<{ name: string; kind: string; title?: string; stage?: string; bytes: number }>
+    Array<{
+      name: string
+      kind: string
+      title?: string
+      stage?: string
+      bytes: number
+      /** Which version is current and how many exist, so an earlier one can be asked for. */
+      version?: number
+      versionCount?: number
+    }>
   >
-  read(name: string): Promise<{ name: string; kind: string; body: string } | undefined>
+  read(
+    name: string,
+    version?: number,
+  ): Promise<{ name: string; kind: string; body: string } | undefined>
 }
 
 export interface BuiltinTool extends Omit<RegisteredTool, 'origin'> {
@@ -282,7 +294,10 @@ function artifactTools(ctx: BuiltinContext, artifacts: ArtifactStore): BuiltinTo
       description:
         'Save a diagram, note or comparison under a name, for the later stages and for the ' +
         'people reviewing this task. Use mermaid for diagrams, markdown for notes, and html ' +
-        'only when the layout itself matters. Writing the same name again replaces it.',
+        'only when the layout itself matters. Writing the same name again saves a new ' +
+        '*version* of it rather than a second artifact — so revise by reusing the name, and use ' +
+        'a new name only for a genuinely different thing. Nothing is lost either way: earlier ' +
+        'versions stay readable and a reviewer can switch between them.',
       inputSchema: {
         type: 'object',
         required: ['name', 'kind', 'body'],
@@ -325,7 +340,10 @@ function artifactTools(ctx: BuiltinContext, artifacts: ArtifactStore): BuiltinTo
             // about the run, and asking would invite a wrong answer.
             stage: ctx.stage(),
           })
-          return `Saved ${saved.name} (${saved.kind}, ${saved.bytes} bytes). Later stages can read it with read_artifact.`
+          return (
+            `Saved ${saved.name}${saved.version ? ` as version ${saved.version}` : ''} ` +
+            `(${saved.kind}, ${saved.bytes} bytes). Later stages can read it with read_artifact.`
+          )
         } catch (error) {
           /**
            * The control plane's own message, verbatim.
@@ -365,18 +383,35 @@ function artifactTools(ctx: BuiltinContext, artifacts: ArtifactStore): BuiltinTo
       name: 'read_artifact',
       description:
         'Read an artifact saved earlier in this task — for example the diagram the design ' +
-        'stage produced. This is how a later stage builds on an earlier one.',
+        'stage produced. This is how a later stage builds on an earlier one. Reads the ' +
+        'current version unless you ask for an earlier one by number.',
       inputSchema: {
         type: 'object',
         required: ['name'],
-        properties: { name: { type: 'string' } },
+        properties: {
+          name: { type: 'string' },
+          version: {
+            type: 'integer',
+            description:
+              'An earlier version, from list_artifacts. Omit for the current one, which is ' +
+              'almost always what you want.',
+          },
+        },
       },
       stages: [],
       handler: async (input) => {
         const name = String(input['name'] ?? '').trim()
         if (!name) return 'error: read_artifact requires a name'
+        /**
+         * Tolerant of a model passing "1" or 1.5.
+         *
+         * A read that failed on the shape of an optional argument would be a worse outcome than
+         * simply giving the current version, which is what was almost certainly wanted.
+         */
+        const asked = Number(input['version'])
+        const version = Number.isInteger(asked) && asked >= 1 ? asked : undefined
         try {
-          const found = await artifacts.read(name)
+          const found = await artifacts.read(name, version)
           if (!found) {
             // Naming what is there, so the next call is right rather than another guess.
             const available = await artifacts.list().catch(() => [])

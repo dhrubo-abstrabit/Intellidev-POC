@@ -222,6 +222,74 @@ describe('a run writing an artifact', () => {
   })
 })
 
+describe('versions', () => {
+  /**
+   * An iteration is a version of the same artifact, and choosing between them is a person's
+   * decision. Reading an earlier one must not *be* that decision — otherwise comparing two
+   * revisions would change what everybody else sees.
+   */
+  it('turns a second write of the same name into a version', async () => {
+    const { app, store, task, write } = await scaffold()
+    await write({ ...diagram, body: 'graph TD\n  A --> B' })
+    await write({ ...diagram, body: 'graph TD\n  A --> C' })
+    await app.close()
+
+    const listed = await store.listTaskArtifacts(task.id)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({ version: 2, versionCount: 2 })
+  })
+
+  it('reads an earlier version without changing which is current', async () => {
+    const { app, store, task, run, token, write } = await scaffold()
+    await write({ ...diagram, body: 'the first attempt' })
+    await write({ ...diagram, body: 'the second attempt' })
+    const artifact = (await store.findTaskArtifact(task.id, diagram.name))!
+
+    const older = await app.inject({
+      method: 'GET',
+      url: `/internal/runs/${run.id}/artifacts/${diagram.name}?version=1`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    await app.close()
+
+    expect(older.statusCode).toBe(200)
+    expect(older.json().artifact.body).toBe('the first attempt')
+    // Untouched: reading is not deciding.
+    expect((await store.getTaskArtifact(artifact.id))?.version).toBe(2)
+  })
+
+  it('answers 404 for a version that was never written', async () => {
+    const { app, run, token, write } = await scaffold()
+    await write(diagram)
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/internal/runs/${run.id}/artifacts/${diagram.name}?version=7`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    await app.close()
+
+    expect(res.statusCode).toBe(404)
+    expect(res.json().error).toMatch(/no version 7/)
+  })
+
+  it('refuses a version that is not a positive integer', async () => {
+    // Reached from a query string, so the obvious inputs are a word and a negative number.
+    const { app, run, token, write } = await scaffold()
+    await write(diagram)
+
+    for (const version of ['abc', '0', '-1', '1.5']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/internal/runs/${run.id}/artifacts/${diagram.name}?version=${version}`,
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(res.statusCode, version).toBe(400)
+    }
+    await app.close()
+  })
+})
+
 describe('a run reading its artifacts', () => {
   it('reads one back by name, with its body', async () => {
     // The half that makes this more than a viewer: `code` asking `design` what it drew.

@@ -25,6 +25,9 @@ export interface ArtifactSummary {
   title?: string
   stage?: string
   bytes: number
+  /** Which version is current, and how many there are. */
+  version: number
+  versionCount: number
   updatedAt: string
 }
 
@@ -82,9 +85,15 @@ export class ArtifactClient {
     return ((await res.json()) as { artifacts?: ArtifactSummary[] }).artifacts ?? []
   }
 
-  /** Undefined rather than throwing for a name that does not exist: asking is not an error. */
-  async read(name: string): Promise<Artifact | undefined> {
-    const res = await this.request('GET', `/${encodeURIComponent(name)}`)
+  /**
+   * Undefined rather than throwing for a name that does not exist: asking is not an error.
+   *
+   * `version` reads an earlier revision. Omitting it reads the current one, which is what a
+   * later stage building on an earlier one almost always wants.
+   */
+  async read(name: string, version?: number): Promise<Artifact | undefined> {
+    const suffix = `/${encodeURIComponent(name)}${version === undefined ? '' : `?version=${version}`}`
+    const res = await this.request('GET', suffix)
     if (res.status === 404) return undefined
     if (!res.ok) throw new ArtifactRefused(`could not read ${name} (${res.status})`, res.status)
     return ((await res.json()) as { artifact?: Artifact }).artifact
